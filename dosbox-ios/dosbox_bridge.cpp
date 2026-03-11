@@ -7,6 +7,10 @@
 
 #include "dosbox_bridge.h"
 
+// Tell SDL we handle the application lifecycle ourselves (SwiftUI owns main)
+#define SDL_MAIN_HANDLED
+#include <SDL.h>
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -63,17 +67,17 @@ char *dosbox_write_config(const dosbox_config_t *cfg)
     fprintf(f, "memsize=%d\n", cfg->memsize > 0 ? cfg->memsize : 16);
     fprintf(f, "\n");
 
-    // [cpu]
+    // [cpu] — use current setting names (cpu_cycles, not deprecated 'cycles')
     fprintf(f, "[cpu]\n");
     if (cfg->cycles > 0)
-        fprintf(f, "cycles=fixed %d\n", cfg->cycles);
+        fprintf(f, "cpu_cycles=fixed %d\n", cfg->cycles);
     else
-        fprintf(f, "cycles=max\n");
+        fprintf(f, "cpu_cycles=max\n");
     fprintf(f, "\n");
 
-    // [render]
+    // [render] — frameskip was removed; use host_rate instead
+    // (omit render section or set host_rate if needed)
     fprintf(f, "[render]\n");
-    fprintf(f, "frameskip=%d\n", cfg->frameskip);
     fprintf(f, "\n");
 
     // [sblaster]
@@ -89,9 +93,9 @@ char *dosbox_write_config(const dosbox_config_t *cfg)
     fprintf(f, "gus=%s\n", cfg->gus_enabled ? "true" : "false");
     fprintf(f, "\n");
 
-    // [speaker]
+    // [speaker] — pcspeaker values: impulse, discrete, none (not true/false)
     fprintf(f, "[speaker]\n");
-    fprintf(f, "pcspeaker=%s\n", cfg->speaker_enabled ? "true" : "false");
+    fprintf(f, "pcspeaker=%s\n", cfg->speaker_enabled ? "impulse" : "none");
     fprintf(f, "\n");
 
     // [autoexec] — mount disks and set up boot
@@ -124,6 +128,20 @@ char *dosbox_write_config(const dosbox_config_t *cfg)
     return strdup(path.c_str());
 }
 
+/* ---------- iOS environment helpers ---------- */
+
+// Set XDG_CONFIG_HOME to the app container so DOSBox creates its
+// config directory inside the sandbox instead of ~/.config/
+static void setup_ios_environment(const char *working_dir)
+{
+    if (working_dir) {
+        setenv("XDG_CONFIG_HOME", working_dir, 1);
+        setenv("XDG_DATA_HOME", working_dir, 1);
+    }
+    // Hint SDL to not try to create a full UIWindow — we manage the view
+    SDL_SetHint(SDL_HINT_VIDEO_EXTERNAL_CONTEXT, "1");
+}
+
 /* ---------- lifecycle ---------- */
 
 int dosbox_start(const dosbox_config_t *cfg,
@@ -134,6 +152,12 @@ int dosbox_start(const dosbox_config_t *cfg,
 
     s_frame_cb = frame_cb;
     s_frame_ctx = context;
+
+    // Set up iOS sandbox environment before anything else
+    setup_ios_environment(cfg ? cfg->working_dir : nullptr);
+
+    // Tell SDL we're handling the main entry point ourselves
+    SDL_SetMainReady();
 
     // Write config file
     char *conf_path = dosbox_write_config(cfg);
