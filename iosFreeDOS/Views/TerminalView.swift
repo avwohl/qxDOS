@@ -272,8 +272,8 @@ class TerminalUIView: UIView, UIKeyInput {
     private func viewPointToMouse(_ point: CGPoint) -> (x: Int, y: Int) {
         let layout = terminalLayout()
         // Normalize to 0..1 within the terminal area
-        let nx = (point.x - layout0setX) / (CGFloat(cols) * charWidth * layout.scale)
-        let ny = (point.y - layout0setY) / (CGFloat(rows) * charHeight * layout.scale)
+        let nx = (point.x - layout.offsetX) / (CGFloat(cols) * charWidth * layout.scale)
+        let ny = (point.y - layout.offsetY) / (CGFloat(rows) * charHeight * layout.scale)
         let mx = Int(max(0, min(639, nx * 640)))
         let my = Int(max(0, min(199, ny * 200)))
         return (mx, my)
@@ -331,7 +331,7 @@ class TerminalUIView: UIView, UIKeyInput {
 
         let layout = terminalLayout()
         context.saveGState()
-        context.translateBy(x: layout0setX, y: layout0setY)
+        context.translateBy(x: layout.offsetX, y: layout.offsetY)
         context.scaleBy(x: layout.scale, y: layout.scale)
 
         for row in 0..<min(rows, cells.count) {

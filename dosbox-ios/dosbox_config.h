@@ -55,11 +55,14 @@
 #define HAVE_FD_ZERO
 #define HAVE_CLOCK_GETTIME
 #define HAVE_BUILTIN_AVAILABLE
-#define HAVE_BUILTIN_CLEAR_CACHE
+// Use sys_icache_invalidate on iOS instead of __builtin___clear_cache
+// (the builtin emits ___clear_cache which isn't in the iOS runtime)
+// #define HAVE_BUILTIN_CLEAR_CACHE
 #define HAVE_MPROTECT
 #define HAVE_MMAP
 #define HAVE_MAP_JIT
-#define HAVE_PTHREAD_WRITE_PROTECT_NP
+// pthread_jit_write_protect_np is macOS-only (not available on iOS)
+// #define HAVE_PTHREAD_WRITE_PROTECT_NP
 #define HAVE_SYS_ICACHE_INVALIDATE
 #define HAVE_PTHREAD_SETNAME_NP
 #define HAVE_SETPRIORITY

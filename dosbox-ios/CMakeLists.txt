@@ -188,6 +188,7 @@ add_library(dosbox-core STATIC
     ${DB}/dos/dos_mscdex.cpp
     ${DB}/dos/dos_programs.cpp
     ${DB}/dos/dos_tables.cpp
+    ${DB}/dos/dos_windows.cpp
     ${DB}/dos/drive_cache.cpp
     ${DB}/dos/drive_fat.cpp
     ${DB}/dos/drive_iso.cpp
@@ -274,9 +275,11 @@ add_library(dosbox-core STATIC
     ${DB}/hardware/input/mouseif_dos_driver_state.cpp
     ${DB}/hardware/input/mouseif_ps2_bios.cpp
     ${DB}/hardware/input/mouseif_virtual_machines.cpp
+    # Network — NE2000 + IPX included for DOS networking
     ${DB}/hardware/network/ipx.cpp
     ${DB}/hardware/network/ipxserver.cpp
     ${DB}/hardware/network/ne2000.cpp
+    # Serial port — all included (enet.h clock_gettime fix via compile definition)
     ${DB}/hardware/serialport/misc_util.cpp
     ${DB}/hardware/serialport/nullmodem.cpp
     ${DB}/hardware/serialport/serialdummy.cpp
@@ -348,6 +351,7 @@ add_library(dosbox-core STATIC
     ${DB}/misc/help_util.cpp
     ${DB}/misc/host_locale.cpp
     ${DB}/misc/host_locale_posix.cpp
+    ${DB}/misc/host_locale_macos.cpp
     ${DB}/misc/image_decoder.cpp
     ${DB}/misc/iso_locale_codes.cpp
     ${DB}/misc/messages.cpp
@@ -359,9 +363,11 @@ add_library(dosbox-core STATIC
     ${DB}/misc/unicode_encodings.cpp
     ${DB}/misc/video.cpp
 
-    # Network — excluded (needs libslirp)
-    # ${DB}/network/ethernet.cpp
-    # ${DB}/network/ethernet_slirp.cpp
+    # Network — ethernet + NE2000 (SLIRP backend stubbed, no libslirp on iOS)
+    ${DB}/network/ethernet.cpp
+    # ${DB}/network/ethernet_slirp.cpp  # replaced by stub below
+    ${CONFIG_DIR}/stubs/ethernet_slirp_stub.cpp
+    ${CONFIG_DIR}/stubs/webserver_stub.cpp
 
     # Shell
     ${DB}/shell/autoexec.cpp
@@ -383,10 +389,8 @@ add_library(dosbox-core STATIC
 set_source_files_properties(
     ${DB}/dos/cdrom_ioctl_linux.cpp
     ${DB}/dos/cdrom_win32.cpp
-    ${DB}/dos/dos_windows.cpp
     ${DB}/misc/fs_utils_win32.cpp
     ${DB}/misc/host_locale_win32.cpp
-    ${DB}/misc/host_locale_macos.cpp
     PROPERTIES HEADER_FILE_ONLY TRUE
 )
 
@@ -452,6 +456,16 @@ target_compile_definitions(dosbox-core PRIVATE
     C_MANYMOUSE=0
 )
 
+# Fix enet.h clock_gettime conflict on iOS:
+# enet.h defines its own clock_gettime when __APPLE__ &&
+# __MAC_OS_X_VERSION_MIN_REQUIRED < 101200.  On iOS this macro is
+# undefined (evaluates to 0), triggering the conflict.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_compile_definitions(dosbox-core PRIVATE
+        __MAC_OS_X_VERSION_MIN_REQUIRED=101500
+    )
+endif()
+
 # C++20 for DOSBox, C17 for C files
 set_target_properties(dosbox-core PROPERTIES
     CXX_STANDARD 20
@@ -508,6 +522,16 @@ if(APPLE)
         ${AUDIOTOOLBOX_FW}
         ${COREFOUNDATION_FW}
     )
+endif()
+
+# Header-only libraries (asio for serial port networking)
+# asio is header-only and platform-independent, so reuse host install
+find_path(ASIO_INCLUDE_DIR asio.hpp
+    HINTS /opt/homebrew/include
+    NO_CMAKE_FIND_ROOT_PATH  # search host paths even when cross-compiling
+)
+if(ASIO_INCLUDE_DIR)
+    target_include_directories(dosbox-core SYSTEM PRIVATE ${ASIO_INCLUDE_DIR})
 endif()
 
 # Suppress warnings in vendored code

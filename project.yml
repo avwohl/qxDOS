@@ -14,7 +14,6 @@ targets:
     platform: iOS
     sources:
       - path: iosFreeDOS
-      - path: dosbox-ios
     configFiles:
       Debug: Config.xcconfig
       Release: Config.xcconfig
@@ -26,6 +25,47 @@ targets:
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/dosbox-ios
           - $(SRCROOT)/iosFreeDOS/Bridge
+        LIBRARY_SEARCH_PATHS:
+          - $(SRCROOT)/build-ios
+          - $(SRCROOT)/dosbox-ios/vcpkg_installed/arm64-ios/lib
+        OTHER_LDFLAGS:
+          - -ldosbox-bridge
+          - -ldosbox-core
+          - -ldecoders
+          - -lloguru
+          - -lnuked
+          - -lesfmu
+          - -lresidfp
+          - -ltalchorus
+          - -lwhereami
+          - -lym7128b
+          - -lzmbv
+          - -lSDL2
+          - -lSDL2main
+          - -lSDL2_image
+          - -lpng16
+          - -lspeexdsp
+          - -liir_static
+          - -lopusfile
+          - -lopus
+          - -logg
+          - -lz
+          - -lc++
+          - -framework CoreAudio
+          - -framework AudioToolbox
+          - -framework CoreFoundation
+          - -framework CoreVideo
+          - -framework AVFoundation
+          - -framework CoreBluetooth
+          - -framework CoreGraphics
+          - -framework CoreMotion
+          - -framework Foundation
+          - -framework Metal
+          - -framework OpenGLES
+          - -framework QuartzCore
+          - -framework UIKit
+          - -weak_framework GameController
+          - -weak_framework CoreHaptics
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortraitUpsideDown
         INFOPLIST_KEY_UIRequiresFullScreen: NO
@@ -36,3 +76,12 @@ targets:
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         GENERATE_INFOPLIST_FILE: YES
+    dependencies: []
+    preBuildScripts:
+      - name: Build DOSBox Core
+        script: |
+          if [ ! -f "${SRCROOT}/build-ios/libdosbox-core.a" ]; then
+            echo "error: libdosbox-core.a not found. Run: cd build-ios && cmake ../dosbox-ios -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-ios -DVCPKG_INSTALLED_DIR=${SRCROOT}/dosbox-ios/vcpkg_installed && cmake --build . -j$(sysctl -n hw.ncpu)"
+            exit 1
+          fi
+        showEnvVars: false

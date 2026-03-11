@@ -34,3 +34,7 @@ void MidiDeviceFluidSynth::RenderAudioFramesToFifo(const int) {}
 void MidiDeviceFluidSynth::Render() {}
 
 void FSYNTH_ListDevices(MidiDeviceFluidSynth*, Program*) {}
+
+// FSYNTH_AddConfigSection is called by dosbox.cpp
+#include "config/config.h"
+void FSYNTH_AddConfigSection([[maybe_unused]] const ConfigPtr& conf) {}
