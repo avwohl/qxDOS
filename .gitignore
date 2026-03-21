@@ -2,7 +2,7 @@ obj/
 *.o
 *~
 .DS_Store
-build/
+build*/
 *.log
 docs/
 
@@ -12,16 +12,11 @@ Local.xcconfig
 DerivedData/
 *.xcworkspace
 
+# vcpkg
+dosbox-ios/vcpkg_installed/
+
 # Disk images (generated / large)
-fd/x86*.img
-fd/*_dev.img
-fd/freedos_hd.img
-fd/freedos_games.img
-fd/*.iso
-fd/freedos.img
-fd/games/
-fd/GAMES.TXT
+fd/
 
 # DOS COM programs (built from asm)
 dos/*.com
-build-macos/

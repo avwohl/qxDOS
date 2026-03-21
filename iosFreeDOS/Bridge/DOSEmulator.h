@@ -35,6 +35,8 @@ typedef NS_ENUM(NSInteger, DOSSpeedMode) {
 - (void)emulatorFrameReady:(NSData*)pixels width:(int)width height:(int)height;
 /// DOSBox is waiting for keyboard input (can animate cursor, etc.)
 - (void)emulatorDidRequestInput;
+/// DOSBox has exited (e.g., user typed EXIT or game quit)
+- (void)emulatorDidExit;
 @end
 
 @interface DOSEmulator : NSObject

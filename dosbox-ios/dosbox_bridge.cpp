@@ -17,6 +17,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <mach/mach_time.h>
+#include <dispatch/dispatch.h>
 
 // DOSBox headers
 #include "dosbox.h"
@@ -39,6 +41,44 @@ extern std::unique_ptr<Config> control;
 static std::atomic<bool> s_running{false};
 static dosbox_frame_callback_t s_frame_cb = nullptr;
 static void *s_frame_ctx = nullptr;
+
+// Frame throttle — limit callbacks to ~30fps to avoid overwhelming the UI thread
+static uint64_t s_last_frame_time = 0;
+static constexpr uint64_t FRAME_MIN_INTERVAL_NS = 33000000; // ~30fps
+
+// Called by DOSBox's SdlRenderer::PresentFrame() after each rendered frame.
+// Converts ARGB8888 to RGBA8888 and delivers to the registered callback.
+extern "C" void dosbox_on_frame_presented(
+    const uint8_t *pixels, int width, int height, int pitch, uint32_t format)
+{
+    if (!s_frame_cb || !pixels || width <= 0 || height <= 0) return;
+
+    // Throttle to avoid flooding the main thread
+    uint64_t now = mach_absolute_time();
+    static mach_timebase_info_data_t tbi = {};
+    if (tbi.denom == 0) mach_timebase_info(&tbi);
+    uint64_t elapsed_ns = (now - s_last_frame_time) * tbi.numer / tbi.denom;
+    if (elapsed_ns < FRAME_MIN_INTERVAL_NS) return;
+    s_last_frame_time = now;
+
+    // Convert ARGB8888 → RGBA8888
+    size_t rgba_size = static_cast<size_t>(width) * height * 4;
+    std::vector<uint8_t> rgba(rgba_size);
+
+    for (int y = 0; y < height; y++) {
+        const uint32_t *src = reinterpret_cast<const uint32_t *>(pixels + y * pitch);
+        uint8_t *dst = rgba.data() + y * width * 4;
+        for (int x = 0; x < width; x++) {
+            uint32_t argb = src[x];
+            dst[x * 4 + 0] = (argb >> 16) & 0xFF; // R
+            dst[x * 4 + 1] = (argb >> 8)  & 0xFF; // G
+            dst[x * 4 + 2] = (argb)       & 0xFF; // B
+            dst[x * 4 + 3] = 0xFF;                // A (always opaque)
+        }
+    }
+
+    s_frame_cb(rgba.data(), width, height, s_frame_ctx);
+}
 
 // GFX_ShowMsg is referenced by DOSBox but defined in main.cpp which we don't include
 void GFX_ShowMsg(const char* format, ...)
@@ -67,12 +107,25 @@ char *dosbox_write_config(const dosbox_config_t *cfg)
     fprintf(f, "memsize=%d\n", cfg->memsize > 0 ? cfg->memsize : 16);
     fprintf(f, "\n");
 
-    // [cpu] — use current setting names (cpu_cycles, not deprecated 'cycles')
+    // [cpu] — DOSBox-staging modern settings
+    // cycles > 0: fixed N for real mode
+    // cycles == 0: 3000 for real mode (classic "auto")
+    // cycles < 0: max everywhere
     fprintf(f, "[cpu]\n");
-    if (cfg->cycles > 0)
-        fprintf(f, "cpu_cycles=fixed %d\n", cfg->cycles);
-    else
+    if (cfg->cycles > 0) {
+        fprintf(f, "cpu_cycles=%d\n", cfg->cycles);
+    } else if (cfg->cycles < 0) {
         fprintf(f, "cpu_cycles=max\n");
+    } else {
+        fprintf(f, "cpu_cycles=3000\n");
+    }
+    // Protected mode cycles
+    if (cfg->cycles >= 0) {
+        if (cfg->cycles_protected > 0)
+            fprintf(f, "cpu_cycles_protected=%d\n", cfg->cycles_protected);
+        else
+            fprintf(f, "cpu_cycles_protected=max\n");
+    }
     fprintf(f, "\n");
 
     // [render] — frameskip was removed; use host_rate instead
@@ -112,16 +165,19 @@ char *dosbox_write_config(const dosbox_config_t *cfg)
     if (cfg->iso_path)
         fprintf(f, "imgmount e \"%s\" -t iso\n", cfg->iso_path);
 
-    // Boot from floppy if present, otherwise enter shell on C:
-    if (cfg->floppy_a_path)
-        fprintf(f, "boot a:\n");
-    else if (cfg->hdd_c_path)
-        fprintf(f, "c:\n");
-
-    // Additional autoexec commands
+    // Additional autoexec commands (e.g., host-dir mounts for testing)
     if (cfg->autoexec) {
         for (int i = 0; cfg->autoexec[i]; i++)
             fprintf(f, "%s\n", cfg->autoexec[i]);
+    }
+
+    // Boot from floppy if present, otherwise switch to C:
+    // Floppy images need `boot` to execute the boot sector.
+    // HDD FAT images are already accessible via mount — just switch to C:.
+    if (cfg->floppy_a_path) {
+        fprintf(f, "boot a:\n");
+    } else if (cfg->hdd_c_path) {
+        fprintf(f, "c:\n");
     }
 
     fclose(f);
@@ -138,8 +194,8 @@ static void setup_ios_environment(const char *working_dir)
         setenv("XDG_CONFIG_HOME", working_dir, 1);
         setenv("XDG_DATA_HOME", working_dir, 1);
     }
-    // Hint SDL to not try to create a full UIWindow — we manage the view
-    SDL_SetHint(SDL_HINT_VIDEO_EXTERNAL_CONTEXT, "1");
+    // Let SDL handle video rendering (it creates a Metal-backed view on iOS).
+    // We capture frames via dosbox_on_frame_presented hook.
 }
 
 /* ---------- lifecycle ---------- */
@@ -153,13 +209,15 @@ int dosbox_start(const dosbox_config_t *cfg,
     s_frame_cb = frame_cb;
     s_frame_ctx = context;
 
-    // Set up iOS sandbox environment before anything else
     setup_ios_environment(cfg ? cfg->working_dir : nullptr);
 
-    // Tell SDL we're handling the main entry point ourselves
+    // Tell SDL an external context exists (the app manages the UI).
+    // This lets SDL create a real renderer (Metal/software) that actually
+    // draws pixels, while avoiding UIWindow creation on iOS.
+    SDL_SetHint(SDL_HINT_VIDEO_EXTERNAL_CONTEXT, "1");
+
     SDL_SetMainReady();
 
-    // Write config file
     char *conf_path = dosbox_write_config(cfg);
     if (!conf_path) return -1;
 
@@ -167,7 +225,6 @@ int dosbox_start(const dosbox_config_t *cfg,
     int return_code = 0;
 
     try {
-        // Build command line: dosbox --conf <path> --noprimaryconf --nolocalconf
         std::vector<std::string> args = {
             "dosbox",
             "--conf", conf_path,
@@ -175,7 +232,6 @@ int dosbox_start(const dosbox_config_t *cfg,
             "--nolocalconf"
         };
 
-        // Convert to argc/argv for CommandLine
         int argc = static_cast<int>(args.size());
         std::vector<char*> argv;
         for (auto& a : args) argv.push_back(a.data());
@@ -186,16 +242,13 @@ int dosbox_start(const dosbox_config_t *cfg,
 
         init_config_dir();
 
-        // Register config sections and messages
         DOS_Locale_AddMessages();
         RENDER_AddMessages();
         GFX_AddConfigSection();
         DOSBOX_InitModuleConfigsAndMessages();
 
-        // Parse our config file
         control->ParseConfigFiles(get_config_dir());
 
-        // Initialize SDL and DOSBox modules
         GFX_InitSdl();
         DOSBOX_InitModules();
         GFX_InitAndStartGui();
@@ -218,6 +271,103 @@ int dosbox_start(const dosbox_config_t *cfg,
     }
 
     free(conf_path);
+    s_running.store(false);
+    return return_code;
+}
+
+// Stored config path for two-phase API
+static char *s_conf_path = nullptr;
+
+int dosbox_init(const dosbox_config_t *cfg,
+                dosbox_frame_callback_t frame_cb,
+                void *context)
+{
+    if (s_running.load()) return -1;
+
+    s_frame_cb = frame_cb;
+    s_frame_ctx = context;
+
+    setup_ios_environment(cfg ? cfg->working_dir : nullptr);
+
+    SDL_SetHint(SDL_HINT_VIDEO_EXTERNAL_CONTEXT, "1");
+    SDL_SetMainReady();
+
+    s_conf_path = dosbox_write_config(cfg);
+    if (!s_conf_path) return -1;
+
+    s_running.store(true);
+
+    try {
+        std::vector<std::string> args = {
+            "dosbox",
+            "--conf", s_conf_path,
+            "--noprimaryconf",
+            "--nolocalconf"
+        };
+
+        int argc = static_cast<int>(args.size());
+        std::vector<char*> argv;
+        for (auto& a : args) argv.push_back(a.data());
+        argv.push_back(nullptr);
+
+        CommandLine command_line(argc, argv.data());
+        control = std::make_unique<Config>(&command_line);
+
+        init_config_dir();
+
+        DOS_Locale_AddMessages();
+        RENDER_AddMessages();
+        GFX_AddConfigSection();
+        DOSBOX_InitModuleConfigsAndMessages();
+
+        control->ParseConfigFiles(get_config_dir());
+
+        // These touch UIKit and MUST run on the main thread
+        GFX_InitSdl();
+        DOSBOX_InitModules();
+        GFX_InitAndStartGui();
+        MAPPER_BindKeys(get_sdl_section());
+
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[DOSBox Bridge] Init error: %s\n", e.what());
+        free(s_conf_path);
+        s_conf_path = nullptr;
+        s_running.store(false);
+        return -1;
+    } catch (...) {
+        fprintf(stderr, "[DOSBox Bridge] Init unknown error\n");
+        free(s_conf_path);
+        s_conf_path = nullptr;
+        s_running.store(false);
+        return -1;
+    }
+
+    return 0;
+}
+
+int dosbox_run(void)
+{
+    if (!s_running.load()) return -1;
+
+    int return_code = 0;
+    try {
+        // Start the DOS shell — this blocks until exit
+        SHELL_InitAndRun();
+
+        // Cleanup
+        DOSBOX_DestroyModules();
+        GFX_Destroy();
+
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[DOSBox Bridge] Run error: %s\n", e.what());
+        return_code = 1;
+    } catch (...) {
+        fprintf(stderr, "[DOSBox Bridge] Run unknown error\n");
+        return_code = 1;
+    }
+
+    free(s_conf_path);
+    s_conf_path = nullptr;
     s_running.store(false);
     return return_code;
 }

@@ -54,11 +54,11 @@ struct MachineConfig: Codable, Identifiable, Equatable {
 
     var speedLabel: String {
         switch speedMode {
-        case 0: return "Max Speed"
-        case 1: return "XT (3000 cycles)"
-        case 2: return "AT (8000 cycles)"
-        case 3: return "386 (20000 cycles)"
-        case 4: return "486 (50000 cycles)"
+        case 0: return "Full Speed"
+        case 1: return "IBM PC (4.77 MHz)"
+        case 2: return "IBM AT (8 MHz)"
+        case 3: return "386SX (16 MHz)"
+        case 4: return "486DX2 (66 MHz)"
         case 5: return "Custom (\(customCycles) cycles)"
         default: return "Unknown"
         }

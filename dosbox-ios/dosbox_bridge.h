@@ -19,8 +19,8 @@ extern "C" {
 
 typedef struct {
     const char *machine;       /* "svga_s3", "vgaonly", "ega", "cga", etc. */
-    int         cycles;        /* 0 = max, else fixed cycle count */
-    int         frameskip;
+    int         cycles;        /* >0=fixed, 0=auto(3000/max), <0=max */
+    int         cycles_protected; /* protected mode cycles (0=same as cycles) */
     int         memsize;       /* MB of RAM (default 16) */
 
     /* Sound */
@@ -43,7 +43,22 @@ typedef struct {
 
     /* Working directory for DOSBox config files */
     const char *working_dir;
+
+    /* Boot drive: 0=A, 0x80=C, 0xE0=CD-ROM (default: auto-detect) */
+    int         boot_drive;
 } dosbox_config_t;
+
+/* CPU speed presets (DOSBox cycle values) */
+enum {
+    DOSBOX_SPEED_AUTO     =     0,  /* 3000 real mode, max protected */
+    DOSBOX_SPEED_8088     =  3000,  /* IBM PC 4.77 MHz */
+    DOSBOX_SPEED_286      =  7000,  /* IBM AT 8 MHz */
+    DOSBOX_SPEED_386SX    = 15000,  /* 386SX 16 MHz */
+    DOSBOX_SPEED_386DX    = 26000,  /* 386DX 33 MHz */
+    DOSBOX_SPEED_486DX2   = 50000,  /* 486DX2 66 MHz */
+    DOSBOX_SPEED_PENTIUM  = 77000,  /* Pentium 60-66 MHz */
+    DOSBOX_SPEED_MAX      =    -1,  /* unlimited */
+};
 
 /* ---------- frame callback ---------- */
 
@@ -77,6 +92,22 @@ char *dosbox_write_config(const dosbox_config_t *cfg);
 int dosbox_start(const dosbox_config_t *cfg,
                  dosbox_frame_callback_t frame_cb,
                  void *context);
+
+/*
+ * Two-phase startup for iOS.
+ *
+ * dosbox_init: initializes SDL, GFX, and DOSBox modules.
+ *              MUST be called on the main thread (SDL_VideoInit touches UIKit).
+ *              Returns 0 on success, non-zero on error.
+ *
+ * dosbox_run:  starts the DOS shell (SHELL_InitAndRun). Blocks until DOSBox
+ *              exits. Call from a background thread after dosbox_init succeeds.
+ *              Returns 0 on success, non-zero on error.
+ */
+int dosbox_init(const dosbox_config_t *cfg,
+                dosbox_frame_callback_t frame_cb,
+                void *context);
+int dosbox_run(void);
 
 /*
  * Request DOSBox to shut down gracefully.

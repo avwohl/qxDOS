@@ -79,32 +79,28 @@ struct ContentView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 6)
 
-                if let gfxImg = viewModel.gfxImage {
-                    Image(uiImage: gfxImg)
-                        .interpolation(.none)
-                        .resizable()
-                        .aspectRatio(CGSize(width: 4, height: 3), contentMode: .fit)
-                } else {
-                    TerminalWithToolbar(
-                        cells: $viewModel.terminalCells,
-                        cursorRow: $viewModel.cursorRow,
-                        cursorCol: $viewModel.cursorCol,
-                        shouldFocus: $viewModel.terminalShouldFocus,
-                        onKeyInput: { viewModel.sendKey($0) },
-                        onSetControlify: { viewModel.setControlify($0) },
-                        onScancode: { a, s in viewModel.sendDirectScancode(ascii: a, scancode: s) },
-                        onToggleFn: { viewModel.isFnActive.toggle() },
-                        onToggleAlt: { viewModel.isAltActive.toggle() },
-                        onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
-                        onViewCreated: { viewModel.terminalView = $0 },
-                        isControlifyActive: viewModel.isControlifyActive,
-                        isFnActive: viewModel.isFnActive,
-                        isAltActive: viewModel.isAltActive,
-                        rows: viewModel.terminalRows,
-                        cols: viewModel.terminalCols,
-                        fontSize: fontSize
-                    )
-                }
+                // DOSBox always renders as graphics — use TerminalWithToolbar
+                // which handles keyboard/mouse input, with the gfxImage overlay
+                TerminalWithToolbar(
+                    cells: $viewModel.terminalCells,
+                    cursorRow: $viewModel.cursorRow,
+                    cursorCol: $viewModel.cursorCol,
+                    shouldFocus: $viewModel.terminalShouldFocus,
+                    onKeyInput: { viewModel.sendKey($0) },
+                    onSetControlify: { viewModel.setControlify($0) },
+                    onScancode: { a, s in viewModel.sendDirectScancode(ascii: a, scancode: s) },
+                    onToggleFn: { viewModel.isFnActive.toggle() },
+                    onToggleAlt: { viewModel.isAltActive.toggle() },
+                    onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
+                    onViewCreated: { viewModel.terminalView = $0 },
+                    isControlifyActive: viewModel.isControlifyActive,
+                    isFnActive: viewModel.isFnActive,
+                    isAltActive: viewModel.isAltActive,
+                    rows: viewModel.terminalRows,
+                    cols: viewModel.terminalCols,
+                    fontSize: fontSize,
+                    gfxImage: viewModel.gfxImage
+                )
             }
             .background(Color.black.ignoresSafeArea(.container, edges: .bottom))
             .ignoresSafeArea(.keyboard)
@@ -294,11 +290,11 @@ struct ContentView: View {
                     viewModel.configManager.updateConfig(cfg)
                 }
             )) {
-                Text("Max Speed").tag(0)
-                Text("XT (3000 cycles)").tag(1)
-                Text("AT (8000 cycles)").tag(2)
-                Text("386 (20000 cycles)").tag(3)
-                Text("486 (50000 cycles)").tag(4)
+                Text("Full Speed").tag(0)
+                Text("IBM PC (4.77 MHz)").tag(1)
+                Text("IBM AT (8 MHz)").tag(2)
+                Text("386SX (16 MHz)").tag(3)
+                Text("486DX2 (66 MHz)").tag(4)
             }
         }
     }
@@ -612,7 +608,7 @@ struct AboutView: View {
             }
 
             Section("Links") {
-                Link(destination: URL(string: "https://github.com/avwohl/iosFreeDOS")!) {
+                Link(destination: URL(string: "https://github.com/avwohl/iosFreeDOS2")!) {
                     HStack {
                         Label("Source Code on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                         Spacer()

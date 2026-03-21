@@ -65,6 +65,7 @@ struct TerminalWithToolbar: View {
     let rows: Int
     let cols: Int
     let fontSize: CGFloat
+    var gfxImage: UIImage? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -120,19 +121,32 @@ struct TerminalWithToolbar: View {
             .padding(.horizontal, 4)
             .background(Color(UIColor.systemGray5))
 
-            TerminalView(
-                cells: $cells,
-                cursorRow: $cursorRow,
-                cursorCol: $cursorCol,
-                shouldFocus: $shouldFocus,
-                onKeyInput: onKeyInput,
-                onScancode: onScancode,
-                onMouseUpdate: onMouseUpdate,
-                onViewCreated: onViewCreated,
-                rows: rows,
-                cols: cols,
-                fontSize: fontSize
-            )
+            ZStack {
+                // Invisible TerminalView underneath handles keyboard/mouse input
+                TerminalView(
+                    cells: $cells,
+                    cursorRow: $cursorRow,
+                    cursorCol: $cursorCol,
+                    shouldFocus: $shouldFocus,
+                    onKeyInput: onKeyInput,
+                    onScancode: onScancode,
+                    onMouseUpdate: onMouseUpdate,
+                    onViewCreated: onViewCreated,
+                    rows: rows,
+                    cols: cols,
+                    fontSize: fontSize
+                )
+                .opacity(gfxImage == nil ? 1 : 0)
+
+                // DOSBox graphics frame overlay
+                if let img = gfxImage {
+                    Image(uiImage: img)
+                        .interpolation(.none)
+                        .resizable()
+                        .aspectRatio(CGSize(width: 4, height: 3), contentMode: .fit)
+                        .allowsHitTesting(false) // Pass touches to TerminalView below
+                }
+            }
         }
     }
 }

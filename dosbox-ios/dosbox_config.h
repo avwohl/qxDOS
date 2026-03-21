@@ -22,9 +22,15 @@
 #define C_UNALIGNED_MEMORY 0  // ARM needs aligned access
 #define C_PER_PAGE_W_OR_X 1  // Apple Silicon requires W^X
 
-// Dynamic recompiler: use DYNREC (generic, works on ARM64)
+// Dynamic recompiler
+// On macOS: DYNREC=1 with pthread_jit_write_protect_np (macOS 11+)
+// On iOS: DYNREC=0 — pthread_jit_write_protect_np is macOS-only.
+//   iOS 17.4+ has pthread_jit_write_with_callback_np but needs refactoring.
+//   C_DYNREC is overridden to 0 by CMakeLists.txt for iOS builds.
 #define C_DYNAMIC_X86 0
+#ifndef C_DYNREC
 #define C_DYNREC      1
+#endif
 #define C_FPU_X86     0
 #define C_CORE_INLINE 1
 
@@ -61,8 +67,8 @@
 #define HAVE_MPROTECT
 #define HAVE_MMAP
 #define HAVE_MAP_JIT
-// pthread_jit_write_protect_np is macOS-only (not available on iOS)
-// #define HAVE_PTHREAD_WRITE_PROTECT_NP
+// pthread_jit_write_protect_np: macOS 11+ only (unavailable on iOS)
+// HAVE_PTHREAD_WRITE_PROTECT_NP defined by CMakeLists.txt for macOS only
 #define HAVE_SYS_ICACHE_INVALIDATE
 #define HAVE_PTHREAD_SETNAME_NP
 #define HAVE_SETPRIORITY

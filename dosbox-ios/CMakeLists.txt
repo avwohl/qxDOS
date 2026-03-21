@@ -205,7 +205,7 @@ add_library(dosbox-core STATIC
     ${DB}/dos/programs/clip.cpp
     ${DB}/dos/programs/help.cpp
     ${DB}/dos/programs/makeimg.cpp
-    ${DB}/dos/programs/imgmount.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgmount_fix.cpp
     ${DB}/dos/programs/intro.cpp
     ${DB}/dos/programs/keyb.cpp
     ${DB}/dos/programs/loadfix.cpp
@@ -456,13 +456,22 @@ target_compile_definitions(dosbox-core PRIVATE
     C_MANYMOUSE=0
 )
 
-# Fix enet.h clock_gettime conflict on iOS:
-# enet.h defines its own clock_gettime when __APPLE__ &&
-# __MAC_OS_X_VERSION_MIN_REQUIRED < 101200.  On iOS this macro is
-# undefined (evaluates to 0), triggering the conflict.
+# Platform-specific settings
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # Fix enet.h clock_gettime conflict on iOS:
+    # enet.h defines its own clock_gettime when __APPLE__ &&
+    # __MAC_OS_X_VERSION_MIN_REQUIRED < 101200.  On iOS this macro is
+    # undefined (evaluates to 0), triggering the conflict.
     target_compile_definitions(dosbox-core PRIVATE
         __MAC_OS_X_VERSION_MIN_REQUIRED=101500
+    )
+    # iOS: no DYNREC — pthread_jit_write_protect_np is macOS-only.
+    # Falls back to interpretive core (slower but correct).
+    target_compile_definitions(dosbox-core PRIVATE C_DYNREC=0)
+else()
+    # macOS: DYNREC with pthread_jit_write_protect_np
+    target_compile_definitions(dosbox-core PRIVATE
+        HAVE_PTHREAD_WRITE_PROTECT_NP
     )
 endif()
 
@@ -554,3 +563,14 @@ target_include_directories(dosbox-bridge PUBLIC
 )
 
 target_link_libraries(dosbox-bridge PUBLIC dosbox-core)
+
+# ============================================================================
+# macOS test harness (not built for iOS cross-compile)
+# ============================================================================
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_executable(test_boot ${CMAKE_CURRENT_SOURCE_DIR}/test_boot.cpp)
+    target_link_libraries(test_boot PRIVATE dosbox-bridge)
+    target_include_directories(test_boot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_directories(test_boot PRIVATE /opt/homebrew/lib)
+endif()

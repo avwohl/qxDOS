@@ -879,6 +879,14 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     func emulatorDidRequestInput() {
         if !terminalShouldFocus { terminalShouldFocus = true }
     }
+
+    func emulatorDidExit() {
+        diskSaveTimer?.invalidate(); diskSaveTimer = nil
+        manifestPollTimer?.invalidate(); manifestPollTimer = nil
+        saveAllDisks()
+        isRunning = false
+        gfxImage = nil
+    }
 }
 
 // MARK: - XML Parser

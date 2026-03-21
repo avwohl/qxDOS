@@ -50,7 +50,6 @@ targets:
           - -lopus
           - -logg
           - -lz
-          - -lc++
           - -framework CoreAudio
           - -framework AudioToolbox
           - -framework CoreFoundation
@@ -61,7 +60,7 @@ targets:
           - -framework CoreMotion
           - -framework Foundation
           - -framework Metal
-          - -framework OpenGLES
+          - -weak_framework OpenGLES
           - -framework QuartzCore
           - -framework UIKit
           - -weak_framework GameController
@@ -84,4 +83,8 @@ targets:
             echo "error: libdosbox-core.a not found. Run: cd build-ios && cmake ../dosbox-ios -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-ios -DVCPKG_INSTALLED_DIR=${SRCROOT}/dosbox-ios/vcpkg_installed && cmake --build . -j$(sysctl -n hw.ncpu)"
             exit 1
           fi
+        inputFiles:
+          - $(SRCROOT)/dosbox-ios/CMakeLists.txt
+        outputFiles:
+          - $(SRCROOT)/build-ios/libdosbox-core.a
         showEnvVars: false

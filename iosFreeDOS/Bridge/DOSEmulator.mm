@@ -227,15 +227,16 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
     cfg.speaker_enabled = _speakerEnabled ? 1 : 0;
     cfg.mouse_enabled = _mouseEnabled ? 1 : 0;
 
-    // Cycles
+    // Cycles — real mode speed (protected mode uses max for game compat)
     switch (_speedMode) {
-        case DOSSpeedMax:   cfg.cycles = 0; break;
-        case DOSSpeed3000:  cfg.cycles = 3000; break;
-        case DOSSpeed8000:  cfg.cycles = 8000; break;
-        case DOSSpeed20000: cfg.cycles = 20000; break;
-        case DOSSpeed50000: cfg.cycles = 50000; break;
+        case DOSSpeedMax:   cfg.cycles = -1; break;   // max everywhere
+        case DOSSpeed3000:  cfg.cycles = DOSBOX_SPEED_8088; break;
+        case DOSSpeed8000:  cfg.cycles = DOSBOX_SPEED_286; break;
+        case DOSSpeed20000: cfg.cycles = DOSBOX_SPEED_386SX; break;
+        case DOSSpeed50000: cfg.cycles = DOSBOX_SPEED_486DX2; break;
         case DOSSpeedFixed: cfg.cycles = _customCycles; break;
     }
+    cfg.cycles_protected = 0; // auto (max for protected mode games)
 
     // Disk paths
     if (_diskPath[0]) cfg.floppy_a_path = [_diskPath[0] UTF8String];
@@ -246,9 +247,26 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
 
     cfg.working_dir = [_tmpDir UTF8String];
 
+    // Boot drive — FreeDOS kernel on the disk handles CONFIG.SYS and AUTOEXEC.BAT
+    cfg.boot_drive = drive;
+
+    // Phase 1: init on main thread (SDL/UIKit requires it)
+    int initResult = dosbox_init(&cfg, frame_callback, (__bridge void *)self);
+    if (initResult != 0) {
+        _shouldRun = NO;
+        return;
+    }
+
+    // Phase 2: run loop on background thread (blocks until exit)
     dispatch_async(_emulatorQueue, ^{
-        dosbox_start(&cfg, frame_callback, (__bridge void *)self);
+        dosbox_run();
         self->_shouldRun = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id<DOSEmulatorDelegate> d = self.delegate;
+            if (d && [d respondsToSelector:@selector(emulatorDidExit)]) {
+                [d emulatorDidExit];
+            }
+        });
     });
 }
 
@@ -269,12 +287,99 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
     dosbox_inject_char(ch);
 }
 
+/// Map PC AT scancodes to SDL scancodes.
+/// The old iosFreeDOS used PC AT scancodes (set 1); DOSBox uses SDL scancodes.
+static int pc_to_sdl_scancode(uint8_t pc) {
+    // Common PC AT scancode → SDL_Scancode mapping
+    static const int map[128] = {
+        [0x01] = 41,  // Esc
+        [0x02] = 30,  // 1
+        [0x03] = 31,  // 2
+        [0x04] = 32,  // 3
+        [0x05] = 33,  // 4
+        [0x06] = 34,  // 5
+        [0x07] = 35,  // 6
+        [0x08] = 36,  // 7
+        [0x09] = 37,  // 8
+        [0x0A] = 38,  // 9
+        [0x0B] = 39,  // 0
+        [0x0C] = 45,  // -
+        [0x0D] = 46,  // =
+        [0x0E] = 42,  // Backspace
+        [0x0F] = 43,  // Tab
+        [0x10] = 20,  // Q
+        [0x11] = 26,  // W
+        [0x12] = 8,   // E
+        [0x13] = 21,  // R
+        [0x14] = 23,  // T
+        [0x15] = 28,  // Y
+        [0x16] = 24,  // U
+        [0x17] = 12,  // I
+        [0x18] = 18,  // O
+        [0x19] = 19,  // P
+        [0x1A] = 47,  // [
+        [0x1B] = 48,  // ]
+        [0x1C] = 40,  // Enter
+        [0x1D] = 224, // LCtrl
+        [0x1E] = 4,   // A
+        [0x1F] = 22,  // S
+        [0x20] = 7,   // D
+        [0x21] = 9,   // F
+        [0x22] = 10,  // G
+        [0x23] = 11,  // H
+        [0x24] = 13,  // J
+        [0x25] = 14,  // K
+        [0x26] = 15,  // L
+        [0x27] = 51,  // ;
+        [0x28] = 52,  // '
+        [0x29] = 53,  // `
+        [0x2A] = 225, // LShift
+        [0x2B] = 49,  // backslash
+        [0x2C] = 29,  // Z
+        [0x2D] = 27,  // X
+        [0x2E] = 6,   // C
+        [0x2F] = 25,  // V
+        [0x30] = 5,   // B
+        [0x31] = 17,  // N
+        [0x32] = 16,  // M
+        [0x33] = 54,  // ,
+        [0x34] = 55,  // .
+        [0x35] = 56,  // /
+        [0x36] = 229, // RShift
+        [0x38] = 226, // LAlt
+        [0x39] = 44,  // Space
+        [0x3A] = 57,  // CapsLock
+        [0x3B] = 58,  // F1
+        [0x3C] = 59,  // F2
+        [0x3D] = 60,  // F3
+        [0x3E] = 61,  // F4
+        [0x3F] = 62,  // F5
+        [0x40] = 63,  // F6
+        [0x41] = 64,  // F7
+        [0x42] = 65,  // F8
+        [0x43] = 66,  // F9
+        [0x44] = 67,  // F10
+        [0x47] = 74,  // Home
+        [0x48] = 82,  // Up
+        [0x49] = 75,  // PgUp
+        [0x4B] = 80,  // Left
+        [0x4D] = 79,  // Right
+        [0x4F] = 77,  // End
+        [0x50] = 81,  // Down
+        [0x51] = 78,  // PgDn
+        [0x52] = 73,  // Insert
+        [0x53] = 76,  // Delete
+        [0x57] = 68,  // F11
+        [0x58] = 69,  // F12
+    };
+    if (pc < 128 && map[pc]) return map[pc];
+    return pc; // fallback
+}
+
 - (void)sendScancode:(uint8_t)ascii scancode:(uint8_t)scancode {
-    // DOSBox uses SDL scancodes; we'll need a mapping from PC scancodes
-    // to SDL scancodes.  For now, inject the PC scancode directly
-    // (the bridge will translate).
-    dosbox_inject_key(scancode, 1);  // press
-    dosbox_inject_key(scancode, 0);  // release
+    int sdl_sc = pc_to_sdl_scancode(scancode);
+    dosbox_inject_key(sdl_sc, 1);  // press
+    dosbox_inject_key(sdl_sc, 0);  // release
     (void)ascii;
 }
 
