@@ -1,1054 +1,725 @@
 # FreeDOS Command Reference
 
-Commands and utilities included with FreeDOS. Adapted from the FreeDOS Help project.
-For the complete reference covering all FreeDOS packages, visit: https://fdos.github.io/help/en/
-
-## Internal Commands
-
-These commands are built into COMMAND.COM and are always available.
-
-### CD / CHDIR
-
-```
-Displays the name of a drive or changes the current directory. CD is
-  100% compatible with the CHDIR command; there is no difference --
-  beside the spelling -- between them.
-```
-**Syntax:**
-```
-1. CD
-  2. CD [ drive ':' ] path
-  3. CD '-'
-  4. CD [..] [-] [\] [/?]
-    drive  The drive letter, e.g. C:
-    path   The directory, e.g. \example\
-```
-**Options:**
-```
-..  Specifies that you want to change to the parent directory.
-  -   If "last directory" feature is enabled, change to last directory.
-  \   Changes to root (C:\ or D:\ etc.)
-  /?  Shows the help.
-```
-
-### COPY
-
-```
-Copies one or more source files to another location
-```
-**Syntax:**
-```
-1. COPY [{ option }] source [{ option }] target [{ option }]
-  2. COPY [/A | /B] [drive][path]filename + [/A | /B] [drive]
-     [path]filename [+ [...]] [/A | /B] [/V] [/Y | /-Y] [/?]
-     [drive][path]filename
-     source:   The source file. If more than one source file is
-               specified, the target must be a directory.
-     target:   The target of the COPY process. If target is a directory,
-               the destination file is placed into this directory, but
-               with the same filename as the source file.
-               If exactly one source is specified, but no target, target
-               defaults to just ., which represant the current directory.
-     drive     The drive letter, e.g. C:
-     path      The directory, e.g. \example\
-     filename  The file name, e.g. test.txt
-```
-**Options:**
-```
-Unless stated otherwise all options of this command do follow the
-  standard rules for options.
-    /A  Forces ASCII mode, see below
-    /B: Specifies the mode, in which the file is copied, /A forces ASCII
-        and /B forces binary mode.
-        These options do alter the mode of the file immediately
-        preceeding them and all following ones, until changed again.
-        In binary mode the file is copied and nothing is changed at all.
-        In ASCII mode COPY takes special care about linefeeds / newline
-        characters and the end-of-line character.
-        On read, the newline characters, which are a sequence of two
-        different bytes in DOS, are transformed into a single character,
-        as known from Unix-style systems. On write, this single character
-        is transformed into the two-byte sequence.
-        So, if both files are copied with different modes, newline
-        characters are transformed into either way.
-        If the end-of-file character is found on read, the remaining
-        contents of the file is ignored. On write, such character is
-        appended after the last character has been written. By default,
-        files are copied in binary mode, whereas devices, e.g.
-        CON:, are copied in ASCII mode, but no end-of-file is appended.
-    /V  Verifies that new files are written correctly.
-    /Y  Suppresses prompting to confirm you want to overwrite an
-        existing destination file.
-    /-Y Causes prompting to confirm you want to overwrite an existing
-        destination file.
-    /?  Shows the help.
-```
-
-### DEL / ERASE
-
-```
-Del / erase deletes (erases) files.
-```
-**Syntax:**
-```
-1. DEL [{ options | pattern }]
-     ERASE [{ options | pattern }]
-  2. DEL [/P] [/V] [/?] [drive][path]filename
-     ERASE [/P] [/V] [/?] [drive][path]filename
-      drive     Specifies the drive letter where the file is, e.g. C:
-      path      Specifies the path to where the file is, e.g. \example\
-      filename  Specifies the file(s) to delete. Specify multiple
-                files by using wildcards (*,?).
-                A period may be used to specify all files in the
-                current directory, and is the same as *.*
-      pattern   If pattern matches a directory, all files within this
-                directory are deleted.
-```
-**Options:**
-```
-/P  Prompts for confirmation before deleting each file.
-  /V  Displays all deleted files.
-  /?  Shows the help.
-```
-**Comments:>**
-```
-If pattern matches a directory, all files within this directory are
-  deleted. When all files are to be deleted, a warning prompt is issued.
-  For performance reasons DEL / ERASE overwrites the first letter of
-  the filename by a '?'. It does not delete the file itself, but it
-  deallocates the space where the content of the file is written.
-  FreeDOS, as other DOSes, recognizes the renamed file (myfile.txt
-  becomes ?yfile.txt) as deleted, no longer shows it and does not
-  offer access to it. Programs like DEBUG which have sector access are
-  able to read the contents of the file. As long as you do not write on
-  the drive you have a chance to restore the file again with UNDELETE,
-  only the first character of the filename will be lost (_yfile.txt).
-  The only ways to delete the file CONTENTS FOR ABSOLUTELY CERTAIN are
-  to fill the disk completely with other files or by using a wipeout
-  tool. The only way to delete a file NAME FOR ABSOLUTELY CERTAIN is to
-  REN / RENAME the file first (e.g. "a.") and to delete it later (only
-  correct at 8.3 - not at long filenames!) You can also use ERASE
-  instead of DEL.
-  DEL is a command internal to command.com and needs no other file
-  in order to work.
-```
-
-### DIR
-
-```
-DIR displays the contens of the directory
-```
-**Syntax:**
-```
-1. DIR [{ options | pattern }]
-  2. DIR  [drive][path][filename][/P] [/W] [/A[[:]attributes]]
-    [/O[[:]sortorder]] [/S] [/B] [/L] [/Y] [/?]
-      drive     The drive letter, e.g. C:
-      path      The directory, e.g. \example\
-      filename  The file to display, e.g. test.txt
-                [drive][path][filename]
-                Specify drive, directory, and/or files to list. (Could
-                be enhanced file specification or multiple filespecs.)
-```
-**Options:**
-```
-/A:   (All) Wildcards are matched against System and Hidden files, too.
-  /A**: (Attribute) Wildcards are matched against files with selected
-        attributes set or clear. The argument of the /A option is a
-        sequence of:
-        ?  meaning: attribute ? must be set, or
-        -? meaning: attribute ? must not be set.
-    The following attributes, the ? above, are supported:
-        r | -r  Read-only files             -r Files that are not
-                                               read-only
-        h | -h  Hidden files                -h Files that are not hidden
-        s | -s  System files                -s Files that are not system
-                                               files
-        d | -d  Directories                 -d Directories
-        a | -a  Files with the archive      -a Files without the archive
-                bit                            bit
-  /B    (Bare) Displays the lines with the information of files and
-        directories only. The ones displaying the volume label, the
-        serial number, totals etc. are suppressed. In combination with
-        /S the absolute path of the files is displayed.
-  /L    (Lower-case) Filenames are displayed in lower-case letters
-        rather than capitol ones.
-  /O:   (Order default) is a synonym of /ONG.
-  /O**: (Order) Sort the entries displayed in a specific order. The
-        following sort orders are supported:
-        d | -d  By date and time            -d Date/time reverse order.
-        e | -e  By file extension A-Z       -e File extension (Z-A)
-        g | -g  Group directories first     -g Group directories last.
-        n | -n  By file name A-Z            -n By file name (Z-A)
-        s | -s  By size (smallest-biggest)  -s By size (biggest-smallest)
-        u       (unsorted)
-  Each sort order, except U, may be prefixed by a hyphen to reverse the
-  sort order. U effectively cancels any previous setting or specified
-  sort order, e.g. to override an /O option from the DIRCMD ENVIRONMENT
-  VARIABLE.
-  If the same sort order is specified twice within the same /O option,
-  the last one superceeds previous ones; if more than one /O option is
-  specified, the last one superceeds all previous ones.
-  Warning: The entries are cached within memory before displaying them;
-  if FreeCOM runs short on memory, to sort is disabled completely or
-  the entries are sorted in chunks only.
-  /P    (Page) Page the output -- pause the display after issuing one
-        screen-full.
-  /S    (Subdirectories) Recursively display directories.
-  /W    (Wide) Displays five filenames per line and suppress the
-        information about the file size, date etc.
-  /Y    (Year) Displays a 4-digit year, rather than just two digits.
-  /4    (4digit Year) is a synonym of /Y.
-  /?    Shows the help.
-```
-
-### MD / MKDIR
-
-```
-MD / MKDIR creates a directory or subdirectory.
-```
-**Syntax:**
-```
-MD [drive][path]pathname
-  MD [/?]
-     drive     The drive letter where you want to create a
-               directory, e.g. C:
-     path      The pathname which already exists, e.g. if you
-               are already in a directory.
-     pathname  The name of the directory you want to create,
-               e.g. \example. This may also be the name of a
-               subdirectory.
-```
-**Options:**
-```
-/?  Shows the help
-```
-
-### RD / RMDIR
-
-```
-RD / RMDIR removes (deletes) an empty directory.
-```
-**Syntax:**
-```
-RMDIR [drive:][path] [/?]
-  RD [drive:][path] [/?]
-        drive     The drive letter where you want to delete a
-                  directory, e.g. C:
-        path      The pathname which already exists, e.g. if you are
-                  already in a directory.
-```
-**Options:**
-```
-/?  Shows the help.
-```
-
-### REN / RENAME
-
-```
-REN / RENAME renames a file/directory or files/directories.
-```
-**Syntax:**
-```
-REN [drive][path][directoryname1 | filename1]
-      [directoryname2 | filename2] [/?]
-  RENAME [drive][path][directoryname1 | filename1]
-      [directoryname2 | filename2] [/?]
-      drive           The drive letter, e.g. C:
-      path            The directory, e.g. \example\ , complete:
-                      "C:\example\"
-      directoryname1  The name of the old subdirectory,
-                      e.g. \dir_old , complete: "C:\example\dir_old"
-      directoryname2  The name of the new subdirectory,
-                      e.g. dir_new , complete: "dir_new"
-      filename1       The old filename, e.g. \old_file.txt
-                      complete: "C:\example\old_file.txt"
-      filename2       The new filename, e.g. new_file.txt
-                      complete: "new_file.txt"
-```
-**Options:**
-```
-/?  Shows the help.
-```
-
-### TYPE
-
-```
-TYPE displays the contents of text files.
-```
-**Syntax:**
-```
-TYPE [drive][path]filename
-  TYPE [/?]
-       drive     Specifies the drive letter to where the file is,
-                 e.g. C:
-       path      Specifies the path to where the file is,
-                 e.g. \example\
-       filename  Specifies the file to display, e.g. test.txt
-```
-**Options:**
-```
-/?  Shows the help.
-```
-
-### DATE
-
-```
-Displays or sets current date.
-```
-**Syntax:**
-```
-1. DATE
-  2. DATE [ /D ]
-  3. DATE [ /D ] date
-```
-**Options:**
-```
-All options must precede any arguments.
-  none     You are prompted for a new date for your system.
-           Values for the day (dd), month (mm), and year (yy or yyyy)
-           may be seperated by periods, hyphens, or slashes. Either
-           a 4-digit or 2-digit year may be used.
-           So you can choose between:
-           mm-dd-yy or mm-dd-yyyy e.g. date 04-22-07 or 04-22-2007
-           mm/dd/yy or mm/dd/yyyy e.g. date 04/22/07 or 04/22/2007
-           mm.dd.yy or mm.dd.yyyy e.g. date 04.22.07 or 04.22.2007
-  /D       Prevents from prompting the user. The date is displayed only.
-  /D date  The date is tried to be changed, but the loop is not entered
-           on failure.
-  /?       Shows the help.
-```
-
-### TIME
-
-```
-Displays or sets current time.
-```
-**Syntax:**
-```
-1. TIME
-  2. TIME [ /T ]
-  3. TIME [ /T ] time
-```
-**Options:**
-```
-All options must precede any arguments.
-  none     You are prompted for a new time for your system.
-           hh:mm
-           hh:mm:ss
-           hh:mm:ss.ss
-           The time to set for your system.
-           'hh' is the hour on a 12 or 24 hour clock.
-           'mm' is the minute.
-           'ss.ss' is seconds and hundredths of seconds.
-  /T       Prevents from prompting the user, only he time is displayed.
-  /T time  The time is tried to be changed, but the loop is not entered
-           on failure.
-  /?       Shows the help.
-```
-
-### VER
-
-```
-VER displays the FreeDOS version information. By default,
-  only the version of the command shell (FreeCOM) is reported.
-```
-**Syntax:**
-```
-VER [/R] [/W] [/D] [/C]
-```
-**Options:**
-```
-none  Shows COMMAND.COM version number.
-  /R    Shows the KERNEL and COMMAND.COM version numbers. When
-        VERSION=x.yy is set in CONFIG.SYS / FDCONFIG.SYS
-        it also shows this DOS version number.
-  /W    Shows the FreeDOS command shell warranty.
-  /D    Shows the FreeDOS command shell distribution information.
-  /C    The FreeCOM acknowledgements section. It lists contributors.
-```
-
-### VOL
-
-```
-VOL displays the disk volume label and serial number, if they exist.
-```
-**Syntax:**
-```
-VOL [drive]
-  VOL [/?]
-      drive  Specifies the drive letter to display the volume
-             label, e.g. C: and the serial number
-```
-**Options:**
-```
-/?  Shows the help.
-```
-
-## Batch File Commands
-
-Commands for writing batch (.BAT) files.
-
-### ECHO
-
-```
-ECHO displays messages, or turns command-echoing on or off.
-  There also exists a CONFIG.SYS / FDCONFIG.SYS ECHO command.
-  ECHO is a BATCH-FILE / AUTOEXEC.BAT / FDAUTO.BAT command.
-  It can also be used in command line (except with @ - at symbol).
-```
-**Syntax:**
-```
-1. ECHO [ON | OFF]
-  2. ECHO [message (string)]
-  3. ECHO.
-```
-**Options:**
-```
-ON       ECHO mode is activated. If you use ECHO within a batch
-           file, each command line is shown when it is executed.
-  OFF      ECHO mode is deactivated. If you use ECHO within a batch
-           file, the command line is not shown when it is executed.
-           This does not affect the output of the command itself.
-  message  The message you want to print on the screen.
-  .        Displays an empty line.
-  /?       Shows the help.
-```
-
-### FOR
-
-```
-FOR runs a specified command for each file in a set of files.
-  FOR is a COMMAND LINE and a BATCH-FILE / AUTOEXEC.BAT /FDAUTO.BAT
-  command.
-```
-**Syntax:**
-```
-FOR %variable IN (set) DO command [cmd-parameters] OR:
-  FOR %%variable IN (set) DO command [cmd-paramters]
-```
-**Options:**
-```
-%variable       A name for the parameter that will be replaced
-                  with each file name. The variable may only be one
-                  character long.
-  %%variable      A name for the parameter that will be replaced
-                  with each file name. The variable may only be one
-                  character long.
-  (set)           Specifies a set of one or more files. Wildcards
-                  and ? may be used.
-  command         Specifies the command to run for each file.
-  cmd-parameters  Specifies parameters or switches for the
-                  specified command.
-```
-
-### GOTO
-
-```
-GOTO directs the command shell to a labelled line in a batch program.
-  GOTO is a BATCH-FILE / AUTOEXEC.BAT / FDAUTO.BAT command.
-```
-**Syntax:**
-```
-GOTO  [ ':' ]label
-```
-**Options:**
-```
-label  Specifies a text string used in the batch program as a label.
-         Both "goto label" and "goto :label" work.
-  /?     Shows the help
-```
-
-### IF
-
-```
-Conditional execution of a command.
-```
-**Syntax:**
-```
-1. IF [ NOT ] EXIST file "command"
-  2. IF [ NOT ] ERRORLEVEL number "command"
-  3. IF [ NOT ] string '==' word "command"
-  4. IF [ NOT ] quoted-string '==' quoted-string "command"
-  5. IF /I string==STRING
-```
-**Options:**
-```
-command              Specifies the command to carry out if the condition
-                       is met.
-  NOT                  Specifies that the command shell should carry out
-                       the command only if the condition is false.
-                       (Without this, the command will be run if the
-                       condition is true.)
-  ERRORLEVEL number:   DOS Programs return a number when they exit,
-                       which sometimes contains information on
-                       whether the program was successful. If the
-                       last program to exit returned the given number,
-                       then the condition is true.
-  string1==string2     If the two strings of characters are equal,
-                       then the condition is true.
-  exist [drive][path]  If the given file is there, then the condition
-        filename       is true.
-  /I string==STRING    Ignores uppercase / lowercase
-```
-
-### PATH
-
-```
-Display or set the search path for executable files.
-```
-**Syntax:**
-```
-1. PATH
-   2. PATH [ '=' ] { path : ';' }
-   3. PATH;
-```
-**Options:**
-```
-PATH  Displays the currently active search path.
-  PATH= Assigns the specified paths to the search path.
-        The leading equal sign, if present is ignored.
-  PATH; Empties the search path.
-  /?    Shows the help
-```
-
-### PAUSE
-
-```
-PAUSE suspends processing of a batch program and displays
-  the message:
-    "Press any key to continue...."
-  or an optional specified message.
-  PAUSE is a BATCH-FILE / AUTOEXEC.BAT / FDAUTO.BAT command.
-```
-**Syntax:**
-```
-PAUSE [message]
-```
-**Options:**
-```
-message  The message you want to be sent.
-```
-
-### SET
-
-```
-SET displays, sets, or removes ENVIRONMENT VARIABLE.
-  SET is a BATCH-FILE / AUTOEXEC.BAT / FDAUTO.BAT command.
-  It can also be used in command line.
-```
-**Syntax:**
-```
-SET [/C] [/I] [/P] [/E] [/U] [variable[=[string]]]
-  SET [/?]
-  variable  Specifies the ENVIRONMENT VARIABLE name.
-  string    Specifies a series of characters to assign to the variable.
-  * If no string is specified, the variable is removed from the
-    ENVIRONMENT.
-  Type SET without parameters to display the current environment
-  variables. Type SET VAR to display the value of VAR.
-```
-**Options:**
-```
-/C  Forces to keep the exact case of the letters of the variable name;
-      by default all letters are uppercased to keep compatibly.
-  /I: has been temporarily included to the SET command to allow an easy
-      way to display the current size of the ENVIRONMENT segment, because
-      it is one of the most frequently reported, but not reproduceable
-      bug report. Once this option has been encountered, all the
-      remaining command line is ignored.
-  /P: Prompts the user with the specified "string" and assigns the user's
-      input to the variable. If no input is made, hence, one taps just
-      ENTER, an empty value is assigned to the variable, which is then
-      removed from the ENVIRONMENT.
-  /E  Sets the given variable to the first line of output of the
-      command pointed to by [string].
-  /U  Changes the case of [string] to uppercase.
-  /?  Shows the help.
-```
-
-### CHOICE
-
-```
-CHOICE / _CHOICE suspends processing and waits for the user to press a
-  valid key from a given list of choices. Choice gives out an
-  ERRORLEVEL (EXITCODE) which can be used for further work.
-```
-**Syntax:**
-```
-CHOICE [ /B ] [ /C[:]choices ] [ /N ] [ /S ] [ /T[:]c,nn ] [ text ]
-         [/?]
-  _CHOICE [ /B ] [ /C[:]choices ] [ /N ] [ /S ] [ /T[:]c,nn ] [ text ]
-          [/?]
-```
-**Options:**
-```
-/B           Sounds an alert (beep) at prompt.
-  /C[:]choices Specifies allowable keys in the prompt. When displayed,
-               the keys will be separated by commas, will appear in
-               brackets ([]), and will be followed by a question mark.
-               If you don't specify the /C switch, choice uses YN as the
-               default, you may also be 0 - 9 or A - Z. The colon (:) is
-               optional.
-  /N           Causes choice not to display the prompt. The text before
-               the prompt is still displayed, however. If you specify
-               the /N switch, the specified keys are still valid.
-  /S           Causes choice to be case sensitive. If the /S switch is
-               not specified, choice will accept either upper or lower
-               case of the keys that the user specifies.
-  /T[:]c,nn    Causes choice to pause for a specified number of seconds
-               before defaulting to a specified key. The values for the
-               /T switch are as follows:
-               c   Specifies the character to display after nn seconds.
-                   The character must be in the set of choices specified
-                   by the /C switch.
-               nn  Specifies the number of seconds to pause. Acceptable
-                   values are from 0 to 99. If 0 is specified, there will
-                   be no pause before defaulting.
-  text       The text to display as a prompt (default=none).
-  /?         Shows the help.
-```
-
-### CLS
-
-```
-CLS clears the screen and resets the character colours to white
-  on black.
-  CLS is a BATCH-FILE / AUTOEXEC.BAT / FDAUTO.BAT command.
-  It can also be used in command line.
-```
-**Syntax:**
-```
-cls
-```
-**Options:**
-```
-- none -
-```
-
-## External Commands
-
-Utility programs in C:\FREEDOS\BIN.
-
-### EDIT
-
-```
-EDIT is the FreeDOS text editor.
-```
-**Syntax:**
-```
-edit [/B][/I][/H][/R][/?] [[drive][path]file]
-       drive  The drive letter, e.g. C:
-       path   The directory, e.g. \example\
-       file   The file, e.g. test.txt. Wildcards can be used here.
-              You can also open files within the program.
-```
-**Options:**
-```
-/B     Use a black and white (monochrome) display.
-  /I     Use inverse color scheme.
-  /H     Use 43/50 lines on EGA/VGA (highest video/text resolution
-         available).
-  /R     Open all files read-only.
-  /?     Shows the help.
-```
-
-### MEM
-
-```
-MEM displays the amount of installed and free memory in your system.
-```
-**Syntax:**
-```
-MEM [options] [/?]
-```
-**Options:**
-```
-/ALL        Show all details of high memory area (HMA).
-  /C          Classify modules using memory below 1 MB.
-  /D          Same as /DEBUG by default, same as /DEVICE if /OLD used.
-  /DEBUG      Show programs and devices in conventional and upper memory.
-  /DEVICE     List of device drivers currently in memory.
-  /E          Reports all information about Expanded Memory.
-  /F          Same as /FREE by default, same as /FULL if /OLD used.
-  /FREE       Show free conventional and upper memory blocks.
-  /FULL       Full list of memory blocks.
-  /M (name) | /MODULE (name)
-              Show memory used by the given program or driver.
-  /NOSUMMARY  Do not show the summary normally displayed when no other
-              options are specified.
-  /OLD        Compatability with FreeDOS MEM 1.7 beta.
-  /P          Pauses after each screenful of information.
-  /SUMMARY    Negates the /NOSUMMARY option.
-  /U          List of programs in conventional and upper memory.
-  /X          Reports all information about Extended Memory.
-  /?          Shows the help.
-```
-
-### MORE
-
-```
-MORE displays a text file or the output of a command one screen
-  at a time.
-```
-**Syntax:**
-```
-more < [drive][path]file
-  command | MORE [/Tn]
-  MORE [/Tn] file
-  MORE [/Tn] < file
-  MORE [/?]
-       drive     Specifies the drive letter where the file is, e.g. C:
-       path      Specifies the path to where the file is, e.g. \example\
-       filename  Specifies the file you want to display, e.g. test.txt
-       command   A command whose output you will pipe to the more program.
-```
-**Options:**
-```
-Tn  Sets the tabulator size to n, n has to be in the range
-      between 1 and 9.
-  /?  Shows the help.
-  Keys:
-    Space  Next page (only while viewing a file)
-    N n    Next file (only while viewing a file)
-    Q q    Quit program (only while viewing a file)
-```
-
-### DELTREE
-
-```
-FreeDOS DELTREE.COM is a freeware clone of Microsoft's DELTREE.EXE, a
-  utility for quickly deleting files and directories with all included
-  files and subdirectories.
-  DELTREE doesn't care any file attributes, it does its job even files
-  and directories have read-only, hidden or system-attributes!
-```
-**Syntax:**
-```
-DELTREE [/?] [/Y] [/V] [/D] [/X] filespec [filespec...] [@filelist]
-          drive  The drive letter, e.g. C:
-          path   The directory, e.g. \example
-```
-**Options:**
-```
-/Y            Deletes specified items without prompting.
-  /V            Report counts and totals when finished.
-  /D            Displays the debug info.
-  /X            For testing; don't actually delete anything.
-   @            FLAG to indicate the specified file as a "DR-DOS-type"
-                filelist.
-  /?            Shows the help.
-```
-
-### XCOPY
-
-```
-XCOPY copies files and directories, including subdirectories.
-```
-**Syntax:**
-```
-XCOPY source [destination] [options]
-        source       Specifies the directory and/or name of file(s) to
-                     copy. The source must be either a drive or a full
-                     path.
-        destination  Specifies the location and/or name of new file(s).
-                     The destination to copy to. If not present, xcopy
-                     assumes the working directory.
-```
-**Options:**
-```
-/A          Copies only files with the archive attribute set and
-              doesn't change the attribute.
-  /C          Continues copying even if errors occur.
-  /D[:M/D/Y]  Copies only files which have been changed on or after the
-              specified date. When no date is specified, only files which
-              are newer than existing destination files will be copied.
-  /E          Copies any subdirectories, even if empty.
-  /F          Display full source and destination name.
-  /H          Copies hidden and system files as well as unprotected
-              and system files.
-  /I          If destination does not exist and copying more than one
-              file, assume destination is a directory.
-  /L          List files without copying them. (simulates copying).
-  /M          Copies only files with the archive attribute set and turns
-              off the archive attribute of the source files after copying
-              them.
-  /N          Suppresses prompting to confirm you want to overwrite an
-              existing destination file and skips these files.
-  /P          Prompts for confirmation before creating each destination
-              file.
-  /Q          Quiet mode, don't show copied filenames.
-  /R          Overwrite read-only files as well as unprotected files.
-  /S          Copies directories and subdirectories except empty ones.
-  /T          Creates directory tree without copying files. Empty
-              directories will not be copied. To copy them add switch /E.
-  /V          Verifies each new file.
-  /W          Waits for a keypress before beginning.
-  /Y          Suppresses prompting to confirm you want to overwrite an
-              existing destination file and overwrites these files.
-  /-Y         Causes prompting to confirm you want to overwrite an
-              existing destination file.
-  /?          Shows the help.
-```
-
-### FORMAT
-
-```
-FORMAT formats a hard drive or floppy disk. This prepares the medium
-  for the use with FreeDOS. FDISK is not needed for floppy disks!
-```
-**Syntax:**
-```
-Simplified syntax:
-    FORMAT drive [/V[:label]] [/Q] [/U] [/F:size] [/S] [/D]
-    FORMAT drive [/V[:label]] [/Q] [/U] [/T:tracks /N:sectors] [/S] [/D]
-    FORMAT drive [/V[:label]] [/Q] [/U] [/4] [/S] [/D]
-    FORMAT [/?]
-  Full syntax (including new features and backwards compatibility
-  options):
-  Harddisk drives:
-    FORMAT drive: [/V[:label]] [/Q] [/U] [/Z:seriously]
-                  [/S] [/A] [/D] [/Y]
-  New features, all drives:
-    FORMAT drive: [/Z:mirror | /Z:unformat] [/D] [/Y]
-  Floppy disk drives:
-    FORMAT drive: [/V[:label]] [/Q] [/U] [/F:size]
-                  [/B | /S] [/D] [/Y]
-    FORMAT drive: [/V[:label]] [/Q] [/U] [/T:cyls /N:sect]
-                  [/B | /S] [/D] [/Y]
-    FORMAT drive: [/V[:label]] [/Q] [/U] [/1] [/4]
-                  [/B | /S] [/D] [/Y]
-  Old DOS 1.x floppy disks:
-    FORMAT drive: /8 [/Q] [/U] [/1] [/4] [/B | /S] [/D] [/Y]
-
-         drive  The drive letter, e.g. C:
-```
-**Options:**
-```
-/1            Format a single-sided floppy disk (160k/180k).
-  /4            Format a 160k/360k floppy disk in a 1.2 MB floppy drive.
-                As 1.2 MB uses narrower tracks, format can be too weak
-                for 360k drives.
-  /8            Format a 5-1/4 inch floppy disk with 8 sectors per track
-                (160k/320k, DOS 1.x).
-  /A            Force metadata (reserved/boot sectors and FAT32s
-                together) to be a multiple of 4k in size. The NTFS
-                converter of WinXP wants that.
-  /B            Reserve space to make a bootable disk (is dummy and
-                cannot be combined with /s (SYS).
-  /D            Be very verbose and show DEBUGGING output. For bug
-                reports (always allowed). This even changes the returned
-                error levels to be more "verbose".
-  /F:size       Specifies the size of the floppy disk to format. Normal
-                sizes are: 160, 180, 320, 360, 720, 1200, 1440, or 2880.
-                To format to 720k in a drive which can do 1440k or more,
-                you must use 720k DD media. /F shows a list of allowed
-                sizes.
-  /N:sectors    Specifies the number of sectors per track on a floppy
-                disk.
-  /Q            Quick formats the disk. The disk can be UNFORMATed and
-                the bad cluster list is preserved (not preserved in
-                /Q /U mode). This is the default if an existing
-                filesystem is found.
-  /Q /U         Quick formats the disk but does NOT preserve unformat
-                data and does NOT wipe or scan the surface. Just deletes
-                everything FAST. This is the default if an unformatted
-                harddisk is detected.
-  /S            Copies the operating system files to make the disk
-                bootable. Needs SYS. The displayed size info describes
-                the pre-SYS state!
-  /T:tracks     Specifies the number of tracks on a floppy disk.
-  /U            Unconditionally formats the disk. The disk cannot be
-                UNFORMATed. Causes lowlevel format for floppy and
-                surface scan, overwriting all data with "empty" sectors,
-                for harddisk. This is the default if an unformatted
-                floppy is detected. NOTE: This option may last VERY
-                VERY long! Press ESC and wait to exit /U.
-  /V:label      Specifies a volume LABEL for the disk, stores date and
-                time of it (is not for 160k/320k disks).
-  /Y            Do not prompt for a new floppy, just format at once.
-                Similar to /AUTOTEST and /BACKUP switches in other
-                FORMAT implementations. (Always allowed).
-  /Z:longhelp   Gives detailed, technical usage information.
-  /Z:mirror     Just save the "MIRROR" data for a later UNFORMAT. This
-                will overwrite the very end of the disk with a copy of
-                one FAT, root directory and main boot sector. If this
-                space is in use, MIRROR will fail (new feature 0.91r).
-                To force, you MIGHT use SafeFormat plus UnFormat instead
-                - SafeFormat is allowed to overwrite data. It is not
-                possible to save mirror data to another location.
-  /Z:seriously  Suppresses the confirmation request when you use format
-                with a hard disk. Similar to the /AUTOTEST switch in
-                other FORMAT implementations.
-  /Z:unformat   This will "restore" saved "MIRROR" data (copy it back,
-                overwriting your FATs etc. with the backup). Do ONLY use
-                this if you have just accidentally formatted a disk. In
-                all other situations, UNFORMAT can seriously trash the
-                disk contents.
-  /?            Shows the help.
-```
-
-### FDISK
-
-```
-FDISK creates one or several partitions on a hard disk. After this,
-  the partitions can be formatted and are ready to work with FreeDOS.
-  To make them bootable you may have to set an 'active partition' and
-  to run 'fdisk /ipl' (or: 'fdisk /mbr') and 'sys c:'.
-  FDISK is not needed for floppy disks!
-```
-**Syntax:**
-```
-FDISK [drive#][argument]...
-  no argument       Runs in interactive mode.
-  /INFO             Displays partition information of <drive#>.
-  /REBOOT           Reboots the Computer.
-```
-**Options:**
-```
-Commands to create and delete partitions:
-  <size>  is a number for megabytes or MAX for maximum size
-          or <number>,100 for <number> to be in percent.
-  <type#> is a numeric partition type or FAT-12/16/32 if /SPEC not given.
-
-  /PRI:<size> [/SPEC:<type#>]              Creates a primary partition.
-  /EXT:<size>                              Creates an Extended DOS
-                                           Partition.
-  /LOG:<size> [/SPEC:<type#>]              Creates a logical drive.
-  /PRIO,/EXTO,/LOGO                        Same as above, but avoids
-                                           FAT32.
-  /AUTO                                    Automatically partitions the
-                                           disk.
-  /DELETE {/PRI[:#] | /EXT | /LOG:<part#>  Deletes a partition.
-           | /NUM:<part#>}                 ...logical drives start at
-                                           /NUM=5.
-  /DELETEALL                               Deletes all Partitions from
-                                           <drive#>.
-
-Setting active partitions:
-  /ACTIVATE:<partition#>                   Sets <partition#> active.
-  /DEACTIVATE                              Deactivates all partitions.
-
-MBR (Master Boot Record) management:
-  /CLEARMBR               Deletes all partitions and boot code.
-  /LOADMBR                Loads part. table and code from "boot.mbr"
-                          into MBR.
-  /SAVEMBR                Saves partition table and code into file
-                          "boot.mbr".
-
-MBR code modifications leaving partitions intact:
-  /IPL                    Installs the standard boot code into MBR
-                          <drive#>.
-                          ...Same as /MBR and /CMBR for compatibility.
-  /SMARTIPL               Installs DriveSmart IPL into MBR <drive#>.
-  /LOADIPL                Writes 440 code bytes from "boot.mbr" into MBR.
-
-Advanced partition table modification:
-  /MODIFY:<part#>,<type#>                    Changes partition type to
-                                             <type#>. ...Logical drives
-                                             start at "5".
-  /MOVE:<srcpart#>,<destpart#>               Moves primary partitions.
-  /SWAP:<1stpart#>,<2ndpart#>                Swaps primary partitions.
-
-For handling flags on a hard disk:
-  /CLEARFLAG[{:<flag#>} | /ALL}]             Resets <flag#> or all on
-                                             <drive#>.
-  /SETFLAG:<flag#>[,<value>]                 Sets <flag#> to 1 or
-                                             <value>.
-  /TESTFLAG:<flag#>[,<value>]                Tests <flag#> for 1 or
-                                             <value>.
-
-For obtaining information about the hard disk(s):
-  /STATUS       Displays the current partition layout.
-  /DUMP         Dumps partition information from all hard disks
-               (for debugging).
-
-Interactive user interface switches:
-  /UI           Always starts UI if given as last argument.
-  /MONO         Forces the user interface to run in monochrome mode.
-  /FPRMT        Prompts for FAT32/FAT16 in interactive mode.
-  /XO           Enables extended options.
-
-Compatibility options:
-  /X            Disables ext. INT 13 and LBA for the following commands.
-```
-
-### LABEL
-
-```
-LABEL creates, changes or deletes the volume label of a disk.
-```
-**Syntax:**
-```
-LABEL  [drive:][label] [/?]
-    drive:  Specifies which drive you want to assign a label, e.g. C:
-            If missing, the current drive is assumed.
-```
-**Options:**
-```
-label  Specifies the new LABEL you want to label the drive.
-         If missing, LABEL prompts you for it.
-  /?     Shows the help.
-```
-
-### ATTRIB
-
-```
-ATTRIB displays or changes file attributes.
-```
-**Syntax:**
-```
-ATTRIB { options | [drive][path]filename | /@[list] }
-         drive     The drive letter, e.g. C:
-         path      The directory, e.g. \example\
-         filename  The file, e.g. test.exe
-```
-**Options:**
-```
-+A  Sets the Archive attribute.
-  -A  Clears the Archive attribute.
-  +H  Sets the Hidden attribute.
-  -H  Clears the Hidden attribute.
-  +R  Sets the Read-only attribute.
-  -R  Clears the Read-only attribute.
-  +S  Sets the System attribute.
-  -S  Clears the System attribute.
-  /@  Process files, listed in the specified file [or in stdin].
-  /D  Process directory names for arguments with wildcards.
-  /S  Process files in all directories in the specified path(es).
-  /?  Shows the help.
-```
-
-## Additional Commands
-
-These commands are specific to this app and are not part of standard FreeDOS.
-
-### R (Read from Host)
-
-Copies a file from your device (iPad/Mac) into DOS.
-
-```
-R <host-filename> <dos-path>
-```
-
-### W (Write to Host)
-
-Copies a file from DOS to your device.
-
-```
-W <dos-path> <host-filename>
-```
-
-### NET
-
-Loads the NE2000 network driver and gets an IP address via DHCP.
-
-```
-NET
-```
-
-After running NET, FTP, TELNET, PING, and HTGET are available.
+Commands and utilities included with FreeDOS. This reference is adapted from the [FreeDOS Help project](https://github.com/FDOS/help).
 
 ---
 
-Reference: FreeDOS Help Project (https://github.com/FDOS/help), licensed under GFDL.
+## Internal Commands
+
+These commands are built into COMMAND.COM (FreeCom) and are always available.
+
+### CD / CHDIR
+
+Change or display the current directory.
+
+**Syntax:**
+
+```
+CD [drive:]path
+CD ..
+CD \
+CD -
+```
+
+**Options:**
+
+- `..` -- Change to the parent directory.
+- `\` -- Change to the root directory.
+- `-` -- Change to the last visited directory (if LAST_DIR feature is enabled).
+
+CD does not change the currently selected drive. Use the drive letter (e.g. `D:`) to switch drives.
+
+---
+
+### COPY
+
+Copy one or more files to another location.
+
+**Syntax:**
+
+```
+COPY [/A | /B] source [+ source2 ...] [destination] [/V] [/Y | /-Y]
+```
+
+**Options:**
+
+- `/A` -- ASCII mode (handles newline conversion and end-of-file character).
+- `/B` -- Binary mode (copies file unchanged; this is the default for files).
+- `/V` -- Verify that new files are written correctly.
+- `/Y` -- Suppress prompting to confirm overwrites.
+- `/-Y` -- Prompt to confirm overwrites.
+
+The COPYCMD environment variable can preset `/Y` (use `SET COPYCMD=/Y`).
+
+---
+
+### DEL / ERASE
+
+Delete one or more files.
+
+**Syntax:**
+
+```
+DEL [/P] [/V] [drive:][path]filename
+```
+
+**Options:**
+
+- `/P` -- Prompt for confirmation before deleting each file.
+- `/V` -- Display all deleted files.
+
+Wildcards (`*`, `?`) are supported. If a directory is specified, all files within it are deleted. DEL does not erase file contents from disk -- it marks entries as deleted. Use UNDELETE to attempt recovery.
+
+---
+
+### DIR
+
+Display the contents of a directory.
+
+**Syntax:**
+
+```
+DIR [drive:][path][filename] [/P] [/W] [/A[:attribs]] [/O[:sort]] [/S] [/B] [/L] [/Y]
+```
+
+**Options:**
+
+- `/A:attribs` -- Filter by attributes: `R` read-only, `H` hidden, `S` system, `D` directories, `A` archive. Prefix with `-` to exclude.
+- `/B` -- Bare format (filenames only).
+- `/L` -- Display filenames in lowercase.
+- `/O:sort` -- Sort order: `N` name, `E` extension, `S` size, `D` date, `G` group dirs first. Prefix with `-` to reverse.
+- `/P` -- Pause after each screenful.
+- `/S` -- Include subdirectories recursively.
+- `/W` -- Wide list format (5 columns).
+- `/Y` or `/4` -- Display 4-digit year.
+
+The DIRCMD environment variable can preset options.
+
+---
+
+### MD / MKDIR
+
+Create a new directory.
+
+**Syntax:**
+
+```
+MD [drive:]path
+```
+
+In pure DOS the directory name must not be longer than 8 characters. If you type `MD dirname` without a path, the directory is created as a subdirectory of the current directory.
+
+---
+
+### RD / RMDIR
+
+Remove an empty directory.
+
+**Syntax:**
+
+```
+RD [drive:]path
+```
+
+RD only removes empty directories. Remove all files (including hidden ones) and subdirectories first. Use DELTREE to remove a directory tree in one step.
+
+---
+
+### REN / RENAME
+
+Rename a file or directory.
+
+**Syntax:**
+
+```
+REN [drive:][path]oldname newname
+```
+
+The destination must not contain a path -- the file is renamed in place. Wildcards in the destination are replaced by corresponding characters from the source name.
+
+---
+
+### TYPE
+
+Display the contents of a text file.
+
+**Syntax:**
+
+```
+TYPE [drive:][path]filename
+```
+
+Use `TYPE filename | MORE` to page through long files.
+
+---
+
+### DATE
+
+Display or set the system date.
+
+**Syntax:**
+
+```
+DATE [/D] [date]
+```
+
+**Options:**
+
+- `/D` -- Display date only, do not prompt for a new date.
+
+Date format depends on the country setting. For US format: `MM/DD/YYYY` or `MM-DD-YYYY`.
+
+---
+
+### TIME
+
+Display or set the system time.
+
+**Syntax:**
+
+```
+TIME [/T] [time]
+```
+
+**Options:**
+
+- `/T` -- Display time only, do not prompt for a new time.
+
+Time format: `HH:MM[:SS[.hundredths]]`. AM/PM modifiers are accepted.
+
+---
+
+### VER
+
+Display FreeDOS version information.
+
+**Syntax:**
+
+```
+VER [/R] [/W] [/D] [/C]
+```
+
+**Options:**
+
+- `/R` -- Show kernel and COMMAND.COM version numbers.
+- `/W` -- Show warranty information.
+- `/D` -- Show distribution information.
+- `/C` -- Show contributor acknowledgements.
+
+---
+
+### VOL
+
+Display the disk volume label and serial number.
+
+**Syntax:**
+
+```
+VOL [drive:]
+```
+
+Each drive can have its own volume label (up to 11 characters), set with LABEL or FORMAT /V.
+
+---
+
+### CLS
+
+Clear the screen and reset character colors to white on black.
+
+**Syntax:**
+
+```
+CLS
+```
+
+---
+
+## Batch File Commands
+
+Commands for writing batch (.BAT) files. Most of these are built into COMMAND.COM.
+
+### ECHO
+
+Display messages or turn command echoing on/off.
+
+**Syntax:**
+
+```
+ECHO [ON | OFF]
+ECHO [message]
+ECHO.
+```
+
+**Usage:**
+
+- `ECHO ON` / `ECHO OFF` -- Enable or disable display of each command line as it executes.
+- `ECHO message` -- Print a message to the screen.
+- `ECHO.` -- Print a blank line (no space between ECHO and the dot).
+- `@ECHO OFF` -- The `@` prefix suppresses display of the ECHO command itself. Typically placed on the first line of a batch file.
+
+Use `>` to redirect output to a file: `ECHO text > file.txt`. Use `>>` to append.
+
+---
+
+### FOR
+
+Run a command for each item in a set.
+
+**Syntax:**
+
+```
+FOR %variable IN (set) DO command
+FOR %%variable IN (set) DO command
+```
+
+Use `%` on the command line and `%%` in batch files. The variable is a single character and is case-sensitive. The set can contain filenames (with wildcards) or literal values separated by spaces or commas.
+
+---
+
+### GOTO
+
+Jump to a labeled line in a batch file.
+
+**Syntax:**
+
+```
+GOTO label
+```
+
+Labels are defined as `:label` on a line by itself (colon in column 1). If a label appears more than once, the first occurrence is used. Combine with IF for conditional branching.
+
+---
+
+### IF
+
+Conditionally execute a command.
+
+**Syntax:**
+
+```
+IF [NOT] EXIST filename command
+IF [NOT] ERRORLEVEL number command
+IF [NOT] string1==string2 command
+IF /I string1==string2 command
+```
+
+**Conditions:**
+
+- `EXIST filename` -- True if the file exists. Wildcards supported.
+- `ERRORLEVEL number` -- True if the last program's exit code is greater than or equal to `number`.
+- `string1==string2` -- True if the strings match (case-sensitive). Use `/I` for case-insensitive comparison.
+- `NOT` -- Negates the condition.
+
+Tip: Quote strings to handle spaces: `IF "%1"=="" GOTO usage`.
+
+---
+
+### PATH
+
+Display or set the search path for executables.
+
+**Syntax:**
+
+```
+PATH
+PATH [=] dir1;dir2;dir3
+PATH ;
+```
+
+**Usage:**
+
+- `PATH` with no arguments displays the current search path.
+- `PATH dir1;dir2` sets the path. The current directory is always searched first.
+- `PATH ;` clears the search path.
+- Append to existing path: `PATH %PATH%;C:\NEWDIR`
+
+---
+
+### PAUSE
+
+Suspend batch file execution and wait for a keypress.
+
+**Syntax:**
+
+```
+PAUSE [message]
+```
+
+Displays "Press any key to continue..." or the specified message. Use `PAUSE > NUL` to pause without displaying any prompt.
+
+---
+
+### SET
+
+Display, set, or remove environment variables.
+
+**Syntax:**
+
+```
+SET [variable[=[value]]]
+SET /P variable=[prompt]
+SET /E variable=command
+```
+
+**Options:**
+
+- No arguments: display all environment variables.
+- `SET VAR=value` -- Set variable VAR to value.
+- `SET VAR=` -- Remove the variable.
+- `/P` -- Prompt the user for a value.
+- `/E` -- Set variable to the output of a command.
+- `/U` -- Convert value to uppercase.
+- `/C` -- Preserve case of the variable name (default uppercases it).
+
+Use `%VAR%` to reference a variable's value in commands and batch files.
+
+---
+
+### CHOICE
+
+Prompt the user to make a selection and set ERRORLEVEL.
+
+**Syntax:**
+
+```
+CHOICE [/B] [/C:choices] [/N] [/S] [/T:c,nn] [text]
+```
+
+**Options:**
+
+- `/B` -- Beep when prompting.
+- `/C:choices` -- Specify allowed keys (default: YN). Can be letters or digits.
+- `/N` -- Do not display the choice keys in brackets.
+- `/S` -- Make choices case-sensitive.
+- `/T:c,nn` -- Default to key `c` after `nn` seconds.
+
+ERRORLEVEL is set to the position of the key pressed (1 for the first choice, 2 for the second, etc.). Use with IF ERRORLEVEL to branch.
+
+Note: CHOICE is an external command (not built into COMMAND.COM).
+
+---
+
+### REM
+
+Add a comment (remark) to a batch file.
+
+**Syntax:**
+
+```
+REM [comment text]
+```
+
+Everything on a REM line is ignored. In CONFIG.SYS/FDCONFIG.SYS, you can also use `;` for comments, but in batch files only `REM` works.
+
+---
+
+## External Commands
+
+Utility programs found in C:\FREEDOS\BIN. These are separate executables.
+
+### COMMAND
+
+Start a new copy of the FreeDOS command shell (FreeCom).
+
+**Syntax:**
+
+```
+COMMAND [[drive:]path] [/E:nnnnn] [/P] [/C command] [/K command]
+```
+
+**Key options:**
+
+- `/E:nnnnn` -- Set environment size (256--32768 bytes).
+- `/P` -- Make the shell permanent (cannot EXIT).
+- `/C command` -- Execute command and return.
+- `/K command` -- Execute command and keep running.
+- `/MSG` -- Store error messages in memory (requires /P).
+- `/LOW` -- Keep resident data in low memory.
+
+In FDCONFIG.SYS, typically used as: `SHELL=C:\FREEDOS\BIN\COMMAND.COM C:\FREEDOS\BIN /E:1024 /P=C:\FDAUTO.BAT`
+
+---
+
+### EDIT
+
+The FreeDOS text editor.
+
+**Syntax:**
+
+```
+EDIT [/B] [/I] [/H] [/R] [file]
+```
+
+**Options:**
+
+- `/B` -- Black and white (monochrome) display.
+- `/I` -- Inverse color scheme.
+- `/H` -- Use highest available text resolution (43/50 lines).
+- `/R` -- Open files read-only.
+
+EDIT has a built-in help system, supports mouse input, and includes features like a calendar and ASCII table. Cannot open files larger than 64 KB.
+
+---
+
+### MEM
+
+Display the amount of installed and free memory.
+
+**Syntax:**
+
+```
+MEM [/C] [/D] [/E] [/F] [/U] [/X] [/P]
+```
+
+**Key options:**
+
+- `/C` -- Classify modules using memory below 1 MB.
+- `/D` or `/DEBUG` -- Show programs and devices in conventional and upper memory.
+- `/E` -- Report expanded memory (EMS) information.
+- `/F` or `/FREE` -- Show free conventional and upper memory blocks.
+- `/U` -- List programs in conventional and upper memory.
+- `/X` -- Report extended memory (XMS) information.
+- `/P` -- Pause after each screenful.
+
+Useful for diagnosing memory issues when programs crash or refuse to load.
+
+---
+
+### MORE
+
+Display output one screen at a time.
+
+**Syntax:**
+
+```
+MORE [/Tn] file [file2 ...]
+command | MORE
+MORE < file
+```
+
+**Options:**
+
+- `/Tn` -- Set tab size to n (1--9).
+
+**Keys while viewing:**
+
+- `Space` -- Next page.
+- `N` -- Next file.
+- `Q` -- Quit.
+
+Supports wildcards and long filenames.
+
+---
+
+### DELTREE
+
+Delete an entire directory tree including all files and subdirectories.
+
+**Syntax:**
+
+```
+DELTREE [/Y] [/V] filespec [filespec ...]
+```
+
+**Options:**
+
+- `/Y` -- Delete without prompting. Use with caution.
+- `/V` -- Report counts and totals when finished.
+- `/X` -- Test mode: show what would be deleted without actually deleting.
+- `/D` -- Show debug information.
+
+DELTREE ignores file attributes (read-only, hidden, system) and deletes everything.
+
+---
+
+### XCOPY
+
+Copy files and directory trees.
+
+**Syntax:**
+
+```
+XCOPY source [destination] [options]
+```
+
+**Key options:**
+
+- `/S` -- Copy subdirectories (except empty ones).
+- `/E` -- Copy subdirectories including empty ones.
+- `/H` -- Copy hidden and system files.
+- `/R` -- Overwrite read-only files.
+- `/P` -- Prompt before creating each file.
+- `/D[:date]` -- Copy only files changed on or after the specified date.
+- `/A` -- Copy files with archive attribute set (don't clear it).
+- `/M` -- Copy files with archive attribute set (clear it after copy).
+- `/V` -- Verify each new file.
+- `/Y` -- Suppress overwrite prompts.
+- `/Q` -- Quiet mode.
+- `/C` -- Continue copying even if errors occur.
+- `/I` -- Assume destination is a directory when copying multiple files.
+
+---
+
+### FORMAT
+
+Format a disk for use with FreeDOS.
+
+**Syntax:**
+
+```
+FORMAT drive: [/V[:label]] [/Q] [/U] [/F:size] [/S]
+```
+
+**Key options:**
+
+- `/V:label` -- Set volume label.
+- `/Q` -- Quick format (preserves unformat data; this is the default for formatted disks).
+- `/Q /U` -- Quick full format (fast, no recovery data).
+- `/U` -- Unconditional format with surface scan (slow, destroys all data).
+- `/F:size` -- Floppy size: 160, 180, 320, 360, 720, 1200, 1440, or 2880.
+- `/S` -- Copy system files to make the disk bootable (requires SYS).
+- `/A` -- Force 4K alignment for FAT32 metadata.
+
+Supports FAT12, FAT16, and FAT32.
+
+---
+
+### FDISK
+
+Create and manage hard disk partitions.
+
+**Syntax:**
+
+```
+FDISK                              (interactive mode)
+FDISK [drive#] /INFO               (display partition info)
+FDISK [drive#] /PRI:size           (create primary partition)
+FDISK [drive#] /EXT:size           (create extended partition)
+FDISK [drive#] /LOG:size           (create logical drive)
+FDISK [drive#] /ACTIVATE:part#     (set active partition)
+FDISK [drive#] /DELETE /PRI[:n]    (delete primary partition)
+FDISK [drive#] /AUTO               (auto-partition)
+FDISK [drive#] /STATUS             (display partition layout)
+FDISK [drive#] /IPL                (install standard boot code)
+FDISK [drive#] /CLEARMBR           (delete all partitions and boot code)
+```
+
+FreeDOS supports up to four primary partitions. For more than four, create up to three primary partitions plus one extended partition containing logical drives. Only primary partitions can be booted.
+
+After partitioning, use FORMAT to prepare partitions and SYS to make them bootable.
+
+---
+
+### LABEL
+
+Create, change, or delete a disk volume label.
+
+**Syntax:**
+
+```
+LABEL [drive:] [label]
+```
+
+The label can be up to 11 characters. If no label is specified, LABEL prompts for one. Network and SUBSTed drives cannot be labeled.
+
+---
+
+### ATTRIB
+
+Display or change file attributes.
+
+**Syntax:**
+
+```
+ATTRIB [+|-R] [+|-A] [+|-S] [+|-H] [/S] [/D] [drive:][path]filename
+```
+
+**Attributes:**
+
+- `R` -- Read-only.
+- `A` -- Archive (set when a file is modified).
+- `S` -- System.
+- `H` -- Hidden.
+
+Use `+` to set and `-` to clear. `/S` processes files in subdirectories. `/D` processes directory names with wildcards.
+
+---
+
+### CHKDSK
+
+Check a disk for errors.
+
+**Syntax:**
+
+```
+CHKDSK [volume] [/F] [/R] [/S] [/V]
+```
+
+**Options:**
+
+- `/F` -- Attempt to fix errors found.
+- `/R` -- Scan the data area and try to recover unreadable data (slow).
+- `/S` -- Show drive summary only.
+- `/V` -- Show filenames as they are checked.
+
+Note: CHKDSK supports FAT16 only. For FAT32, use DOSFSCK.
+
+---
+
+## Configuration (FDCONFIG.SYS)
+
+FreeDOS reads FDCONFIG.SYS (or CONFIG.SYS if FDCONFIG.SYS does not exist) at startup to configure the system. It must be in the root directory of the boot drive. It is read before AUTOEXEC.BAT / FDAUTO.BAT.
+
+Press **F5** during boot to skip CONFIG.SYS and AUTOEXEC.BAT entirely. Press **F8** to confirm each line individually.
+
+### Common Directives
+
+| Directive | Description |
+|-----------|-------------|
+| `DOS=HIGH,UMB` | Load DOS kernel into high memory area and enable upper memory blocks |
+| `DEVICE=driver` | Load a device driver |
+| `DEVICEHIGH=driver` | Load a device driver into upper memory |
+| `FILES=n` | Set maximum number of open files (default 8, typical 40) |
+| `BUFFERS=n` | Set number of disk buffers |
+| `LASTDRIVE=Z` | Set the last available drive letter |
+| `SHELL=path` | Specify the command shell to use |
+| `SHELLHIGH=path` | Load the command shell into upper memory |
+| `COUNTRY=code,codepage,file` | Set country-specific date/time/currency formats |
+| `SET VAR=value` | Set an environment variable |
+| `INSTALL=program` | Run a TSR program during boot |
+| `DOSDATA=UMB` | Load DOS data tables into upper memory |
+| `STACKS=n,size` | Set interrupt stack allocation |
+| `NUMLOCK=ON\|OFF` | Set NumLock state at boot |
+
+### Menu System
+
+FDCONFIG.SYS supports boot menus for choosing between configurations:
+
+```
+MENUDEFAULT=1,5
+MENU 1 - Load with JEMM386 (no EMS)
+MENU 2 - Load with JEMM386 (EMS)
+MENU 3 - Safe Mode
+MENU 4 - Emergency Mode
+```
+
+Prefix lines with menu numbers to make them conditional: `12?DOS=HIGH` runs only for menu choices 1 and 2. Prefix with `!` to run for all menu choices: `!SET DOSDIR=C:\FREEDOS`.
+
+### Typical Configuration
+
+```
+SET DOSDIR=C:\FREEDOS
+LASTDRIVE=W
+BUFFERS=20
+FILES=40
+DOS=HIGH
+DOS=UMB
+DOSDATA=UMB
+DEVICE=C:\FREEDOS\BIN\himemx.exe
+DEVICE=C:\FREEDOS\BIN\jemm386.exe NOEMS X=TEST I=TEST I=B000-B7FF
+SHELLHIGH=C:\FREEDOS\BIN\command.com C:\FREEDOS\BIN /E:1024 /P=C:\FDAUTO.BAT
+```
+
+---
+
+*Content adapted from the FreeDOS Help system (github.com/FDOS/help), originally by Jim Hall, Robert Platt, W. Spiegl, and the FreeDOS community. Licensed under the terms described in the FreeDOS Help H2Cpying file.*

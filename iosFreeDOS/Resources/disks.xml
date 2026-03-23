@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<catalog version="24">
+<catalog version="25">
     <!-- ===========================================
          Bootable disk images (shipped in release)
          =========================================== -->
@@ -10,7 +10,7 @@
         <description>200MB bootable hard disk with FreeDOS 1.4, 230 utilities, archivers, editors, and disk tools.</description>
         <size>210051072</size>
         <license>GPL</license>
-        <sha256>92488c5cd1b028af605f39276c43ada1b0ddb9cd7f33bd484dbe560b94294f4c</sha256>
+        <sha256>c92eefdf145fc2ff380881d62140ac2aa75a2319debbe1426afdca08aaa84c1c</sha256>
     </disk>
     <disk>
         <filename>freedos_starter.img</filename>

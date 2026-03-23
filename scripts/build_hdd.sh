@@ -30,8 +30,8 @@ find_iso() {
   done
 }
 
-LIVEISO=$(find_iso "FD14LIVE.iso")
-BONUSISO=$(find_iso "FD14BNS.iso")
+LIVEISO=$(find_iso "FD14LIVE.iso" || true)
+BONUSISO=$(find_iso "FD14BNS.iso" || true)
 
 echo "LiveCD ISO:  ${LIVEISO:-not found}"
 echo "Bonus ISO:   ${BONUSISO:-not found}"
@@ -247,26 +247,10 @@ fi
 # =========================================================================
 # 6. Configuration
 # =========================================================================
-cat > /tmp/FDCONFIG.SYS << 'CFGEOF'
-LASTDRIVE=Z
-FILES=40
-BUFFERS=20
-DOS=HIGH
-SHELL=C:\COMMAND.COM C:\ /E:1024 /P
-CFGEOF
+printf 'LASTDRIVE=Z\r\nFILES=40\r\nBUFFERS=20\r\nDOS=HIGH\r\nSHELL=C:\\COMMAND.COM C:\\ /E:1024 /P\r\n' > /tmp/FDCONFIG.SYS
 mcopy -D o /tmp/FDCONFIG.SYS c:
 
-cat > /tmp/AUTOEXEC.BAT << 'BATEOF'
-@ECHO OFF
-SET DOSDIR=C:\FREEDOS
-SET PATH=C:\FREEDOS\BIN
-SET NLSPATH=C:\FREEDOS\NLS
-SET TEMP=C:\TEMP
-SET DIRCMD=/OGN
-PROMPT $P$G
-IF NOT EXIST C:\TEMP\NUL MD C:\TEMP
-C:\FREEDOS\BIN\CWSDPMI -p
-BATEOF
+printf '@ECHO OFF\r\nSET DOSDIR=C:\\FREEDOS\r\nSET PATH=C:\\FREEDOS\\BIN;C:\\NET\r\nSET NLSPATH=C:\\FREEDOS\\NLS\r\nSET TEMP=C:\\TEMP\r\nSET DIRCMD=/OGN\r\nSET MTCPCFG=C:\\NET\\MTCP.CFG\r\nPROMPT $P$G\r\nIF NOT EXIST C:\\TEMP\\NUL MD C:\\TEMP\r\nC:\\FREEDOS\\BIN\\CWSDPMI -p\r\n' > /tmp/AUTOEXEC.BAT
 mcopy -D o /tmp/AUTOEXEC.BAT c:
 
 mmd c:/TEMP 2>/dev/null || true
@@ -282,6 +266,29 @@ fi
 if [ -f "$IMGDIR/dos/dpmitest.com" ]; then
     mcopy -D o "$IMGDIR/dos/dpmitest.com" "c:/DPMITEST.COM"
     echo "Installed DPMITEST.COM"
+fi
+
+# =========================================================================
+# Install networking tools (NE2000 packet driver + mTCP)
+# =========================================================================
+if [ -d "$IMGDIR/dos/net" ]; then
+    echo "Installing networking tools..."
+    mmd c:/NET 2>/dev/null || true
+    for f in NE2000.COM DHCP.EXE FTP.EXE TELNET.EXE PING.EXE HTGET.EXE \
+             MTCP.CFG NET.BAT COPYING.TXT; do
+        if [ -f "$IMGDIR/dos/net/$f" ]; then
+            case "$f" in
+                *.BAT|*.CFG|*.TXT)
+                    sed 's/\r$//' "$IMGDIR/dos/net/$f" | sed 's/$/'$'\r''/' > "/tmp/$f"
+                    mcopy -D o "/tmp/$f" "c:/NET/$f"
+                    ;;
+                *)
+                    mcopy -D o "$IMGDIR/dos/net/$f" "c:/NET/$f"
+                    ;;
+            esac
+        fi
+    done
+    echo "  Installed NE2000.COM, mTCP (FTP, TELNET, PING, HTGET, DHCP)"
 fi
 
 # =========================================================================
@@ -341,3 +348,69 @@ DEVIMG="$IMGDIR/fd/freedos_hd_dev.img"
 cp "$OUTIMG" "$DEVIMG"
 echo ""
 echo "Dev copy: $DEVIMG"
+
+# =========================================================================
+# 8. Catalog consistency check
+# =========================================================================
+echo ""
+echo "--- Catalog consistency check ---"
+WARNINGS=0
+
+RELEASE_XML="$IMGDIR/release_assets/disks.xml"
+BUNDLED_XML="$IMGDIR/iosFreeDOS/Resources/disks.xml"
+DISK_NAME=$(basename "$OUTIMG")
+ACTUAL_SIZE=$(stat -f%z "$OUTIMG")
+ACTUAL_SHA=$(shasum -a 256 "$OUTIMG" | awk '{print $1}')
+
+check_xml() {
+  local label="$1" xmlfile="$2"
+  if [ ! -f "$xmlfile" ]; then
+    echo "  WARNING: $label not found: $xmlfile"
+    WARNINGS=$((WARNINGS + 1))
+    return
+  fi
+  eval "$(python3 -c "
+import xml.etree.ElementTree as ET, sys
+tree = ET.parse('$xmlfile')
+for d in tree.findall('disk'):
+    if d.findtext('filename') == '$DISK_NAME':
+        print('xml_size=' + (d.findtext('size') or ''))
+        print('xml_sha=' + (d.findtext('sha256') or ''))
+        sys.exit(0)
+print('xml_size='); print('xml_sha=')
+")"
+  if [ -z "$xml_size" ]; then
+    echo "  WARNING: $DISK_NAME not found in $label"
+    WARNINGS=$((WARNINGS + 1))
+  elif [ "$xml_size" != "$ACTUAL_SIZE" ]; then
+    echo "  WARNING: $label size mismatch: xml=$xml_size actual=$ACTUAL_SIZE"
+    WARNINGS=$((WARNINGS + 1))
+  fi
+  if [ -n "$xml_sha" ] && [ "$xml_sha" != "$ACTUAL_SHA" ]; then
+    echo "  WARNING: $label sha256 mismatch"
+    echo "    xml:    $xml_sha"
+    echo "    actual: $ACTUAL_SHA"
+    WARNINGS=$((WARNINGS + 1))
+  elif [ -z "$xml_sha" ]; then
+    echo "  WARNING: $label has empty sha256 for $DISK_NAME"
+    WARNINGS=$((WARNINGS + 1))
+  fi
+}
+
+check_xml "release_assets/disks.xml" "$RELEASE_XML"
+check_xml "Resources/disks.xml" "$BUNDLED_XML"
+
+if [ -f "$RELEASE_XML" ] && [ -f "$BUNDLED_XML" ]; then
+  if ! diff -q "$RELEASE_XML" "$BUNDLED_XML" > /dev/null 2>&1; then
+    echo "  WARNING: release_assets/disks.xml and Resources/disks.xml differ"
+    WARNINGS=$((WARNINGS + 1))
+  fi
+fi
+
+if [ "$WARNINGS" -eq 0 ]; then
+  echo "  All checks passed."
+else
+  echo ""
+  echo "  $WARNINGS warning(s). Update disks.xml files to match the new disk image."
+  echo "  Actual size: $ACTUAL_SIZE  sha256: $ACTUAL_SHA"
+fi
