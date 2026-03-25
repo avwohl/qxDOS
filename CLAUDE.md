@@ -58,6 +58,13 @@ MUST use DOS line endings (`\r\n`, CR+LF). Shell heredocs produce Unix `\n` whic
 FreeDOS cannot parse — commands won't run, PATH won't be set, etc.
 Use `printf 'line1\r\nline2\r\n'` instead of heredocs when writing DOS text files.
 
+## Bumping the Build Number
+
+1. Edit `CURRENT_PROJECT_VERSION` in `project.yml`
+2. Run `xcodegen` to regenerate the Xcode project
+
+Both steps are required — the xcodeproj is gitignored and built from project.yml.
+
 ## XcodeGen
 
 After modifying `project.yml`, run `xcodegen` yourself — never ask the user to do it.
