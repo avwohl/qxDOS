@@ -25,11 +25,22 @@
 #include "cpu/registers.h"
 #include "hardware/memory.h"
 
-static FILE *s_read_fp  = nullptr;
-static FILE *s_write_fp = nullptr;
-static std::string s_host_base_dir;
+class HostIO {
+public:
+	CALLBACK_HandlerObject callback;
+	FILE *read_fp  = nullptr;
+	FILE *write_fp = nullptr;
+	std::string host_base_dir;
 
-static CALLBACK_HandlerObject s_callback_e0;
+	~HostIO()
+	{
+		if (read_fp)  fclose(read_fp);
+		if (write_fp) fclose(write_fp);
+		// callback destructor calls Uninstall() automatically
+	}
+};
+
+static HostIO *s_hostio = nullptr;
 
 /* Read a NUL-terminated string from guest memory at DS:DX */
 static std::string read_guest_string(uint16_t max_len = 255)
@@ -52,7 +63,7 @@ static std::string read_guest_string(uint16_t max_len = 255)
  * defence, but we shouldn't rely on it). */
 static std::string resolve_path(const std::string &guest_path)
 {
-	if (s_host_base_dir.empty())
+	if (!s_hostio || s_hostio->host_base_dir.empty())
 		return {};
 
 	// Reject absolute paths and path traversal
@@ -61,11 +72,14 @@ static std::string resolve_path(const std::string &guest_path)
 	if (guest_path.find("..") != std::string::npos)
 		return {};
 
-	return s_host_base_dir + "/" + guest_path;
+	return s_hostio->host_base_dir + "/" + guest_path;
 }
 
 static Bitu INT_E0h_Handler(void)
 {
+	if (!s_hostio)
+		return CBRET_NONE;
+
 	switch (reg_ah) {
 	case 0x01: { // Open host file for reading
 		std::string guest = read_guest_string();
@@ -74,10 +88,10 @@ static Bitu INT_E0h_Handler(void)
 			CALLBACK_SCF(true);
 			break;
 		}
-		if (s_read_fp)
-			fclose(s_read_fp);
-		s_read_fp = fopen(path.c_str(), "rb");
-		if (s_read_fp) {
+		if (s_hostio->read_fp)
+			fclose(s_hostio->read_fp);
+		s_hostio->read_fp = fopen(path.c_str(), "rb");
+		if (s_hostio->read_fp) {
 			LOG_MSG("HOSTIO: Opened '%s' for reading", guest.c_str());
 			CALLBACK_SCF(false);
 		} else {
@@ -93,10 +107,10 @@ static Bitu INT_E0h_Handler(void)
 			CALLBACK_SCF(true);
 			break;
 		}
-		if (s_write_fp)
-			fclose(s_write_fp);
-		s_write_fp = fopen(path.c_str(), "wb");
-		if (s_write_fp) {
+		if (s_hostio->write_fp)
+			fclose(s_hostio->write_fp);
+		s_hostio->write_fp = fopen(path.c_str(), "wb");
+		if (s_hostio->write_fp) {
 			LOG_MSG("HOSTIO: Opened '%s' for writing", guest.c_str());
 			CALLBACK_SCF(false);
 		} else {
@@ -106,11 +120,11 @@ static Bitu INT_E0h_Handler(void)
 		break;
 	}
 	case 0x03: { // Read one byte
-		if (!s_read_fp) {
+		if (!s_hostio->read_fp) {
 			CALLBACK_SCF(true);
 			break;
 		}
-		int ch = fgetc(s_read_fp);
+		int ch = fgetc(s_hostio->read_fp);
 		if (ch == EOF) {
 			CALLBACK_SCF(true);
 		} else {
@@ -120,24 +134,24 @@ static Bitu INT_E0h_Handler(void)
 		break;
 	}
 	case 0x04: { // Write one byte
-		if (!s_write_fp) {
+		if (!s_hostio->write_fp) {
 			CALLBACK_SCF(true);
 			break;
 		}
-		fputc(reg_dl, s_write_fp);
+		fputc(reg_dl, s_hostio->write_fp);
 		CALLBACK_SCF(false);
 		break;
 	}
 	case 0x05: { // Close file
 		if (reg_al == 0) {
-			if (s_read_fp) {
-				fclose(s_read_fp);
-				s_read_fp = nullptr;
+			if (s_hostio->read_fp) {
+				fclose(s_hostio->read_fp);
+				s_hostio->read_fp = nullptr;
 			}
 		} else {
-			if (s_write_fp) {
-				fclose(s_write_fp);
-				s_write_fp = nullptr;
+			if (s_hostio->write_fp) {
+				fclose(s_hostio->write_fp);
+				s_hostio->write_fp = nullptr;
 			}
 		}
 		CALLBACK_SCF(false);
@@ -152,27 +166,23 @@ static Bitu INT_E0h_Handler(void)
 
 void HOSTIO_Init(const char *host_dir)
 {
+	delete s_hostio;
+	s_hostio = new HostIO();
+
 	if (host_dir && host_dir[0])
-		s_host_base_dir = host_dir;
+		s_hostio->host_base_dir = host_dir;
 
-	s_callback_e0.Install(&INT_E0h_Handler, CB_IRET, "INT E0h Host File I/O");
-	s_callback_e0.Set_RealVec(0xE0);
+	s_hostio->callback.Install(&INT_E0h_Handler, CB_IRET, "INT E0h Host File I/O");
+	s_hostio->callback.Set_RealVec(0xE0);
 
-	if (!s_host_base_dir.empty())
-		LOG_MSG("HOSTIO: INT E0h ready, host dir: %s", s_host_base_dir.c_str());
+	if (!s_hostio->host_base_dir.empty())
+		LOG_MSG("HOSTIO: INT E0h ready, host dir: %s", s_hostio->host_base_dir.c_str());
 	else
 		LOG_MSG("HOSTIO: INT E0h ready, no host dir (transfers disabled)");
 }
 
 void HOSTIO_Destroy()
 {
-	if (s_read_fp) {
-		fclose(s_read_fp);
-		s_read_fp = nullptr;
-	}
-	if (s_write_fp) {
-		fclose(s_write_fp);
-		s_write_fp = nullptr;
-	}
-	s_host_base_dir.clear();
+	delete s_hostio;
+	s_hostio = nullptr;
 }

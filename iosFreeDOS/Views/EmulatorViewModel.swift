@@ -309,8 +309,12 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         diskSaveTimer?.invalidate(); diskSaveTimer = nil
         manifestPollTimer?.invalidate(); manifestPollTimer = nil
         saveAllDisks()
-        emulator?.stop()
-        // isRunning is cleared in emulatorDidExit() when DOSBox finishes
+        // Terminate the process immediately — DOSBox's pervasive
+        // static/global state makes in-process restart unreliable.
+        // _exit() skips atexit handlers and static destructors,
+        // avoiding races with the DOSBox background thread.
+        // The OS reclaims all resources.
+        _exit(0)
     }
 
     func reset() { stop(); emulator = nil }

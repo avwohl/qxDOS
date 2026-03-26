@@ -19,11 +19,14 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <mach/mach_time.h>
-#include <dispatch/dispatch.h>
+
+// Simple debug log for the one-shot dosbox_start() path (used by test_boot)
+#define BLOG(fmt, ...) fprintf(stderr, "[DOSBox Bridge] " fmt "\n", ##__VA_ARGS__)
 
 // DOSBox headers
 #include "dosbox.h"
@@ -44,8 +47,28 @@ CHECK_NARROWING();
 extern std::unique_ptr<Config> control;
 
 static std::atomic<bool> s_running{false};
+static std::atomic<bool> s_atexit_registered{false};
 static dosbox_frame_callback_t s_frame_cb = nullptr;
 static void *s_frame_ctx = nullptr;
+
+// Ensure DOSBox is torn down before C++ static destructors run.
+// Without this, exit() triggers ~unique_ptr on module singletons
+// whose dependencies (loguru, allocators) are already destroyed.
+static void dosbox_atexit_cleanup()
+{
+    if (s_running.load()) {
+        DOSBOX_RequestShutdown();
+        // Give the background thread a moment to finish
+        for (int i = 0; i < 100 && s_running.load(); ++i)
+            usleep(10000); // 10ms, up to 1s total
+    }
+    // Always force-exit to prevent static destruction order crashes.
+    // DOSBox's module unique_ptrs and global hash maps have no
+    // guaranteed destruction order; letting them run causes crashes
+    // (e.g. PIC destructor accesses already-destroyed IO maps).
+    // The OS reclaims all process resources on exit anyway.
+    _exit(0);
+}
 
 // Frame throttle — limit callbacks to ~30fps to avoid overwhelming the UI thread
 static uint64_t s_last_frame_time = 0;
@@ -230,6 +253,8 @@ int dosbox_start(const dosbox_config_t *cfg,
 {
     if (s_running.load()) return -1;
 
+    DOSBOX_ClearShutdownRequest();
+
     s_frame_cb = frame_cb;
     s_frame_ctx = context;
 
@@ -287,12 +312,13 @@ int dosbox_start(const dosbox_config_t *cfg,
         HOSTIO_Destroy();
         DOSBOX_DestroyModules();
         GFX_Destroy();
+        GFX_Quit();
 
     } catch (const std::exception& e) {
-        fprintf(stderr, "[DOSBox Bridge] Error: %s\n", e.what());
+        BLOG("Error: %s", e.what());
         return_code = 1;
     } catch (...) {
-        fprintf(stderr, "[DOSBox Bridge] Unknown error\n");
+        BLOG("Unknown error");
         return_code = 1;
     }
 
@@ -312,8 +338,12 @@ int dosbox_init(const dosbox_config_t *cfg,
 {
     if (s_running.load()) return -1;
 
+    if (!s_atexit_registered.exchange(true))
+        atexit(dosbox_atexit_cleanup);
+
     s_frame_cb = frame_cb;
     s_frame_ctx = context;
+    s_last_frame_time = 0;
 
     setup_ios_environment(cfg ? cfg->working_dir : nullptr);
 
@@ -359,14 +389,14 @@ int dosbox_init(const dosbox_config_t *cfg,
         MAPPER_BindKeys(get_sdl_section());
 
     } catch (const std::exception& e) {
-        fprintf(stderr, "[DOSBox Bridge] Init error: %s\n", e.what());
+        HOSTIO_Destroy();
         free(s_conf_path);
         s_conf_path = nullptr;
         s_cmdline.reset();
         s_running.store(false);
         return -1;
     } catch (...) {
-        fprintf(stderr, "[DOSBox Bridge] Init unknown error\n");
+        HOSTIO_Destroy();
         free(s_conf_path);
         s_conf_path = nullptr;
         s_cmdline.reset();
@@ -377,7 +407,11 @@ int dosbox_init(const dosbox_config_t *cfg,
     return 0;
 }
 
-static void dosbox_gfx_destroy_on_main(void *) { GFX_Destroy(); }
+static void dosbox_gfx_teardown_on_main(void *)
+{
+    GFX_Destroy();
+    GFX_Quit();
+}
 
 int dosbox_run(void)
 {
@@ -388,21 +422,20 @@ int dosbox_run(void)
         // Start the DOS shell — this blocks until exit
         SHELL_InitAndRun();
 
-        // Cleanup — GFX_Destroy touches UIKit and must run on main thread
+        // Cleanup — GFX touches UIKit and must run on main thread
         HOSTIO_Destroy();
         DOSBOX_DestroyModules();
         if (pthread_main_np()) {
             GFX_Destroy();
+            GFX_Quit();
         } else {
             dispatch_sync_f(dispatch_get_main_queue(), nullptr,
-                            dosbox_gfx_destroy_on_main);
+                            dosbox_gfx_teardown_on_main);
         }
 
     } catch (const std::exception& e) {
-        fprintf(stderr, "[DOSBox Bridge] Run error: %s\n", e.what());
         return_code = 1;
     } catch (...) {
-        fprintf(stderr, "[DOSBox Bridge] Run unknown error\n");
         return_code = 1;
     }
 
@@ -416,10 +449,13 @@ int dosbox_run(void)
 
 void dosbox_request_shutdown(void)
 {
+    // Only set the DOSBox shutdown flag — do NOT clear s_running.
+    // s_running stays true until dosbox_run() finishes all cleanup.
+    // This prevents the atexit handler from skipping protection
+    // and prevents dosbox_init() from racing with ongoing cleanup.
     if (s_running.load()) {
         DOSBOX_RequestShutdown();
     }
-    s_running.store(false);
 }
 
 int dosbox_is_running(void)
