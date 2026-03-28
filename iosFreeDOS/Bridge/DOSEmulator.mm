@@ -101,7 +101,7 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
         _speedMode = DOSSpeedMax;
         _customCycles = 0;
         _cpuType = @"auto";
-        _emulatorQueue = dispatch_queue_create("com.iosFreeDOS.dosbox", DISPATCH_QUEUE_SERIAL);
+        _emulatorQueue = dispatch_queue_create("com.awohl.FreeDOS.dosbox", DISPATCH_QUEUE_SERIAL);
         _shouldRun = NO;
 
         // Create temp directory for disk image files

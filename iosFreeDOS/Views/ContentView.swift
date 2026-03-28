@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var configAlertText = ""
     @State private var showingTouchEditor = false
     @State private var showingEmulatorHelp = false
+    @State private var showingMenuHelp = false
+    @State private var showingMenuAbout = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     private enum ConfigAlertMode {
@@ -71,6 +73,25 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
             viewModel.saveDisksOnBackground()
             viewModel.stop()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showAbout)) { _ in
+            showingMenuAbout = true
+        }
+        .sheet(isPresented: $showingMenuAbout) {
+            NavigationView {
+                AboutView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingMenuAbout = false }
+                        }
+                    }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showHelp)) { _ in
+            showingMenuHelp = true
+        }
+        .sheet(isPresented: $showingMenuHelp) {
+            HelpView()
         }
     }
 
