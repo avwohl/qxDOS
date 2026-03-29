@@ -215,7 +215,7 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
 
 - (BOOL)isRunning { return _shouldRun; }
 
-- (void)startWithBootDrive:(int)drive {
+- (void)startWithBootDrive:(int)drive dosType:(int)dosType {
     if (_shouldRun) return;
     _shouldRun = YES;
 
@@ -263,8 +263,9 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
         NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     cfg.host_dir = docsDir ? [docsDir UTF8String] : nullptr;
 
-    // Boot drive — FreeDOS kernel on the disk handles CONFIG.SYS and AUTOEXEC.BAT
+    // Boot drive and DOS type
     cfg.boot_drive = drive;
+    cfg.dos_type = dosType;
 
     // Phase 1: init on main thread (SDL/UIKit requires it)
     int initResult = dosbox_init(&cfg, frame_callback, (__bridge void *)self);

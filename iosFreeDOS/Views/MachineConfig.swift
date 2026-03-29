@@ -7,9 +7,26 @@
 
 import Foundation
 
+enum DOSType: Int, Codable, CaseIterable {
+    case dosboxDOS = 0   // DOSBox built-in kernel + shell + Z: utilities
+    case freeDOS = 1     // Boot FreeDOS from disk image
+    case msDOS = 2       // Boot MS-DOS from disk image
+
+    var label: String {
+        switch self {
+        case .dosboxDOS: return "DOSBox DOS"
+        case .freeDOS: return "FreeDOS"
+        case .msDOS: return "MS-DOS"
+        }
+    }
+}
+
 struct MachineConfig: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String = "Default"
+
+    // DOS type — which kernel/shell runs above the hardware layer
+    var dosType: DOSType = .freeDOS
 
     // Machine type (maps to DOSBox "machine" setting)
     // 0=VGA, 1=EGA, 2=CGA, 3=Tandy, 4=Hercules, 5=SVGA(S3)
@@ -96,7 +113,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
 
     // Coding keys for backward compatibility
     enum CodingKeys: String, CodingKey {
-        case id, name, machineType, speedMode, customCycles, cpuTypeStr, memoryMB
+        case id, name, dosType, machineType, speedMode, customCycles, cpuTypeStr, memoryMB
         case speakerEnabled, sbEnabled, mouseEnabled
         case touchLayoutId, touchLayoutName
         case floppyAFilename, floppyBFilename, hddCFilename, hddDFilename
@@ -115,6 +132,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Default"
+        dosType = try c.decodeIfPresent(DOSType.self, forKey: .dosType) ?? .freeDOS
 
         // Try new keys first, fall back to legacy
         if let mt = try c.decodeIfPresent(Int.self, forKey: .machineType) {
@@ -150,6 +168,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encode(dosType, forKey: .dosType)
         try c.encode(machineType, forKey: .machineType)
         try c.encode(speedMode, forKey: .speedMode)
         try c.encode(customCycles, forKey: .customCycles)

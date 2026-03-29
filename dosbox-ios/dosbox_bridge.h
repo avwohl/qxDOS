@@ -50,6 +50,9 @@ typedef struct {
 
     /* Boot drive: 0=A, 0x80=C, 0xE0=CD-ROM (default: auto-detect) */
     int         boot_drive;
+
+    /* DOS type: 0=DOSBox internal DOS, 1=FreeDOS (boot from disk), 2=MS-DOS (boot from disk) */
+    int         dos_type;
 } dosbox_config_t;
 
 /* CPU speed presets (DOSBox cycle values) */

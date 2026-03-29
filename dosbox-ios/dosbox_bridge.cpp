@@ -198,33 +198,83 @@ char *dosbox_write_config(const dosbox_config_t *cfg)
     fprintf(f, "\n");
 
     // [autoexec] — mount disks and boot
+    //
+    // dos_type controls the boot strategy:
+    //   0 = DOSBox DOS: DOSBox's internal kernel stays active, mounts disks
+    //       with -fs fat (DOSBox interprets the filesystem), switches to C:
+    //   1 = FreeDOS: boot from disk image (KERNEL.SYS + COMMAND.COM on disk)
+    //   2 = MS-DOS:  boot from disk image (IO.SYS + MSDOS.SYS on disk)
+    //
+    // For FreeDOS/MS-DOS, HDDs are mounted with -fs none (raw BIOS disk)
+    // so the booted OS handles the filesystem via INT 13h.  The boot command
+    // reads the disk's boot sector and jumps to 0x7C00.
     fprintf(f, "[autoexec]\n");
 
-    if (cfg->floppy_a_path)
-        fprintf(f, "imgmount a \"%s\" -t floppy\n", cfg->floppy_a_path);
-    if (cfg->floppy_b_path)
-        fprintf(f, "imgmount b \"%s\" -t floppy\n", cfg->floppy_b_path);
+    if (cfg->dos_type == 0) {
+        // === DOSBox DOS mode ===
+        if (cfg->floppy_a_path)
+            fprintf(f, "imgmount a \"%s\" -t floppy\n", cfg->floppy_a_path);
+        if (cfg->floppy_b_path)
+            fprintf(f, "imgmount b \"%s\" -t floppy\n", cfg->floppy_b_path);
+        if (cfg->hdd_c_path)
+            fprintf(f, "imgmount c \"%s\" -t hdd -fs fat\n", cfg->hdd_c_path);
+        if (cfg->hdd_d_path)
+            fprintf(f, "imgmount d \"%s\" -t hdd -fs fat\n", cfg->hdd_d_path);
+        if (cfg->iso_path)
+            fprintf(f, "imgmount e \"%s\" -t iso\n", cfg->iso_path);
 
-    if (cfg->hdd_c_path)
-        fprintf(f, "imgmount c \"%s\" -t hdd -fs fat\n", cfg->hdd_c_path);
-    if (cfg->hdd_d_path)
-        fprintf(f, "imgmount d \"%s\" -t hdd -fs fat\n", cfg->hdd_d_path);
-    if (cfg->iso_path)
-        fprintf(f, "imgmount e \"%s\" -t iso\n", cfg->iso_path);
+        if (cfg->autoexec) {
+            for (int i = 0; cfg->autoexec[i]; i++)
+                fprintf(f, "%s\n", cfg->autoexec[i]);
+        }
 
-    // Additional autoexec commands (e.g., host-dir mounts for testing)
-    if (cfg->autoexec) {
-        for (int i = 0; cfg->autoexec[i]; i++)
-            fprintf(f, "%s\n", cfg->autoexec[i]);
-    }
+        // Switch to first available drive
+        if (cfg->hdd_c_path) {
+            fprintf(f, "c:\n");
+            fprintf(f, "if exist c:\\autoexec.bat call c:\\autoexec.bat\n");
+            fprintf(f, "SET DIRCMD=/ON\n");
+        } else if (cfg->floppy_a_path) {
+            fprintf(f, "a:\n");
+        }
+    } else {
+        // === FreeDOS / MS-DOS boot mode ===
+        // Floppies mount normally (boot command finds them)
+        if (cfg->floppy_a_path)
+            fprintf(f, "imgmount a \"%s\" -t floppy\n", cfg->floppy_a_path);
+        if (cfg->floppy_b_path)
+            fprintf(f, "imgmount b \"%s\" -t floppy\n", cfg->floppy_b_path);
 
-    // Switch to C: and run its AUTOEXEC.BAT if present
-    if (cfg->floppy_a_path) {
-        fprintf(f, "boot a:\n");
-    } else if (cfg->hdd_c_path) {
-        fprintf(f, "c:\n");
-        fprintf(f, "if exist c:\\autoexec.bat call c:\\autoexec.bat\n");
-        fprintf(f, "SET DIRCMD=/ON\n");
+        // HDDs as raw BIOS disks — booted OS handles the filesystem
+        if (cfg->hdd_c_path)
+            fprintf(f, "imgmount c \"%s\" -t hdd -fs none\n", cfg->hdd_c_path);
+        if (cfg->hdd_d_path)
+            fprintf(f, "imgmount d \"%s\" -t hdd -fs none\n", cfg->hdd_d_path);
+
+        // ISO for CD-ROM access (needs OS CD-ROM drivers after boot)
+        if (cfg->iso_path)
+            fprintf(f, "imgmount e \"%s\" -t iso\n", cfg->iso_path);
+
+        if (cfg->autoexec) {
+            for (int i = 0; cfg->autoexec[i]; i++)
+                fprintf(f, "%s\n", cfg->autoexec[i]);
+        }
+
+        // Boot from the selected drive
+        if (cfg->boot_drive == 0 && cfg->floppy_a_path) {
+            fprintf(f, "boot a:\n");
+        } else if (cfg->boot_drive == 0x80 && cfg->hdd_c_path) {
+            fprintf(f, "boot c:\n");
+        } else if (cfg->boot_drive == 0xE0 && cfg->floppy_a_path) {
+            // CD-ROM boot not supported by DOSBox boot command;
+            // boot from floppy (which should have CD-ROM drivers)
+            fprintf(f, "boot a:\n");
+        } else {
+            // Fallback: boot from whatever is available
+            if (cfg->hdd_c_path)
+                fprintf(f, "boot c:\n");
+            else if (cfg->floppy_a_path)
+                fprintf(f, "boot a:\n");
+        }
     }
 
     fclose(f);

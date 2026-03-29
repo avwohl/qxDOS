@@ -1,10 +1,10 @@
-# About FreeDOS
+# About This App
 
-FreeDOS is a free, open-source operating system compatible with MS-DOS. This app runs FreeDOS inside an emulated 386 PC powered by DOSBox Staging.
+This app runs DOS inside an emulated 386 PC powered by DOSBox Staging. You can choose which DOS to run: FreeDOS, MS-DOS, or DOSBox's built-in DOS.
 
-## What You Get
+## The Emulated PC
 
-The emulated PC includes:
+The hardware emulation (provided by DOSBox Staging) includes:
 
 - **CPU** — 386/486 with FPU and DPMI (protected mode for games like DOOM)
 - **Graphics** — VGA/SVGA (S3 Trio64), all standard video modes
@@ -13,7 +13,20 @@ The emulated PC includes:
 - **Ethernet** — NE2000 with SLIRP (virtual NAT for internet access)
 - **Drives** — floppy (A:, B:), hard disk (C:, D:), CD-ROM
 
-## What's on the Disk
+This hardware layer is the same regardless of which DOS you choose.
+
+## DOS Types
+
+### FreeDOS (default)
+FreeDOS is a free, open-source DOS compatible with MS-DOS. The app boots the real FreeDOS kernel from your disk image. The pre-built disk images come with KERNEL.SYS, COMMAND.COM, and utilities in `C:\FREEDOS\BIN`. You can also install FreeDOS from scratch using the official boot floppy and LiveCD ISO from the disk catalog. License: GPL v2+. Website: freedos.org.
+
+### MS-DOS
+MS-DOS is the original Microsoft operating system. The app boots the real MS-DOS kernel from your disk image. MS-DOS 4.0 (1988) was released under the MIT license by Microsoft in 2024. You can also use your own MS-DOS install media (5.0, 6.22, etc.).
+
+### DOSBox DOS
+DOSBox's built-in kernel and COMMAND.COM. No operating system on disk is needed — DOSBox provides ~30 built-in utilities on the Z: drive (MEM, MORE, MOUSE, MIXER, etc.). This mode is the simplest: mount any FAT disk and start using it immediately. However, it lacks the full utility set of FreeDOS or MS-DOS (no FORMAT, FDISK, EDIT, etc.).
+
+## What's on the FreeDOS Disk
 
 The FreeDOS disk images come with the FreeDOS kernel, COMMAND.COM, and a set of utilities in `C:\FREEDOS\BIN`:
 
@@ -36,9 +49,9 @@ The starter disk also includes:
 | `W` | Copy a file from DOS to your device |
 | `CWSDPMI` | DPMI server for protected-mode programs (DOOM, etc.) |
 
-## Networking Tools
+## Networking Tools (FreeDOS)
 
-In `C:\NET` (type `NET` to activate):
+In `C:\NET` (type `FDNET` to activate):
 
 | Command | What it does |
 |---------|-------------|
@@ -58,7 +71,7 @@ DPMI (DOS Protected Mode Interface) lets programs use extended memory beyond the
 
 ## FreeDOS vs. MS-DOS
 
-FreeDOS is compatible with MS-DOS at the application level. Most DOS programs, games, and utilities work without modification. FreeDOS is free software (GPL) and actively maintained at freedos.org.
+FreeDOS is compatible with MS-DOS at the application level. Most DOS programs, games, and utilities work without modification. FreeDOS is free software (GPL) and actively maintained at freedos.org. You can switch between FreeDOS and MS-DOS in the Machine settings — both boot from real disk images using the same hardware emulation.
 
 ## Disk Images
 

@@ -64,7 +64,7 @@ typedef NS_ENUM(NSInteger, DOSSpeedMode) {
 - (int)loadISO:(NSString*)path;
 
 // Execution
-- (void)startWithBootDrive:(int)drive;
+- (void)startWithBootDrive:(int)drive dosType:(int)dosType;
 - (void)stop;
 - (void)reset;
 

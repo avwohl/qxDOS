@@ -284,7 +284,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                 self.isStarting = false
                 self.statusText = ""
 
-                emu.start(withBootDrive: Int32(cfg.bootDrive))
+                emu.start(withBootDrive: Int32(cfg.bootDrive), dosType: Int32(cfg.dosType.rawValue))
 
                 self.diskSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
                     self?.saveAllDisks()

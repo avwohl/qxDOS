@@ -244,7 +244,7 @@ struct ContentView: View {
             preferencesSection
             aboutSection
         }
-        .navigationTitle("FreeDOS")
+        .navigationTitle(viewModel.config.dosType.label)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 12) {
@@ -347,6 +347,31 @@ struct ContentView: View {
 
     var displaySection: some View {
         Section("Machine") {
+            Picker("DOS", selection: Binding(
+                get: { viewModel.config.dosType },
+                set: { val in
+                    var cfg = viewModel.config
+                    cfg.dosType = val
+                    viewModel.configManager.updateConfig(cfg)
+                }
+            )) {
+                ForEach(DOSType.allCases, id: \.self) { type in
+                    Text(type.label).tag(type)
+                }
+            }
+
+            switch viewModel.config.dosType {
+            case .dosboxDOS:
+                Text("DOSBox built-in kernel and shell. ~30 utilities on Z: drive. No OS on disk needed.")
+                    .font(.caption).foregroundColor(.secondary)
+            case .freeDOS:
+                Text("Boots FreeDOS from disk. Full kernel, COMMAND.COM, and 230+ utilities. Install from floppy or CD.")
+                    .font(.caption).foregroundColor(.secondary)
+            case .msDOS:
+                Text("Boots MS-DOS from disk. Use MS-DOS 4.0 (MIT license) from catalog, or bring your own media.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             Picker("Type", selection: Binding(
                 get: { viewModel.config.machineType },
                 set: { val in

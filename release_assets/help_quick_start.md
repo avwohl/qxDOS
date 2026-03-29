@@ -1,15 +1,35 @@
 # Quick Start Guide
 
-Welcome to FreeDOS, a DOS emulator for iPhone, iPad, and Mac.
+Welcome to a DOS emulator for iPhone, iPad, and Mac, powered by DOSBox Staging.
 
-## First Boot
+## Choose a DOS
+
+In the **Machine** section, pick which DOS to run:
+
+- **FreeDOS** — boots the FreeDOS kernel from disk. Full open-source DOS with 230+ utilities. This is the default.
+- **MS-DOS** — boots MS-DOS from disk. Bring your own install media, or use MS-DOS 4.0 (MIT license) from the catalog.
+- **DOSBox DOS** — DOSBox's built-in kernel and shell. No OS on disk needed. ~30 utilities on Z: drive.
+
+## First Boot (FreeDOS)
 
 1. Open the app and scroll to **Disk Catalog**
 2. Download **FreeDOS Starter** (22MB) or **FreeDOS Hard Disk** (200MB)
 3. Tap **Use as C:**
-4. Scroll to **Boot** and tap **Start Emulator**
+4. Set **Boot** to **Hard Disk C:**
+5. Tap **Start Emulator**
 
 You should see FreeDOS boot to a `C:\>` prompt.
+
+## Installing from Scratch
+
+To install any DOS onto a blank disk (like a real PC):
+
+1. Set the DOS type in **Machine** settings
+2. Create a blank hard disk via **Create Blank Disk**
+3. Load install media (boot floppy and/or CD) from the catalog or Files
+4. Set **Boot** to **Floppy A:**
+5. Start — the OS installer runs and installs to C:
+6. After install, remove the floppy and set boot to **Hard Disk C:**
 
 ## Keyboard
 
@@ -91,6 +111,8 @@ This loads the NE2000 network driver and gets an IP address. Once connected, use
 
 Select which drive to boot from in the **Boot** section:
 
-- **Floppy A:** — boot from the floppy disk in drive A
-- **Hard Disk C:** — boot from the hard disk
-- **CD-ROM** — boot from a CD-ROM ISO image
+- **Floppy A:** — boot from the floppy disk in drive A (used during OS installation)
+- **Hard Disk C:** — boot from the hard disk (normal operation)
+- **CD-ROM** — boot from a CD-ROM ISO image (requires a boot floppy with CD drivers)
+
+In DOSBox DOS mode, the boot drive selects which drive to switch to at startup (no actual boot occurs).

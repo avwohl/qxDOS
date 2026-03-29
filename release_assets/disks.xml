@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<catalog version="31">
+<catalog version="32">
     <!-- ===========================================
          Bootable disk images (shipped in release)
          =========================================== -->
@@ -21,6 +21,20 @@
         <license>GPL</license>
         <sha256>03d9a555c61e3c7b1675d55f0975dc0882e77a08758b695d87df20720597c466</sha256>
         <defaultDrive>128</defaultDrive>
+    </disk>
+
+    <!-- ===========================================
+         FreeDOS install media (external)
+         =========================================== -->
+    <disk>
+        <filename>freedos.img</filename>
+        <name>FreeDOS 1.4 Boot Floppy</name>
+        <type>floppy</type>
+        <description>Official FreeDOS 1.4 boot floppy with kernel, COMMAND.COM, and installer. Use with a LiveCD ISO to install FreeDOS onto a blank hard disk.</description>
+        <size>1474560</size>
+        <license>GPL</license>
+        <sha256></sha256>
+        <url>https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BOOT.img</url>
     </disk>
 
     <!-- ===========================================
