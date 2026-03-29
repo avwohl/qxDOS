@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**FreeDOS** is an open source DOS emulator for iOS and macOS, powered by DOSBox Staging.
+**qxDOS** is an open source DOS emulator for iOS and macOS, powered by DOSBox Staging.
 
 ## Data Collection
 
@@ -31,7 +31,7 @@ This app does not use any third-party services that collect user data.
 ## Contact
 
 If you have questions about this privacy policy, please open an issue at:
-https://github.com/avwohl/iosFreeDOS2/issues
+https://github.com/avwohl/qxDOS/issues
 
 ## Changes
 

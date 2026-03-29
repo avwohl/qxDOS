@@ -1,4 +1,4 @@
-name: iosFreeDOS
+name: qxDOS
 options:
   bundleIdPrefix: com.awohl
   deploymentTarget:
@@ -13,28 +13,28 @@ packages:
     url: https://github.com/weichsel/ZIPFoundation
     from: "0.9.19"
 targets:
-  iosFreeDOS:
+  qxDOS:
     type: application
     platform: iOS
     sources:
-      - path: iosFreeDOS
+      - path: qxDOS
     configFiles:
       Debug: Config.xcconfig
       Release: Config.xcconfig
     entitlements:
-      path: iosFreeDOS/iosFreeDOS.entitlements
+      path: qxDOS/qxDOS.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
     settings:
       base:
-        PRODUCT_NAME: FreeDOS
-        SWIFT_OBJC_BRIDGING_HEADER: iosFreeDOS/iosFreeDOS-Bridging-Header.h
+        PRODUCT_NAME: qxDOS
+        SWIFT_OBJC_BRIDGING_HEADER: qxDOS/qxDOS-Bridging-Header.h
         GCC_PREPROCESSOR_DEFINITIONS:
-          - FREEDOS_VERSION="\"v$(MARKETING_VERSION) ($(CURRENT_PROJECT_VERSION))\""
+          - QXDOS_VERSION="\"v$(MARKETING_VERSION) ($(CURRENT_PROJECT_VERSION))\""
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/dosbox-ios
-          - $(SRCROOT)/iosFreeDOS/Bridge
+          - $(SRCROOT)/qxDOS/Bridge
         LIBRARY_SEARCH_PATHS: $(inherited)
         OTHER_LDFLAGS:
           - -ldosbox-bridge
@@ -83,12 +83,12 @@ targets:
         INFOPLIST_KEY_UIRequiresFullScreen: NO
         MARKETING_VERSION: "2.0"
         CURRENT_PROJECT_VERSION: 34
-        PRODUCT_BUNDLE_IDENTIFIER: com.awohl.FreeDOS
-        INFOPLIST_KEY_CFBundleDisplayName: FreeDOS
-        INFOPLIST_KEY_CFBundleName: FreeDOS
+        PRODUCT_BUNDLE_IDENTIFIER: com.awohl.qxDOS
+        INFOPLIST_KEY_CFBundleDisplayName: qxDOS
+        INFOPLIST_KEY_CFBundleName: qxDOS
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.utilities"
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "FreeDOS uses Bluetooth to connect game controllers and keyboards."
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "qxDOS uses Bluetooth to connect game controllers and keyboards."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         GENERATE_INFOPLIST_FILE: YES
     dependencies:

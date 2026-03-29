@@ -19,9 +19,9 @@ except ImportError:
     sys.exit(1)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ASSETS_DIR = os.path.join(SCRIPT_DIR, "..", "iosFreeDOS", "Assets.xcassets")
+ASSETS_DIR = os.path.join(SCRIPT_DIR, "..", "qxDOS", "Assets.xcassets")
 ICON_DIR = os.path.join(ASSETS_DIR, "AppIcon.appiconset")
-LOGO_DIR = os.path.join(ASSETS_DIR, "FreeDOSLogo.imageset")
+LOGO_DIR = os.path.join(ASSETS_DIR, "AppLogo.imageset")
 SVG_PATH = os.path.join(SCRIPT_DIR, "blinky.svg")
 
 # Standalone Blinky fish SVG (paths extracted from the full FreeDOS logo)

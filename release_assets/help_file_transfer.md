@@ -1,11 +1,11 @@
 # File Transfer
 
-FreeDOS includes two commands for transferring files between DOS and your device:
+The app includes two commands for transferring files between DOS and your device:
 
 - **R** (Read) — copies a file from your device into DOS
 - **W** (Write) — copies a file from DOS to your device
 
-Files are stored in the FreeDOS folder in the Files app on iPad and iPhone.
+Files are stored in the qxDOS folder in the Files app on iPad and iPhone.
 
 ## Copying a File into DOS
 
@@ -14,7 +14,7 @@ C:\> R myfile.txt C:\MYFILE.TXT
 File transferred.
 ```
 
-The first argument is the filename on your device (in the FreeDOS folder). The second argument is the DOS destination path.
+The first argument is the filename on your device (in the qxDOS folder). The second argument is the DOS destination path.
 
 ## Copying a File out of DOS
 
@@ -31,13 +31,13 @@ The first argument is the DOS source path. The second argument is the filename t
 
 1. Open the **Files** app
 2. Browse to **On My iPad** (or iPhone)
-3. Open the **FreeDOS** folder
+3. Open the **qxDOS** folder
 
 Files you write with **W** appear here. Files you want to read with **R** should be placed here first using the Files app, AirDrop, or any other method.
 
 **Mac (Catalyst):**
 
-Files go to the app's container in `~/Library/Containers/com.awohl.FreeDOS/Data/Documents/`. Open Finder, press Cmd+Shift+G, and paste that path.
+Files go to the app's container in `~/Library/Containers/com.awohl.qxDOS/Data/Documents/`. Open Finder, press Cmd+Shift+G, and paste that path.
 
 ## Tips
 

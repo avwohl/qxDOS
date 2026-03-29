@@ -1,11 +1,11 @@
 {
   "version": 5,
-  "base_url": "https://github.com/avwohl/iosFreeDOS2/releases/latest/download/",
+  "base_url": "https://github.com/avwohl/qxDOS/releases/latest/download/",
   "topics": [
     {
       "id": "quick_start",
       "title": "Quick Start Guide",
-      "description": "Getting started with FreeDOS",
+      "description": "Getting started with qxDOS",
       "filename": "help_quick_start.md"
     },
     {
@@ -58,9 +58,9 @@
     },
     {
       "id": "github_source",
-      "title": "FreeDOS Emulator Source Code",
-      "description": "FreeDOS emulator source code, issues, and releases",
-      "url": "https://github.com/avwohl/iosFreeDOS2"
+      "title": "qxDOS Source Code",
+      "description": "qxDOS source code, issues, and releases",
+      "url": "https://github.com/avwohl/qxDOS"
     }
   ]
 }

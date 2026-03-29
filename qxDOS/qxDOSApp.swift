@@ -1,19 +1,19 @@
 import SwiftUI
 
 @main
-struct iosFreeDOSApp: App {
+struct qxDOSApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About FreeDOS") {
+                Button("About qxDOS") {
                     NotificationCenter.default.post(name: .showAbout, object: nil)
                 }
             }
             CommandGroup(replacing: .help) {
-                Button("FreeDOS Help") {
+                Button("qxDOS Help") {
                     NotificationCenter.default.post(name: .showHelp, object: nil)
                 }
             }

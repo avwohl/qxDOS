@@ -199,8 +199,8 @@ class HelpViewModel: ObservableObject {
     @Published var indexState: LoadState<HelpIndex> = .loading
     @Published private var contentCache: [String: LoadState<String>] = [:]
 
-    private static let indexURL = "https://github.com/avwohl/iosFreeDOS2/releases/latest/download/help_index.json"
-    private var baseURL: String = "https://github.com/avwohl/iosFreeDOS2/releases/latest/download/"
+    private static let indexURL = "https://github.com/avwohl/qxDOS/releases/latest/download/help_index.json"
+    private var baseURL: String = "https://github.com/avwohl/qxDOS/releases/latest/download/"
 
     private var cacheDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]

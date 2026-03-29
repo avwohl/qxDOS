@@ -112,8 +112,8 @@ jobs:
 
       - name: Sync bundled catalog
         run: |
-          cp release_assets/disks.xml iosFreeDOS/Resources/disks.xml
-          if ! diff -q release_assets/disks.xml iosFreeDOS/Resources/disks.xml; then
+          cp release_assets/disks.xml qxDOS/Resources/disks.xml
+          if ! diff -q release_assets/disks.xml qxDOS/Resources/disks.xml; then
             echo "FAIL: bundled disks.xml out of sync"
             exit 1
           fi

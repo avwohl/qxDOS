@@ -5,7 +5,7 @@ set -e
 
 IMGDIR="$(cd "$(dirname "$0")/.." && pwd)"
 RELEASE_XML="$IMGDIR/release_assets/disks.xml"
-BUNDLED_XML="$IMGDIR/iosFreeDOS/Resources/disks.xml"
+BUNDLED_XML="$IMGDIR/qxDOS/Resources/disks.xml"
 BUILT_XML=""
 FD_DIR="$IMGDIR/fd"
 APP_DISKS_DIR="$HOME/Documents/Disks"
@@ -27,7 +27,7 @@ if [ -f "$RELEASE_XML" ] && [ -f "$BUNDLED_XML" ]; then
   if diff -q "$RELEASE_XML" "$BUNDLED_XML" > /dev/null 2>&1; then
     ok "both copies are identical"
   else
-    err "release_assets/disks.xml and Resources/disks.xml DIFFER — run: cp release_assets/disks.xml iosFreeDOS/Resources/disks.xml"
+    err "release_assets/disks.xml and Resources/disks.xml DIFFER — run: cp release_assets/disks.xml qxDOS/Resources/disks.xml"
   fi
 fi
 
@@ -36,7 +36,7 @@ fi
 # ---------------------------------------------------------------
 echo ""
 echo "--- Built app ---"
-BUILT_APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/iosFreeDOS*/Build/Products/*-maccatalyst/iosFreeDOS.app/Contents/Resources/disks.xml" 2>/dev/null | head -1)
+BUILT_APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/qxDOS*/Build/Products/*-maccatalyst/qxDOS.app/Contents/Resources/disks.xml" 2>/dev/null | head -1)
 if [ -n "$BUILT_APP" ]; then
   if diff -q "$RELEASE_XML" "$BUILT_APP" > /dev/null 2>&1; then
     ok "built app has current disks.xml"
@@ -77,7 +77,7 @@ imgdir = os.environ.get("IMGDIR", ".")
 release_xml = os.path.join(imgdir, "release_assets", "disks.xml")
 fd_dir = os.path.join(imgdir, "fd")
 app_disks = os.path.expanduser("~/Documents/Disks")
-base_url = "https://github.com/avwohl/iosFreeDOS2/releases/latest/download"
+base_url = "https://github.com/avwohl/qxDOS2/releases/latest/download"
 errors = 0
 
 def err(msg):

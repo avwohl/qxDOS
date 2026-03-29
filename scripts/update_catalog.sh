@@ -21,7 +21,7 @@ fi
 
 IMGDIR="$(cd "$(dirname "$0")/.." && pwd)"
 RELEASE_XML="$IMGDIR/release_assets/disks.xml"
-BUNDLED_XML="$IMGDIR/iosFreeDOS/Resources/disks.xml"
+BUNDLED_XML="$IMGDIR/qxDOS/Resources/disks.xml"
 DISK_NAME=$(basename "$DEST")
 
 NEW_SHA=$(shasum -a 256 "$NEW" | awk '{print $1}')

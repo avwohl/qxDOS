@@ -1,17 +1,17 @@
-# FreeDOS for iOS and Mac
+# qxDOS — DOS for iOS and Mac
 
-FreeDOS is a project at [FreeDOS.org](https://www.freedos.org/). This
-project is an unendorsed port to iOS and Mac.
-
-A port of [FreeDOS](https://www.freedos.org/) to iOS and Mac, using
+A DOS emulator for iOS and Mac using
 [DOSBox Staging](https://dosbox-staging.github.io/) as the emulation engine.
+Boots [FreeDOS](https://www.freedos.org/), MS-DOS, or DOSBox's built-in DOS.
 
 ## What is this?
 
-[FreeDOS](https://www.freedos.org/) is a free, open-source DOS-compatible
-operating system. This app is a port that brings FreeDOS to iPad and Mac
-by wrapping DOSBox Staging in a native iOS/Mac interface, giving you a
-full 386 PC with VGA graphics, Sound Blaster audio, and mouse support.
+qxDOS brings a full 386 PC to iPad and Mac — VGA graphics, Sound Blaster
+audio, mouse support, and networking. Choose which DOS to run:
+
+- **FreeDOS** — free, open-source DOS (GPL v2+) with 230+ utilities
+- **MS-DOS** — bring your own media, or use MS-DOS 4.0 (MIT license)
+- **DOSBox DOS** — DOSBox's built-in kernel and shell, no OS on disk needed
 
 Use it to run classic DOS games, utilities, learn DOS programming, or
 explore period software archives like Simtel and Walnut Creek.
@@ -38,10 +38,10 @@ your device's network connection via SLIRP (a virtual NAT router). The
 FreeDOS disk comes with mTCP, a TCP/IP suite with FTP, Telnet, Ping, and
 an HTTP downloader.
 
-Type `NET` at the DOS prompt to get online:
+Type `FDNET` at the DOS prompt to get online:
 
 ```
-C:\> NET
+C:\> FDNET
 Loading NE2000 packet driver...
 Getting IP address via DHCP...
 Network is ready.
@@ -62,7 +62,7 @@ C:\> R myfile.txt C:\MYFILE.TXT
 C:\> W C:\DOCUMENT.TXT document.txt
 ```
 
-Files are stored in the FreeDOS folder in the Files app (iPad/iPhone) or
+Files are stored in the qxDOS folder in the Files app (iPad/iPhone) or
 the app container's Documents directory (Mac).
 
 ## Disk Catalog
@@ -91,8 +91,8 @@ are automatically extracted.
 
 ```bash
 # Clone with submodules
-git clone --recursive https://github.com/avwohl/iosFreeDOS2.git
-cd iosFreeDOS2
+git clone --recursive https://github.com/avwohl/qxDOS.git
+cd qxDOS
 
 # Configure CMake for Mac Catalyst
 mkdir build-maccatalyst && cd build-maccatalyst
@@ -108,7 +108,7 @@ cd ..
 xcodegen
 
 # Open in Xcode and build
-open iosFreeDOS.xcodeproj
+open qxDOS.xcodeproj
 ```
 
 The Xcode pre-build script automatically runs `cmake --build` to
@@ -117,7 +117,7 @@ incrementally rebuild the DOSBox static libraries when sources change.
 ## Architecture
 
 ```
-SwiftUI App (iosFreeDOS/)
+SwiftUI App (qxDOS/)
   └─ DOSEmulator.h/.mm (Objective-C++ bridge)
        └─ dosbox-ios/ (C bridge layer)
             ├─ dosbox_bridge.cpp — config, lifecycle, input

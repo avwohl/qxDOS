@@ -101,7 +101,7 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
         _speedMode = DOSSpeedMax;
         _customCycles = 0;
         _cpuType = @"auto";
-        _emulatorQueue = dispatch_queue_create("com.awohl.FreeDOS.dosbox", DISPATCH_QUEUE_SERIAL);
+        _emulatorQueue = dispatch_queue_create("com.awohl.qxDOS.dosbox", DISPATCH_QUEUE_SERIAL);
         _shouldRun = NO;
 
         // Create temp directory for disk image files
@@ -308,7 +308,7 @@ static void frame_callback(const uint8_t *pixels, int width, int height, void *c
 }
 
 /// Map PC AT scancodes to SDL scancodes.
-/// The old iosFreeDOS used PC AT scancodes (set 1); DOSBox uses SDL scancodes.
+/// Maps PC AT scancodes (set 1) to SDL scancodes for DOSBox input injection.
 static int pc_to_sdl_scancode(uint8_t pc) {
     // Common PC AT scancode → SDL_Scancode mapping
     static const int map[128] = {

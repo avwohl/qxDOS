@@ -6,7 +6,7 @@ build*/
 *.log
 
 # Xcode
-iosFreeDOS.xcodeproj/
+qxDOS.xcodeproj/
 Local.xcconfig
 DerivedData/
 *.xcworkspace

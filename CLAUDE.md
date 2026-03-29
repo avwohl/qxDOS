@@ -1,8 +1,9 @@
-# iosFreeDOS2 - DOSBox-based FreeDOS for iOS/Mac
+# qxDOS - DOSBox-based DOS emulator for iOS/Mac
 
 ## Project Overview
 
-FreeDOS emulator for iOS and Mac, powered by DOSBox Staging.
+DOS emulator for iOS and Mac, powered by DOSBox Staging.
+Boots FreeDOS, MS-DOS, or DOSBox's built-in DOS.
 Full 386+FPU, DPMI, VGA/SVGA, Sound Blaster 16.
 
 ## Architecture
@@ -23,11 +24,11 @@ SwiftUI Views
 2. `git submodule update --init` to fetch dosbox-staging
 3. Build DOSBox as static library via cmake (see dosbox-ios/CMakeLists.txt)
 4. `xcodegen` to generate Xcode project
-5. Open iosFreeDOS.xcodeproj and build
+5. Open qxDOS.xcodeproj and build
 
 ## Key Directories
 
-- `iosFreeDOS/` - SwiftUI app (Views, Bridge, Assets)
+- `qxDOS/` - SwiftUI app (Views, Bridge, Assets)
 - `dosbox-staging/` - DOSBox source (git submodule)
 - `dosbox-ios/` - iOS-specific DOSBox integration layer
 - `fd/` - FreeDOS disk images (gitignored, built by scripts/)
@@ -39,7 +40,7 @@ SwiftUI Views
 
 Three files must stay in sync when disk images change:
 - `fd/*.img` - the actual disk images (gitignored, built by scripts/)
-- `iosFreeDOS/Resources/disks.xml` - bundled catalog (fallback in app)
+- `qxDOS/Resources/disks.xml` - bundled catalog (fallback in app)
 - `release_assets/disks.xml` - catalog published with GitHub releases
 
 When a disk image is rebuilt, check that:

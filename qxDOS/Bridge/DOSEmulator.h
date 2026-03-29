@@ -1,8 +1,8 @@
 /*
  * DOSEmulator.h - Objective-C bridge for DOSBox emulator
  *
- * Same public API as iosFreeDOS v1, but backed by DOSBox-staging
- * instead of the custom emu88 CPU emulator.
+ * Objective-C bridge for DOSBox-staging.
+ * Wraps the C dosbox_bridge API for use from SwiftUI.
  */
 
 #import <Foundation/Foundation.h>

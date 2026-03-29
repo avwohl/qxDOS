@@ -759,7 +759,7 @@ struct ContentView: View {
             }
 
             NavigationLink(destination: AboutView()) {
-                Text("About FreeDOS")
+                Text("About qxDOS")
             }
         }
     }
@@ -780,17 +780,17 @@ struct AboutView: View {
         Form {
             Section {
                 VStack(spacing: 12) {
-                    Image("FreeDOSLogo")
+                    Image("AppLogo")
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: 280)
-                        .accessibilityLabel("FreeDOS logo")
+                        .accessibilityLabel("qxDOS logo")
 
                     Text("Version \(appVersion) (Build \(buildNumber))")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
 
-                    Text("A port of FreeDOS to your phone, tablet, and desktop, powered by DOSBox Staging.")
+                    Text("A DOS emulator for your phone, tablet, and desktop, powered by DOSBox Staging.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -804,7 +804,7 @@ struct AboutView: View {
             }
 
             Section("License") {
-                Text("This emulator is licensed under the GNU General Public License v3.0. FreeDOS is licensed under the GNU General Public License v2 or later. Source code is available on GitHub.")
+                Text("This emulator is licensed under the GNU General Public License v3.0. Source code is available on GitHub.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -837,7 +837,7 @@ struct AboutView: View {
                     }
                 }
 
-                Link(destination: URL(string: "https://github.com/avwohl/iosFreeDOS2")!) {
+                Link(destination: URL(string: "https://github.com/avwohl/qxDOS")!) {
                     HStack {
                         Label("Source Code on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                         Spacer()
@@ -846,7 +846,7 @@ struct AboutView: View {
                     }
                 }
 
-                Link(destination: URL(string: "https://github.com/avwohl/iosFreeDOS2/issues")!) {
+                Link(destination: URL(string: "https://github.com/avwohl/qxDOS/issues")!) {
                     HStack {
                         Label("Report an Issue", systemImage: "exclamationmark.bubble")
                         Spacer()

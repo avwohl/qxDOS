@@ -147,8 +147,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         return URLSession(configuration: config)
     }()
 
-    private let catalogURL = "https://github.com/avwohl/iosFreeDOS2/releases/latest/download/disks.xml"
-    private let releaseBaseURL = "https://github.com/avwohl/iosFreeDOS2/releases/latest/download"
+    private let catalogURL = "https://github.com/avwohl/qxDOS/releases/latest/download/disks.xml"
+    private let releaseBaseURL = "https://github.com/avwohl/qxDOS/releases/latest/download"
 
     var disksDirectory: URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -992,7 +992,7 @@ extension EmulatorViewModel {
             let ext = (name as NSString).pathExtension.lowercased()
             return diskExtensions.contains(ext)
         }) else {
-            throw NSError(domain: "FreeDOS", code: 2, userInfo: [NSLocalizedDescriptionKey: "No .iso or .img found in zip"])
+            throw NSError(domain: "qxDOS", code: 2, userInfo: [NSLocalizedDescriptionKey: "No .iso or .img found in zip"])
         }
 
         let destName = (entry.path as NSString).lastPathComponent

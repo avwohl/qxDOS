@@ -47,9 +47,9 @@ for disk in tree.getroot().findall("disk"):
         print(f"  ERROR: {fn} missing sha256 in catalog"); errs+=1
     else:
         print(f"  OK: {fn}")
-if not os.path.exists("iosFreeDOS/Resources/disks.xml"):
+if not os.path.exists("qxDOS/Resources/disks.xml"):
     print("  ERROR: bundled disks.xml missing"); errs+=1
-elif open("release_assets/disks.xml").read() != open("iosFreeDOS/Resources/disks.xml").read():
+elif open("release_assets/disks.xml").read() != open("qxDOS/Resources/disks.xml").read():
     print("  ERROR: bundled disks.xml differs from release_assets"); errs+=1
 else:
     print("  OK: bundled disks.xml matches")
@@ -68,7 +68,7 @@ echo ""
 echo "Creating release '$TAG'..."
 gh release create "$TAG" \
   --title "$TITLE" \
-  --notes "Disk images and catalog for FreeDOS emulator. Auto-downloaded by the app." \
+  --notes "Disk images and catalog for qxDOS. Auto-downloaded by the app." \
   --latest \
   "${ASSETS[@]}"
 
@@ -78,7 +78,7 @@ sleep 3
 FAIL=0
 for a in "${ASSETS[@]}"; do
   fn=$(basename "$a")
-  url="https://github.com/avwohl/iosFreeDOS2/releases/latest/download/$fn"
+  url="https://github.com/avwohl/qxDOS2/releases/latest/download/$fn"
   status=$(curl -sI -o /dev/null -w "%{http_code}" -L "$url" 2>/dev/null)
   if [ "$status" = "200" ]; then
     echo "  OK: $fn ($status)"

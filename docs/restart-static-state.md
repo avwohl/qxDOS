@@ -42,7 +42,7 @@ This means **most** statics are safe. The problems are:
     8. GFX_InitAndStartGui()    -- creates renderer/window
 
 
-## Bridge Layer (our code in dosbox-ios/ and iosFreeDOS/Bridge/)
+## Bridge Layer (our code in dosbox-ios/ and qxDOS/Bridge/)
 
 ### dosbox-ios/dosbox_bridge.cpp
 
@@ -69,7 +69,7 @@ This means **most** statics are safe. The problems are:
                                 in HOSTIO_Destroy(). Destructor cleans up
                                 CALLBACK_HandlerObject and file handles. OK.
 
-### iosFreeDOS/Bridge/DOSEmulator.mm
+### qxDOS/Bridge/DOSEmulator.mm
 
   s_frame_pending (atomic<bool>)  May be stale on restart. Minor -- at
                                   worst drops one frame. Low priority.
