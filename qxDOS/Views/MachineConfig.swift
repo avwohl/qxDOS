@@ -7,6 +7,83 @@
 
 import Foundation
 
+// MARK: - Backend selection
+
+/// Hardware-level emulator selection. The DOS layer (FreeDOS / MS-DOS /
+/// DOSBox built-in shell) is chosen separately via DOSType. Once a session
+/// has been started the backend is captured for that run; restart-in-place
+/// is supported by emu88 but DOSBox still terminates the process on stop.
+enum EmulatorBackend: Int, Codable, CaseIterable {
+    case dosbox = 0
+    case emu88  = 1
+
+    var label: String {
+        switch self {
+        case .dosbox: return "DOSBox-staging"
+        case .emu88:  return "emu88"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .dosbox:
+            return "Full SVGA, Sound Blaster 16, dynamic recompiler. The default."
+        case .emu88:
+            return "Custom 8088/286/386 interpreter. Up to VGA, no SB16, supports clean restart."
+        }
+    }
+
+    var caps: BackendCapabilities {
+        switch self {
+        case .dosbox:
+            return BackendCapabilities(
+                maxRamMB: 64,
+                supportsSVGA: true,
+                supportsSB16: true,
+                supportsDOSBoxBuiltinShell: true,
+                supportsCustomCycles: true,
+                supports486AndPentium: true)
+        case .emu88:
+            return BackendCapabilities(
+                maxRamMB: 64,
+                supportsSVGA: false,
+                supportsSB16: false,
+                supportsDOSBoxBuiltinShell: false,
+                supportsCustomCycles: false,
+                supports486AndPentium: false)
+        }
+    }
+}
+
+/// Per-backend capability flags surfaced to the settings UI so the picker
+/// can grey out options that don't apply with an explanatory caption.
+struct BackendCapabilities {
+    let maxRamMB: Int
+    let supportsSVGA: Bool
+    let supportsSB16: Bool
+    let supportsDOSBoxBuiltinShell: Bool
+    let supportsCustomCycles: Bool
+    let supports486AndPentium: Bool
+
+    /// Help text shown beneath each disabled control. Returns nil for
+    /// controls that are enabled under the current backend.
+    func disabledHelpForSVGA() -> String? {
+        supportsSVGA ? nil : "emu88 supports up to VGA — pick VGA or lower."
+    }
+    func disabledHelpForSB16() -> String? {
+        supportsSB16 ? nil : "emu88 has no Sound Blaster — only PC speaker."
+    }
+    func disabledHelpForDOSBoxShell() -> String? {
+        supportsDOSBoxBuiltinShell ? nil : "emu88 has no built-in shell — boot FreeDOS or MS-DOS from disk."
+    }
+    func disabledHelpForCustomCycles() -> String? {
+        supportsCustomCycles ? nil : "emu88 doesn't support custom cycle counts."
+    }
+    func disabledHelpFor486Pentium() -> String? {
+        supports486AndPentium ? nil : "emu88 supports 8088/286/386 only."
+    }
+}
+
 enum DOSType: Int, Codable, CaseIterable {
     case dosboxDOS = 0   // DOSBox built-in kernel + shell + Z: utilities
     case freeDOS = 1     // Boot FreeDOS from disk image
@@ -24,6 +101,9 @@ enum DOSType: Int, Codable, CaseIterable {
 struct MachineConfig: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String = "Default"
+
+    // Hardware-level emulator selection
+    var backend: EmulatorBackend = .dosbox
 
     // DOS type — which kernel/shell runs above the hardware layer
     var dosType: DOSType = .freeDOS
@@ -113,7 +193,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
 
     // Coding keys for backward compatibility
     enum CodingKeys: String, CodingKey {
-        case id, name, dosType, machineType, speedMode, customCycles, cpuTypeStr, memoryMB
+        case id, name, backend, dosType, machineType, speedMode, customCycles, cpuTypeStr, memoryMB
         case speakerEnabled, sbEnabled, mouseEnabled
         case touchLayoutId, touchLayoutName
         case floppyAFilename, floppyBFilename, hddCFilename, hddDFilename
@@ -132,6 +212,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Default"
+        backend = try c.decodeIfPresent(EmulatorBackend.self, forKey: .backend) ?? .dosbox
         dosType = try c.decodeIfPresent(DOSType.self, forKey: .dosType) ?? .freeDOS
 
         // Try new keys first, fall back to legacy
@@ -168,6 +249,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encode(backend, forKey: .backend)
         try c.encode(dosType, forKey: .dosType)
         try c.encode(machineType, forKey: .machineType)
         try c.encode(speedMode, forKey: .speedMode)

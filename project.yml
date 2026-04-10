@@ -18,6 +18,7 @@ targets:
     platform: iOS
     sources:
       - path: qxDOS
+      - path: emu88
     configFiles:
       Debug: Config.xcconfig
       Release: Config.xcconfig
@@ -34,7 +35,9 @@ targets:
           - QXDOS_VERSION="\"v$(MARKETING_VERSION) ($(CURRENT_PROJECT_VERSION))\""
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/dosbox-ios
+          - $(SRCROOT)/dosbox-ios/libslirp
           - $(SRCROOT)/qxDOS/Bridge
+          - $(SRCROOT)/emu88
         LIBRARY_SEARCH_PATHS: $(inherited)
         OTHER_LDFLAGS:
           - -ldosbox-bridge

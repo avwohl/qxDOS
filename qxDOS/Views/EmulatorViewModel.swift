@@ -54,7 +54,7 @@ enum DownloadState: Equatable {
 
 // MARK: - View Model
 
-class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
+class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate, Emu88EmulatorDelegate {
 
     // Terminal
     @Published var terminalCells: [[TerminalCell]] = []
@@ -132,7 +132,22 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     var exportDocument: DiskImageDocument? = nil
     var exportFilename: String = "disk.img"
 
-    private var emulator: DOSEmulator?
+    // At most one of these is non-nil at a time. Which one is selected is
+    // captured at start() from `config.backend` and frozen for the run.
+    private var dosboxEmulator: DOSEmulator?
+    private var emu88Emulator: Emu88Emulator?
+    /// Backend that is currently running (or nil if stopped). Captured at
+    /// start() so the input/stop paths don't read it back from `config`,
+    /// which the user might have edited mid-run.
+    private var activeBackend: EmulatorBackend?
+    /// Security-scoped URLs whose scope must be held open for the lifetime
+    /// of the emu88 run (because mmap requires the underlying fd to remain
+    /// valid). DOSBox copies the file contents up-front and doesn't need this.
+    private var heldSecurityScopes: [URL] = []
+    /// Accumulated relative mouse position for emu88, since emu88 only
+    /// accepts absolute mouse coordinates. Reset on each restart.
+    private var emu88MouseX: Int = 320
+    private var emu88MouseY: Int = 100
     private var diskSaveTimer: Timer?
     private var configCancellable: AnyCancellable?
     private var pendingAttachments: [String: Int] = [:]
@@ -213,6 +228,17 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         // Load touch control layout for this config
         activeLayout = touchLayoutManager.layout(for: cfg.touchLayoutId)
 
+        switch cfg.backend {
+        case .dosbox:
+            startDOSBox(cfg: cfg, paths: paths, manifests: manifests)
+        case .emu88:
+            startEmu88(cfg: cfg, paths: paths, manifests: manifests)
+        }
+    }
+
+    private typealias StartPaths = (floppyA: URL?, floppyB: URL?, hddC: URL?, hddD: URL?, iso: URL?)
+
+    private func startDOSBox(cfg: MachineConfig, paths: StartPaths, manifests: Set<Int>) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
@@ -272,7 +298,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                     return
                 }
 
-                self.emulator = emu
+                self.dosboxEmulator = emu
+                self.activeBackend = .dosbox
                 emu.delegate = self
 
                 for drive in manifests {
@@ -285,6 +312,139 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                 self.statusText = ""
 
                 emu.start(withBootDrive: Int32(cfg.bootDrive), dosType: Int32(cfg.dosType.rawValue))
+
+                self.diskSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                    self?.saveAllDisks()
+                }
+                self.manifestPollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                    self?.checkManifestWriteWarning()
+                }
+            }
+        }
+    }
+
+    private func startEmu88(cfg: MachineConfig, paths: StartPaths, manifests: Set<Int>) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let emu = Emu88Emulator()
+
+            // Map qxDOS's machineType (DOSBox VGA/EGA/CGA/Tandy/Hercules/SVGA)
+            // onto the closest emu88 display adapter.
+            let display: Emu88DisplayAdapter
+            switch cfg.machineType {
+            case 0: display = .vga          // VGA → VGA
+            case 1: display = .ega          // EGA → EGA
+            case 2: display = .cga          // CGA → CGA
+            case 3: display = .cga          // Tandy → CGA (closest)
+            case 4: display = .hercules     // Hercules → Hercules
+            case 5: display = .vga          // SVGA falls back to VGA (capability disabled in UI)
+            default: display = .vga
+            }
+            emu.setDisplayAdapter(display)
+
+            // Map cpuTypeStr → emu88 CpuType. Anything 486 or newer falls
+            // back to 386 (capability disabled in UI).
+            let cpu: Emu88CpuType
+            switch cfg.cpuTypeStr.lowercased() {
+            case "8088", "xt": cpu = .i8088
+            case "286":         cpu = .i286
+            default:            cpu = .i386
+            }
+            emu.setCpuType(cpu)
+
+            emu.setMouseEnabled(cfg.mouseEnabled)
+            emu.setSpeakerEnabled(cfg.speakerEnabled)
+
+            // Map qxDOS speed modes onto emu88. Custom-cycles falls back to
+            // full speed (capability disabled in UI).
+            let speed: Emu88SpeedMode
+            switch cfg.speedMode {
+            case 0: speed = .full
+            case 1: speed = .pc
+            case 2: speed = .at
+            case 3: speed = .i386sx
+            case 4: speed = .i486dx2
+            default: speed = .full
+            }
+            emu.setSpeed(speed)
+
+            var loadError: String? = nil
+            var heldScopes: [URL] = []
+
+            // Helper that holds the security scope for the run instead of
+            // releasing it immediately, since mmap needs the fd alive.
+            func loadDiskKeepingScope(drive: Int32, url: URL) -> Bool {
+                _ = url.startAccessingSecurityScopedResource()
+                if emu.loadDisk(drive, fromPath: url.path) {
+                    heldScopes.append(url)
+                    return true
+                }
+                url.stopAccessingSecurityScopedResource()
+                return false
+            }
+
+            if let url = paths.floppyA, !self.startCancelled {
+                if !loadDiskKeepingScope(drive: 0, url: url) {
+                    loadError = "Failed to load floppy A:"
+                }
+            }
+            if let url = paths.floppyB, !self.startCancelled, loadError == nil {
+                _ = loadDiskKeepingScope(drive: 1, url: url)
+            }
+            if let url = paths.hddC, !self.startCancelled, loadError == nil {
+                if !loadDiskKeepingScope(drive: 0x80, url: url) {
+                    loadError = "Failed to load hard disk C:"
+                }
+            }
+            if let url = paths.hddD, !self.startCancelled, loadError == nil {
+                _ = loadDiskKeepingScope(drive: 0x81, url: url)
+            }
+            if let url = paths.iso, !self.startCancelled, loadError == nil {
+                _ = url.startAccessingSecurityScopedResource()
+                if emu.loadISO(url.path) < 0 {
+                    loadError = "Failed to load CD-ROM ISO"
+                    url.stopAccessingSecurityScopedResource()
+                } else {
+                    heldScopes.append(url)
+                }
+            }
+
+            DispatchQueue.main.async {
+                if self.startCancelled {
+                    for u in heldScopes { u.stopAccessingSecurityScopedResource() }
+                    self.isStarting = false
+                    self.isRunning = false
+                    self.statusText = ""
+                    return
+                }
+                if let error = loadError {
+                    for u in heldScopes { u.stopAccessingSecurityScopedResource() }
+                    self.errorMessage = error
+                    self.showingError = true
+                    self.isStarting = false
+                    self.isRunning = false
+                    self.statusText = ""
+                    return
+                }
+
+                self.emu88Emulator = emu
+                self.activeBackend = .emu88
+                self.heldSecurityScopes = heldScopes
+                self.emu88MouseX = 320
+                self.emu88MouseY = 100
+                emu.delegate = self
+
+                for drive in manifests {
+                    emu.setDiskIsManifest(Int32(drive), isManifest: true)
+                }
+
+                self.terminalShouldFocus = true
+                self.manifestWriteWarningShown = false
+                self.isStarting = false
+                self.statusText = ""
+
+                emu.start(withBootDrive: Int32(cfg.bootDrive))
 
                 self.diskSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
                     self?.saveAllDisks()
@@ -309,28 +469,49 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         diskSaveTimer?.invalidate(); diskSaveTimer = nil
         manifestPollTimer?.invalidate(); manifestPollTimer = nil
         saveAllDisks()
-        // Terminate the process immediately — DOSBox's pervasive
-        // static/global state makes in-process restart unreliable.
-        // _exit() skips atexit handlers and static destructors,
-        // avoiding races with the DOSBox background thread.
-        // The OS reclaims all resources.
-        _exit(0)
+
+        switch activeBackend {
+        case .emu88:
+            // emu88 supports clean in-process teardown — its state lives in
+            // unique_ptrs and there's no DOSBox-style globals to worry about.
+            // Stop the run loop, release security scopes, drop UI state.
+            emu88Emulator?.stop()
+            emu88Emulator = nil
+            for u in heldSecurityScopes { u.stopAccessingSecurityScopedResource() }
+            heldSecurityScopes.removeAll()
+            activeBackend = nil
+            isRunning = false
+            isStarting = false
+            gfxImage = nil
+            clearTerminal()
+        case .dosbox, .none:
+            // Terminate the process immediately — DOSBox's pervasive
+            // static/global state makes in-process restart unreliable.
+            // _exit() skips atexit handlers and static destructors,
+            // avoiding races with the DOSBox background thread.
+            // The OS reclaims all resources.
+            _exit(0)
+        }
     }
 
-    func reset() { stop(); emulator = nil }
+    func reset() {
+        stop()
+        dosboxEmulator = nil
+        emu88Emulator = nil
+    }
 
     // MARK: - Input
 
     func sendKey(_ char: Character) {
-        guard let emu = emulator else { return }
+        guard activeBackend != nil else { return }
         let scalar = char.unicodeScalars.first?.value ?? 0
 
         // Arrow keys (private-use Unicode values from UIKeyCommand)
         switch scalar {
-        case 0xF700: emu.sendScancode(0, scancode: 0x48); return
-        case 0xF701: emu.sendScancode(0, scancode: 0x50); return
-        case 0xF702: emu.sendScancode(0, scancode: 0x4B); return
-        case 0xF703: emu.sendScancode(0, scancode: 0x4D); return
+        case 0xF700: sendDirectScancode(ascii: 0, scancode: 0x48); return
+        case 0xF701: sendDirectScancode(ascii: 0, scancode: 0x50); return
+        case 0xF702: sendDirectScancode(ascii: 0, scancode: 0x4B); return
+        case 0xF703: sendDirectScancode(ascii: 0, scancode: 0x4D); return
         default: break
         }
 
@@ -338,7 +519,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         if isFnActive {
             if let fScan = Self.fnScancode(for: scalar) {
                 isFnActive = false
-                emu.sendScancode(0, scancode: fScan)
+                sendDirectScancode(ascii: 0, scancode: fScan)
                 return
             }
             isFnActive = false  // non-digit cancels Fn
@@ -348,35 +529,71 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         if isAltActive {
             if let scan = Self.charToScancode(scalar) {
                 isAltActive = false
-                emu.sendScancode(0, scancode: scan)
+                sendDirectScancode(ascii: 0, scancode: scan)
                 return
             }
             isAltActive = false
         }
 
-        emu.sendCharacter(char.unicodeScalars.first.map { unichar($0.value) } ?? 0)
-
-        // Controlify handled by DOSBox natively (Ctrl key combos work)
+        let ch = char.unicodeScalars.first.map { unichar($0.value) } ?? 0
+        switch activeBackend {
+        case .dosbox: dosboxEmulator?.sendCharacter(ch)
+        case .emu88:  emu88Emulator?.sendCharacter(ch)
+        case .none:   break
+        }
     }
 
     func sendDirectScancode(ascii: UInt8, scancode: UInt8) {
-        emulator?.sendScancode(ascii, scancode: scancode)
+        switch activeBackend {
+        case .dosbox: dosboxEmulator?.sendScancode(ascii, scancode: scancode)
+        case .emu88:  emu88Emulator?.sendScancode(ascii, scancode: scancode)
+        case .none:   break
+        }
     }
 
     func sendScancodePress(_ scancode: UInt8) {
-        emulator?.sendScancodePress(scancode)
+        switch activeBackend {
+        case .dosbox: dosboxEmulator?.sendScancodePress(scancode)
+        case .emu88:  emu88Emulator?.sendScancodePress(scancode)
+        case .none:   break
+        }
     }
 
     func sendScancodeRelease(_ scancode: UInt8) {
-        emulator?.sendScancodeRelease(scancode)
+        switch activeBackend {
+        case .dosbox: dosboxEmulator?.sendScancodeRelease(scancode)
+        case .emu88:  emu88Emulator?.sendScancodeRelease(scancode)
+        case .none:   break
+        }
     }
 
     func sendMouseUpdate(x: Int, y: Int, buttons: Int) {
-        emulator?.updateMouseX(Int32(x), y: Int32(y), buttons: Int32(buttons))
+        switch activeBackend {
+        case .dosbox:
+            dosboxEmulator?.updateMouseX(Int32(x), y: Int32(y), buttons: Int32(buttons))
+        case .emu88:
+            emu88MouseX = x
+            emu88MouseY = y
+            emu88Emulator?.updateMouseX(Int32(x), y: Int32(y), buttons: Int32(buttons))
+        case .none:
+            break
+        }
     }
 
     func sendMouseDelta(dx: Int, dy: Int, buttons: Int = 0) {
-        emulator?.updateMouseDX(Int32(dx), dy: Int32(dy), buttons: Int32(buttons))
+        switch activeBackend {
+        case .dosbox:
+            dosboxEmulator?.updateMouseDX(Int32(dx), dy: Int32(dy), buttons: Int32(buttons))
+        case .emu88:
+            // emu88 only accepts absolute coordinates, so accumulate the
+            // delta into a virtual cursor and clamp to the standard
+            // 640×200 virtual display.
+            emu88MouseX = max(0, min(639, emu88MouseX + dx))
+            emu88MouseY = max(0, min(199, emu88MouseY + dy))
+            emu88Emulator?.updateMouseX(Int32(emu88MouseX), y: Int32(emu88MouseY), buttons: Int32(buttons))
+        case .none:
+            break
+        }
     }
 
     func setControlify(_ mode: Int) {
@@ -429,7 +646,26 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         var cfg = config
         cfg.speedMode = mode.rawValue
         configManager.updateConfig(cfg)
-        emulator?.setSpeed(mode)
+        switch activeBackend {
+        case .dosbox:
+            dosboxEmulator?.setSpeed(mode)
+        case .emu88:
+            // emu88 has no custom-cycles support — fall back to full speed
+            // when the user picks .fixed (the UI also disables this row).
+            let mapped: Emu88SpeedMode
+            switch mode {
+            case .max:    mapped = .full
+            case .slow:   mapped = .pc
+            case .medium: mapped = .at
+            case .fast:   mapped = .i386sx
+            case .faster: mapped = .i486dx2
+            case .fixed:  mapped = .full
+            @unknown default: mapped = .full
+            }
+            emu88Emulator?.setSpeed(mapped)
+        case .none:
+            break
+        }
     }
 
     // MARK: - Disk Management
@@ -477,7 +713,13 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     }
 
     func saveDisk(_ unit: Int) {
-        guard let emu = emulator, let data = emu.getDiskData(Int32(unit)) else { return }
+        let data: Data?
+        switch activeBackend {
+        case .dosbox: data = dosboxEmulator?.getDiskData(Int32(unit))
+        case .emu88:  data = emu88Emulator?.getDiskData(Int32(unit))
+        case .none:   data = nil
+        }
+        guard let data = data else { return }
         currentDiskUnit = unit
         exportDocument = DiskImageDocument(data: data)
         exportFilename = "disk.img"
@@ -521,11 +763,21 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     }
 
     func saveAllDisks() {
-        guard let emu = emulator else { return }
-        for (drive, path) in [(0, floppyAPath), (1, floppyBPath), (0x80, hddCPath), (0x81, hddDPath)] {
-            guard let url = path, url.path.contains("/Documents/"),
-                  let data = emu.getDiskData(Int32(drive)) else { continue }
-            try? data.write(to: url)
+        switch activeBackend {
+        case .emu88:
+            // emu88 disks are mmap-backed with MAP_SHARED, so the kernel
+            // already flushes guest writes to the file lazily.  A single
+            // msync(MS_ASYNC) sweep is enough — no Foundation copy needed.
+            emu88Emulator?.syncDisks()
+        case .dosbox:
+            guard let emu = dosboxEmulator else { return }
+            for (drive, path) in [(0, floppyAPath), (1, floppyBPath), (0x80, hddCPath), (0x81, hddDPath)] {
+                guard let url = path, url.path.contains("/Documents/"),
+                      let data = emu.getDiskData(Int32(drive)) else { continue }
+                try? data.write(to: url)
+            }
+        case .none:
+            break
         }
     }
 
@@ -692,7 +944,13 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
 
     private func checkManifestWriteWarning() {
         guard warnManifestWrites, !manifestWriteWarningShown else { return }
-        if emulator?.pollManifestWriteWarning() == true {
+        let warned: Bool
+        switch activeBackend {
+        case .dosbox: warned = dosboxEmulator?.pollManifestWriteWarning() == true
+        case .emu88:  warned = emu88Emulator?.pollManifestWriteWarning() == true
+        case .none:   warned = false
+        }
+        if warned {
             manifestWriteWarningShown = true
             showingManifestWriteWarning = true
         }
@@ -968,6 +1226,15 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         diskSaveTimer?.invalidate(); diskSaveTimer = nil
         manifestPollTimer?.invalidate(); manifestPollTimer = nil
         saveAllDisks()
+        // Release emu88-only state.  DOSBox never reaches this path because
+        // its stop() goes straight to _exit(0); it's only the in-process
+        // emu88 backend whose CPU can naturally halt and call back here.
+        if activeBackend == .emu88 {
+            emu88Emulator = nil
+            for u in heldSecurityScopes { u.stopAccessingSecurityScopedResource() }
+            heldSecurityScopes.removeAll()
+            activeBackend = nil
+        }
         isRunning = false
         gfxImage = nil
     }

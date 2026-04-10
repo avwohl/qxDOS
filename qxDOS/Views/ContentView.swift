@@ -346,7 +346,24 @@ struct ContentView: View {
     // MARK: - Machine Section
 
     var displaySection: some View {
-        Section("Machine") {
+        let caps = viewModel.config.backend.caps
+        return Section("Machine") {
+            Picker("Backend", selection: Binding(
+                get: { viewModel.config.backend },
+                set: { val in
+                    var cfg = viewModel.config
+                    cfg.backend = val
+                    viewModel.configManager.updateConfig(cfg)
+                }
+            )) {
+                ForEach(EmulatorBackend.allCases, id: \.self) { b in
+                    Text(b.label).tag(b)
+                }
+            }
+
+            Text(viewModel.config.backend.caption)
+                .font(.caption).foregroundColor(.secondary)
+
             Picker("DOS", selection: Binding(
                 get: { viewModel.config.dosType },
                 set: { val in
@@ -356,7 +373,9 @@ struct ContentView: View {
                 }
             )) {
                 ForEach(DOSType.allCases, id: \.self) { type in
-                    Text(type.label).tag(type)
+                    Text(type.label)
+                        .tag(type)
+                        .disabled(type == .dosboxDOS && !caps.supportsDOSBoxBuiltinShell)
                 }
             }
 
@@ -372,6 +391,11 @@ struct ContentView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            if let help = caps.disabledHelpForDOSBoxShell() {
+                Text(help)
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             Picker("Type", selection: Binding(
                 get: { viewModel.config.machineType },
                 set: { val in
@@ -380,12 +404,17 @@ struct ContentView: View {
                     viewModel.configManager.updateConfig(cfg)
                 }
             )) {
-                Text("SVGA (S3)").tag(5)
+                Text("SVGA (S3)").tag(5).disabled(!caps.supportsSVGA)
                 Text("VGA").tag(0)
                 Text("EGA").tag(1)
                 Text("CGA").tag(2)
                 Text("Tandy").tag(3)
                 Text("Hercules").tag(4)
+            }
+
+            if let help = caps.disabledHelpForSVGA() {
+                Text(help)
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             Picker("RAM", selection: Binding(
@@ -408,7 +437,8 @@ struct ContentView: View {
     // MARK: - Peripherals Section
 
     var peripheralsSection: some View {
-        Section("Peripherals") {
+        let caps = viewModel.config.backend.caps
+        return Section("Peripherals") {
             Toggle("Mouse", isOn: Binding(
                 get: { viewModel.config.mouseEnabled },
                 set: { val in
@@ -435,6 +465,12 @@ struct ContentView: View {
                     viewModel.configManager.updateConfig(cfg)
                 }
             ))
+            .disabled(!caps.supportsSB16)
+
+            if let help = caps.disabledHelpForSB16() {
+                Text(help)
+                    .font(.caption).foregroundColor(.secondary)
+            }
 
             Picker("CPU Type", selection: Binding(
                 get: { viewModel.config.cpuTypeStr },
@@ -448,9 +484,14 @@ struct ContentView: View {
                 Text("386").tag("386")
                 Text("386 Fast").tag("386_fast")
                 Text("386 Prefetch").tag("386_prefetch")
-                Text("486").tag("486")
-                Text("Pentium").tag("pentium")
-                Text("Pentium MMX").tag("pentium_mmx")
+                Text("486").tag("486").disabled(!caps.supports486AndPentium)
+                Text("Pentium").tag("pentium").disabled(!caps.supports486AndPentium)
+                Text("Pentium MMX").tag("pentium_mmx").disabled(!caps.supports486AndPentium)
+            }
+
+            if let help = caps.disabledHelpFor486Pentium() {
+                Text(help)
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             Picker("CPU Speed", selection: Binding(
@@ -465,7 +506,7 @@ struct ContentView: View {
                 Text("IBM PC (4.77 MHz)").tag(1)
                 Text("IBM AT (8 MHz)").tag(2)
                 Text("386SX (16 MHz)").tag(3)
-                Text("486DX2 (66 MHz)").tag(4)
+                Text("486DX2 (66 MHz)").tag(4).disabled(!caps.supports486AndPentium)
             }
         }
     }
