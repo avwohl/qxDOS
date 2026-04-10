@@ -79,14 +79,35 @@ the app container's Documents directory (Mac).
 
 The app includes a downloadable catalog of disk images:
 
-- **FreeDOS Hard Disk** — 200MB bootable FreeDOS with 230 utilities
-- **FreeDOS Starter** — 22MB minimal bootable FreeDOS
+- **FreeDOS Hard Disk** — ~320 MB bootable FreeDOS with 230 utilities, full source under `C:\SOURCE\` and per-package `SOURCE/` trees
+- **FreeDOS Starter** — ~32 MB minimal bootable FreeDOS, also with kernel/FreeCom/mTCP source
+- **FreeDOS Boot Floppy (qxDOS)** — 1.44 MB FreeDOS boot floppy with attribution/credits
 - **FreeDOS 1.4 / 1.3 LiveCD** — official installer ISOs (from freedos.org)
+- **MS-DOS 4.0 Hard Disk** — 64 MB bootable Multitasking MS-DOS 4.0 BETA from microsoft/MS-DOS, with source ZIP on disk
+- **MS-DOS 4.0 Boot Floppy** — 1.44 MB bootable Multitasking MS-DOS 4.0 BETA
 - **Simtel MS-DOS Archive** — thousands of DOS utilities and shareware (from archive.org)
 - **Walnut Creek CD-ROMs** — classic DOS software collections (from archive.org)
 
 CD-ROM ISOs are downloaded directly from their original hosts. ZIP files
 are automatically extracted.
+
+### Source code on bundled disks
+
+In accordance with section 3 of the GNU General Public License, every
+GPL binary on a bundled FreeDOS disk image is shipped together with
+its corresponding source code on the same disk:
+
+- The kernel, FreeCom, and mTCP source archives live in `C:\SOURCE\`
+- Each FreeDOS package directory (`C:\FREEDOS\<PKG>\`) contains a
+  `SOURCE\` subdirectory with the package's original source as
+  published by the FreeDOS Project
+- License texts (GPL v2, GPL v3, MIT) live in `C:\LICENSE\`
+- Credits and attribution: `C:\CREDITS.TXT`, `C:\README.TXT`,
+  `C:\SOURCE.TXT`
+
+The MS-DOS bundled disk ships with `C:\SOURCE\MSDOS40.ZIP` (the MIT-
+licensed production MS-DOS 4.00/4.01 source from
+github.com/microsoft/MS-DOS) plus `C:\LICENSE.TXT`.
 
 ## Building
 
@@ -144,15 +165,32 @@ SwiftUI App (qxDOS/)
 qxDOS is licensed under GPL-3.0-or-later. See [LICENSE](LICENSE) for
 the full license text.
 
-This app distributes GPL-licensed binaries from several projects.
-Complete source code is available at:
+This app distributes binaries from several independent open-source
+projects. Each project's license is respected and its source code is
+available — both directly on every disk image we ship (under
+`C:\SOURCE\` and per-package `SOURCE/` trees) and from the upstream
+sources listed below:
 
-- **qxDOS:** https://github.com/avwohl/qxDOS
-- **DOSBox Staging (GPL v2+):** https://github.com/dosbox-staging/dosbox-staging
-- **FreeDOS kernel and utilities (GPL v2+):** https://github.com/FDOS
-- **mTCP (GPL v3):** https://www.brutman.com/mTCP/
+- **qxDOS** (GPL v3+) — https://github.com/avwohl/qxDOS
+- **DOSBox Staging** (GPL v2+) — https://github.com/dosbox-staging/dosbox-staging
+- **emu88** alternate hardware backend (GPL v3+, qxDOS-internal)
+- **FreeDOS kernel** (GPL v2+) — https://github.com/FDOS/kernel
+- **FreeCom (COMMAND.COM)** (GPL v2+) — https://github.com/FDOS/freecom
+- **FreeDOS utilities** (GPL v2+ / BSD) — https://github.com/FDOS
+- **CWSDPMI** (modified GPL v2) — http://sandmann.dotster.com/cwsdpmi/
+- **mTCP** (GPL v3) — https://www.brutman.com/mTCP/
+- **NE2000 packet driver** (Crynwr, GPL v2+) — http://crynwr.com/drivers/
+- **libslirp** (BSD-3-Clause) — https://gitlab.freedesktop.org/slirp/libslirp
+- **ZIPFoundation** (MIT) — https://github.com/weichsel/ZIPFoundation
+- **MS-DOS** (MIT, © IBM and Microsoft) — https://github.com/microsoft/MS-DOS
+
+qxDOS did not write any of the operating systems or emulator cores
+listed above. All credit for FreeDOS, MS-DOS, DOSBox Staging, mTCP,
+libslirp, and the rest belongs to their respective authors. qxDOS
+only repackages their work into a SwiftUI app shell.
 
 You may also request source code by opening an issue at
-https://github.com/avwohl/qxDOS/issues. This offer is valid for three
-years from the date of each release. See [RIGHTS.md](RIGHTS.md) for
-full licensing details.
+https://github.com/avwohl/qxDOS/issues. This offer is valid for at
+least three years from the date of each release. See
+[RIGHTS.md](RIGHTS.md) for the full attribution list, the trademark
+notice, and the explicit GPL §3 source-on-disk statement.

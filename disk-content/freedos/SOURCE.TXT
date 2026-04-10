@@ -1,0 +1,75 @@
+                qxDOS FreeDOS Disk - Source Code
+                ================================
+
+This file describes where to find the source code for every program
+on this disk, satisfying section 3 of the GNU General Public License.
+
+
+Source code shipped on this disk
+--------------------------------
+
+C:\SOURCE\KERNEL-SRC.ZIP
+  Source code for the FreeDOS kernel (KERNEL.SYS) as published by
+  the FreeDOS Project.  License: GPL v2 or later.
+
+C:\SOURCE\FREECOM-SRC.ZIP
+  Source code for FreeCom (COMMAND.COM) as published by the
+  FreeDOS Project.  License: GPL v2 or later.
+
+C:\SOURCE\MTCP-SRC.ZIP
+  Source code for mTCP (FTP, TELNET, PING, HTGET, DHCP) as
+  published by Michael Brutman.  License: GPL v3 or later.
+
+C:\FREEDOS\<PKG>\SOURCE\
+  Each FreeDOS package directory contains its own SOURCE\
+  subdirectory with the original source for that package, as
+  published in the FreeDOS LiveCD package zip files.  This is
+  the form in which FreeDOS distributors normally satisfy GPL
+  section 3 (a) for the utility set.
+
+
+Source code NOT on this disk
+----------------------------
+
+The qxDOS app itself, DOSBox Staging, libslirp, ZIPFoundation, and
+other host-side code does not run on this disk.  These programs
+are part of the iOS / macOS application that displays this disk;
+their source is published on the internet at the addresses listed
+in C:\CREDITS.TXT.
+
+
+How to get the source if any of the above is missing
+-----------------------------------------------------
+
+  1.  Visit https://github.com/avwohl/qxDOS  and download the
+      latest disk image; the build script always copies the
+      current source archives.
+
+  2.  Open an issue at  https://github.com/avwohl/qxDOS/issues
+      and request the source.  Aaron Wohl will provide it
+      free of charge for at least three years from the date
+      this disk image was built.
+
+  3.  The original upstream sources are always available at:
+        FreeDOS kernel:  https://github.com/FDOS/kernel
+        FreeCom:         https://github.com/FDOS/freecom
+        FreeDOS pkgs:    https://github.com/FDOS
+        mTCP:            https://www.brutman.com/mTCP/
+        Crynwr drivers:  http://crynwr.com/drivers/
+        CWSDPMI:         http://sandmann.dotster.com/cwsdpmi/
+
+
+Why the source is here
+----------------------
+
+The GNU General Public License section 3 says:  if you distribute a
+binary program covered by the GPL, you must also "accompany it with
+the complete corresponding machine-readable source code, which must
+be distributed under the terms of Sections 1 and 2 above on a medium
+customarily used for software interchange."
+
+Shipping the source on the same disk image as the binaries is the
+straightforward, friendly way to do this.  An earlier version of
+this disk did NOT include FreeDOS package sources; that was a
+mistake which the FreeDOS community pointed out, and it has been
+corrected.  Please tell us if anything is still missing.

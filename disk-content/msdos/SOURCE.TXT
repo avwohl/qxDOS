@@ -1,0 +1,58 @@
+                qxDOS MS-DOS 4.0 Disk - Source Code
+                ===================================
+
+The MIT License under which Microsoft and IBM released MS-DOS 4.0 in
+April 2024 does NOT require that source code accompany the binaries.
+qxDOS ships the source on the disk anyway because the disk is then
+self-contained and inspectable, and because users who want to learn
+how MS-DOS works can read the assembler directly from the boot medium.
+
+
+Source code shipped on this disk
+--------------------------------
+
+C:\SOURCE\MSDOS40.ZIP
+  The 1988 production MS-DOS 4.00 / 4.01 source code (the IBM and
+  Microsoft retail product), as published in the microsoft/MS-DOS
+  GitHub repository under v4.0/src.  License: MIT.
+
+  This is the production-quality MS-DOS 4.x assembler source.
+  It does not match the binaries on this disk -- the disk boots
+  the Multitasking BETA -- but it is the version most people have
+  in mind when they say "MS-DOS 4 source code".
+
+C:\SOURCE\MDOS4OZ.ZIP
+  The 1985-1986 Multitasking MS-DOS 4.0 BETA boot disks (DISK1 and
+  DISK2 of the original Microsoft + IBM internal release), recovered
+  by Ray Ozzie and released by Microsoft under MIT in 2024.  This
+  archive contains IBMBIO.ASM and IBMDOS.ASM -- the source code that
+  was used to produce the IBMBIO.COM and IBMDOS.COM files that boot
+  this very disk.  License: MIT.
+
+  Original publication:
+    https://github.com/microsoft/MS-DOS  (under v4.0-ozzie/)
+
+  Both archives are created by the qxDOS build script
+  (scripts/build_msdos_hd.sh) directly from a fresh git clone of
+  microsoft/MS-DOS.  No modifications are made to the source.
+
+
+Copyright and license
+---------------------
+
+  Copyright (c) IBM Corporation and Microsoft Corporation.
+  Released under the MIT License -- see C:\LICENSE.TXT for the full
+  text as shipped in microsoft/MS-DOS  v4.0/LICENSE.
+
+
+How to get the source if it is missing
+---------------------------------------
+
+  1.  Clone the repository directly:
+        git clone https://github.com/microsoft/MS-DOS
+
+  2.  Open an issue at  https://github.com/avwohl/qxDOS/issues
+      and request that a fresh disk image be built and uploaded.
+
+  3.  Email Aaron Wohl through the GitHub profile attached to the
+      qxDOS repository.

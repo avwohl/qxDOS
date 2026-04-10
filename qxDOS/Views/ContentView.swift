@@ -849,7 +849,11 @@ struct AboutView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                Text("This app includes GPL-licensed binaries from DOSBox Staging (GPL v2+), FreeDOS (GPL v2+), and mTCP (GPL v3). Complete source code is available from the links below, or upon request via GitHub Issues. This offer is valid for three years from each release.")
+                Text("This app distributes binaries from many independent open-source projects. Complete source code for every GPL component is available three ways: (1) on every bundled FreeDOS disk image under C:\\SOURCE\\ and per-package SOURCE\\ trees, (2) from the upstream project links below, and (3) by written request via GitHub Issues — valid for at least three years from each release.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("qxDOS did not write FreeDOS, MS-DOS, DOSBox Staging, mTCP, libslirp, or any of the operating systems and libraries listed below. All credit for those projects belongs to their respective authors.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -882,9 +886,36 @@ struct AboutView: View {
                     }
                 }
 
+                Link(destination: URL(string: "https://github.com/microsoft/MS-DOS")!) {
+                    HStack {
+                        Label("MS-DOS Source (MIT, IBM/Microsoft)", systemImage: "doc.text")
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 Link(destination: URL(string: "https://www.brutman.com/mTCP/")!) {
                     HStack {
                         Label("mTCP Source (GPL v3)", systemImage: "network")
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Link(destination: URL(string: "https://gitlab.freedesktop.org/slirp/libslirp")!) {
+                    HStack {
+                        Label("libslirp Source (BSD-3)", systemImage: "antenna.radiowaves.left.and.right")
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Link(destination: URL(string: "https://github.com/weichsel/ZIPFoundation")!) {
+                    HStack {
+                        Label("ZIPFoundation Source (MIT)", systemImage: "doc.zipper")
                         Spacer()
                         Image(systemName: "arrow.up.right.square")
                             .foregroundColor(.secondary)
@@ -906,7 +937,19 @@ struct AboutView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
+                Text("emu88, the alternate hardware backend bundled inside qxDOS, is licensed under GPL v3 and ships in the qxDOS source tree under emu88/.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
                 Text("FreeDOS is licensed under GPL v2+. Copyright 1995-2012 Pasquale J. Villani and The FreeDOS Project. Source: github.com/FDOS")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("FreeCom (COMMAND.COM) is licensed under GPL v2+. Source: github.com/FDOS/freecom")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("CWSDPMI by Charles W Sandmann is licensed under a modified GPL v2 (no-fee/embedding clause). Source: sandmann.dotster.com/cwsdpmi")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -914,7 +957,23 @@ struct AboutView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                Text("NE2000 packet driver by Crynwr Software. Source: crynwr.com/drivers")
+                Text("NE2000 packet driver by Crynwr Software (Russell Nelson and contributors), GPL v2+. Source: crynwr.com/drivers")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("libslirp is licensed under the 3-clause BSD License. Source: gitlab.freedesktop.org/slirp/libslirp")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("ZIPFoundation is licensed under the MIT License. Source: github.com/weichsel/ZIPFoundation")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("MS-DOS source and binaries are released by Microsoft Corporation under the MIT License. Copyright (c) IBM and Microsoft Corporation. Source: github.com/microsoft/MS-DOS")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("\"FreeDOS\" is a trademark of Jim Hall and the FreeDOS Project. \"MS-DOS\", \"Microsoft\", and \"Windows\" are trademarks of Microsoft Corporation. \"IBM\" and \"PC-DOS\" are trademarks of IBM. qxDOS is not affiliated with, endorsed by, or sponsored by any of these projects or companies.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

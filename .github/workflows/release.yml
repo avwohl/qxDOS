@@ -34,31 +34,25 @@ jobs:
           nasm -f bin -o dos/w.com dos/w.asm
           nasm -f bin -o dos/dpmitest.com dos/dpmitest.asm
 
-      - name: Download FreeDOS boot floppy
-        run: |
-          mkdir -p fd
-          # Original: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BOOT.img
-          curl -L --retry 3 --connect-timeout 30 -o fd/freedos.img \
-            https://www.awohl.com/freedos/freedos.img
+      # The build scripts download their own dependencies
+      # (FreeDOS FloppyEdition zip, FD14-LiveCD.zip, microsoft/MS-DOS,
+      # FreeDOS kernel/freecom/mTCP source archives) directly from
+      # the upstream sites.  No pre-staged downloads needed.
 
-      - name: Download FreeDOS 1.4 ISOs
-        run: |
-          # Original sources (ibiblio rate-limits CI runners):
-          #   https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14LIVE.iso
-          #   https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BNS.iso
-          echo "Downloading FreeDOS 1.4 LiveCD..."
-          curl -L --retry 3 --connect-timeout 30 -o fd/FD14LIVE.iso \
-            https://www.awohl.com/freedos/FD14LIVE.iso
-          echo "Downloading FreeDOS 1.4 Bonus CD..."
-          curl -L --retry 3 --connect-timeout 30 -o fd/FD14BNS.iso \
-            https://www.awohl.com/freedos/FD14BNS.iso
-          ls -lh fd/*.iso
+      - name: Build FreeDOS boot floppy (qxDOS)
+        run: scripts/build_freedos_floppy.sh
 
-      - name: Build starter disk image
+      - name: Build FreeDOS starter disk
         run: scripts/build_starter_disk.sh
 
-      - name: Build hard disk image
+      - name: Build FreeDOS hard disk
         run: scripts/build_hdd.sh
+
+      - name: Build MS-DOS boot floppy
+        run: scripts/build_msdos_floppy.sh
+
+      - name: Build MS-DOS hard disk
+        run: scripts/build_msdos_hd.sh
 
       - name: Update disk catalog SHA256 from built images
         run: |
@@ -66,8 +60,11 @@ jobs:
           import hashlib, os, re
 
           disks = {
+            "freedos_qx.img":      "fd/freedos_qx.img",
             "freedos_starter.img": "fd/freedos_starter.img",
-            "freedos_hd.img": "fd/freedos_hd.img",
+            "freedos_hd.img":      "fd/freedos_hd.img",
+            "msdos.img":           "fd/msdos.img",
+            "msdos_hd.img":        "fd/msdos_hd.img",
           }
 
           xml_path = "release_assets/disks.xml"
@@ -94,7 +91,7 @@ jobs:
       - name: Verify disk catalog SHA256
         run: |
           fail=0
-          for img in fd/freedos_starter.img fd/freedos_hd.img; do
+          for img in fd/freedos_qx.img fd/freedos_starter.img fd/freedos_hd.img fd/msdos.img fd/msdos_hd.img; do
             [ -f "$img" ] || continue
             fname=$(basename "$img")
             actual=$(shasum -a 256 "$img" | cut -d' ' -f1)
@@ -129,13 +126,13 @@ jobs:
           # DOS utilities
           cp dos/r.com dist/
           cp dos/w.com dist/
-          # Boot disk
-          cp fd/freedos.img dist/
-          # Disk images
-          cp fd/freedos_starter.img dist/
-          if [ -f fd/freedos_hd.img ]; then
-            cp fd/freedos_hd.img dist/
-          fi
+          # Disk images (all five bundled disks)
+          for img in freedos_qx.img freedos_starter.img freedos_hd.img \
+                     msdos.img msdos_hd.img; do
+            if [ -f "fd/$img" ]; then
+              cp "fd/$img" dist/
+            fi
+          done
           # Generate checksums
           cd dist && shasum -a 256 * > SHA256SUMS
 

@@ -85,12 +85,25 @@ You can download ready-made images from the in-app disk catalog, import your own
 
 ## Open Source Licenses
 
-This app includes GPL-licensed software. Complete source code is available at the links below, or upon request via [GitHub Issues](https://github.com/avwohl/qxDOS/issues). This offer is valid for three years from the date of each release.
+This app includes software from many independent open-source projects. Complete source code is available three ways:
 
-- **qxDOS** (GPL v3) — [github.com/avwohl/qxDOS](https://github.com/avwohl/qxDOS)
+1. **On every bundled FreeDOS disk image** under `C:\SOURCE\` and per-package `SOURCE/` directories. This is the GPL §3(a) form of compliance and is the qxDOS default.
+2. **From the upstream projects** at the links below.
+3. **By written request** via [GitHub Issues](https://github.com/avwohl/qxDOS/issues) — valid for at least three years from each release.
+
+- **qxDOS** (GPL v3+) — [github.com/avwohl/qxDOS](https://github.com/avwohl/qxDOS)
 - **DOSBox Staging** (GPL v2+) — [github.com/dosbox-staging/dosbox-staging](https://github.com/dosbox-staging/dosbox-staging)
-- **FreeDOS** (GPL v2+) — [github.com/FDOS](https://github.com/FDOS)
-- **mTCP** (GPL v3) — [brutman.com/mTCP](https://www.brutman.com/mTCP/)
-- **NE2000 packet driver** (Crynwr Open Source) — [crynwr.com/drivers](http://crynwr.com/drivers/)
+- **emu88** alternate hardware backend (GPL v3+, qxDOS-internal)
+- **FreeDOS kernel** (GPL v2+) — [github.com/FDOS/kernel](https://github.com/FDOS/kernel)
+- **FreeCom (COMMAND.COM)** (GPL v2+) — [github.com/FDOS/freecom](https://github.com/FDOS/freecom)
+- **FreeDOS utilities** (GPL v2+ / BSD) — [github.com/FDOS](https://github.com/FDOS)
+- **CWSDPMI** (modified GPL v2) — [sandmann.dotster.com/cwsdpmi](http://sandmann.dotster.com/cwsdpmi/)
+- **mTCP** (GPL v3) by Michael Brutman — [brutman.com/mTCP](https://www.brutman.com/mTCP/)
+- **NE2000 packet driver** (Crynwr, GPL v2+) — [crynwr.com/drivers](http://crynwr.com/drivers/)
 - **libslirp** (BSD 3-Clause) — [gitlab.freedesktop.org/slirp/libslirp](https://gitlab.freedesktop.org/slirp/libslirp)
 - **ZIPFoundation** (MIT) — [github.com/weichsel/ZIPFoundation](https://github.com/weichsel/ZIPFoundation)
+- **MS-DOS** (MIT, © IBM and Microsoft Corporation) — [github.com/microsoft/MS-DOS](https://github.com/microsoft/MS-DOS)
+
+qxDOS did not write FreeDOS, MS-DOS, DOSBox Staging, mTCP, libslirp, or any of the other operating systems or libraries listed above. All credit for those projects belongs to their respective authors. qxDOS only repackages their work into a SwiftUI app.
+
+"FreeDOS" is a trademark of Jim Hall and the FreeDOS Project. "MS-DOS", "Microsoft", and "Windows" are trademarks of Microsoft Corporation. "IBM" and "PC-DOS" are trademarks of IBM. qxDOS is not affiliated with, endorsed by, or sponsored by any of these projects or companies.

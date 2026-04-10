@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<catalog version="32">
+<catalog version="43">
     <!-- ===========================================
          Bootable disk images (shipped in release)
          =========================================== -->
@@ -7,34 +7,47 @@
         <filename>freedos_hd.img</filename>
         <name>FreeDOS Hard Disk</name>
         <type>hdd</type>
-        <description>200MB bootable hard disk with FreeDOS 1.4, 230 utilities, archivers, editors, and disk tools.</description>
-        <size>210051072</size>
-        <license>GPL</license>
-        <sha256>41d12915b166269b19c2588077e8289c1c9b8cb92f7eb0838cd3626737636af3</sha256>
+        <description>~320MB bootable hard disk with FreeDOS 1.4, 230 utilities, archivers, editors, disk tools, and the kernel/FreeCom/mTCP source code under C:\SOURCE\ for GPL §3 compliance. License texts in C:\LICENSE\, credits in C:\CREDITS.TXT.</description>
+        <size>335462400</size>
+        <license>GPL v2+</license>
+        <sha256>ad271febe4edd080d8b1e2be756ab7fa02c003e10f4cfa9dd7f6e761b26f4564</sha256>
     </disk>
     <disk>
         <filename>freedos_starter.img</filename>
         <name>FreeDOS Starter</name>
         <type>hdd</type>
-        <description>22MB bootable FreeDOS with essential utilities, DPMI support, and networking (mTCP). Small download, good for getting started.</description>
-        <size>23224320</size>
-        <license>GPL</license>
-        <sha256>03d9a555c61e3c7b1675d55f0975dc0882e77a08758b695d87df20720597c466</sha256>
+        <description>~32MB bootable FreeDOS with essential utilities, DPMI support, networking (mTCP), and GPL source code under C:\SOURCE\. Small download, good for getting started.</description>
+        <size>33546240</size>
+        <license>GPL v2+</license>
+        <sha256>2d6d5d140f7860c35cd86d9657ee803833a1617fc5ef2d85bbe3c719c404a5b5</sha256>
         <defaultDrive>128</defaultDrive>
     </disk>
-
-    <!-- ===========================================
-         FreeDOS install media (external)
-         =========================================== -->
     <disk>
-        <filename>freedos.img</filename>
-        <name>FreeDOS 1.4 Boot Floppy</name>
+        <filename>freedos_qx.img</filename>
+        <name>FreeDOS Boot Floppy (qxDOS)</name>
         <type>floppy</type>
-        <description>Official FreeDOS 1.4 boot floppy with kernel, COMMAND.COM, and installer. Use with a LiveCD ISO to install FreeDOS onto a blank hard disk.</description>
+        <description>1.44MB FreeDOS boot floppy with attribution and credits files baked in (README.TXT, CREDITS.TXT, SOURCE.TXT, LICENSE\GPL2.TXT). Derivative work of the upstream FreeDOS 1.4 boot floppy; same kernel and FreeCom.</description>
         <size>1474560</size>
-        <license>GPL</license>
-        <sha256></sha256>
-        <url>https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BOOT.img</url>
+        <license>GPL v2+</license>
+        <sha256>5acb222a10f433b0bc5fe579b98cc2547bfe7c0fca3865a50bb919d4b7e5f71c</sha256>
+    </disk>
+    <disk>
+        <filename>msdos_hd.img</filename>
+        <name>MS-DOS 4.0 Hard Disk</name>
+        <type>hdd</type>
+        <description>64MB bootable Multitasking MS-DOS 4.0 BETA from microsoft/MS-DOS, plus the production MS-DOS 4.00/4.01 source archive in C:\SOURCE\MSDOS40.ZIP. MIT License. Copyright (c) IBM and Microsoft Corporation.</description>
+        <size>67092480</size>
+        <license>MIT</license>
+        <sha256>3f70eb60c59993148b559327f41df08b87d46c549336299da524d85a74a736c2</sha256>
+    </disk>
+    <disk>
+        <filename>msdos.img</filename>
+        <name>MS-DOS 4.0 Boot Floppy</name>
+        <type>floppy</type>
+        <description>1.44MB bootable Multitasking MS-DOS 4.0 BETA boot floppy with IBMBIO.COM, IBMDOS.COM, COMMAND.COM, and core utilities from microsoft/MS-DOS v4.0-ozzie. MIT License. Copyright (c) IBM and Microsoft Corporation.</description>
+        <size>1474560</size>
+        <license>MIT</license>
+        <sha256>b5b5eb526ec857708eb74f981b3a6412ff0ab21057e8ff5e50116b0d46771a37</sha256>
     </disk>
 
     <!-- ===========================================

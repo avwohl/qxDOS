@@ -9,12 +9,16 @@ FINALIMG="$IMGDIR/fd/freedos_starter.img"
 OUTIMG="/tmp/freedos_starter_build.img"
 SRCIMG="$IMGDIR/fd/freedos.img"
 
-# Download FreeDOS boot floppy if not present
-if [ ! -f "$SRCIMG" ]; then
-  echo "Downloading FreeDOS 1.4 boot floppy..."
-  # Original: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BOOT.img
-  curl -L --retry 3 --connect-timeout 30 -o "$SRCIMG" \
-    https://www.awohl.com/freedos/freedos.img
+# Download FreeDOS boot floppy if not present (or cached file is bogus)
+if [ ! -f "$SRCIMG" ] || [ "$(stat -f%z "$SRCIMG" 2>/dev/null || stat -c%s "$SRCIMG")" != "1474560" ]; then
+  echo "Downloading FreeDOS 1.4 FloppyEdition zip..."
+  curl -L --retry 3 --connect-timeout 30 -o /tmp/fd14floppy.zip \
+    https://download.freedos.org/1.4/FD14-FloppyEdition.zip
+  echo "Extracting 1.44 MB boot floppy..."
+  rm -rf /tmp/fd14floppy
+  mkdir -p /tmp/fd14floppy
+  unzip -j -o /tmp/fd14floppy.zip '144m/x86BOOT.img' -d /tmp/fd14floppy
+  cp /tmp/fd14floppy/x86BOOT.img "$SRCIMG"
 fi
 
 # --- Locate LiveCD ISO for system files ---
@@ -27,12 +31,35 @@ find_iso() {
 }
 
 LIVEISO=$(find_iso "FD14LIVE.iso" || true)
+
+# Download LiveCD if not found -- the starter disk needs the FreeDOS
+# utility set from the LiveCD; without it the starter is just the
+# kernel + COMMAND.COM with no DIR/MEM/EDIT/etc.
+if [ -z "$LIVEISO" ]; then
+  LIVEISO="$IMGDIR/fd/FD14LIVE.iso"
+  LIVEZIP="$IMGDIR/fd/FD14-LiveCD.zip"
+  echo "Downloading FreeDOS 1.4 LiveCD..."
+  curl -L --retry 3 --connect-timeout 30 -o "$LIVEZIP" \
+    https://download.freedos.org/1.4/FD14-LiveCD.zip
+  echo "Extracting LiveCD ISO..."
+  unzip -o -q "$LIVEZIP" -d "$IMGDIR/fd/"
+  rm -f "$LIVEZIP"
+  if [ ! -f "$LIVEISO" ]; then
+    echo "ERROR: Expected $LIVEISO after extraction"
+    ls "$IMGDIR/fd/"*.iso 2>/dev/null
+    exit 1
+  fi
+fi
+
 echo "LiveCD ISO:  ${LIVEISO:-not found}"
 
 # Geometry: 16 heads, 63 sectors/track
 HEADS=16
 SPT=63
-CYLS=45  # ~22MB
+# Bumped from 45 (~22 MB) to 65 (~32 MB) so the starter disk has
+# room for the kernel + FreeCom + mTCP source archives, license
+# texts, and attribution files.  GPL §3 compliance.
+CYLS=65   # ~32MB
 TOTAL_SECTORS=$((CYLS * HEADS * SPT))
 PART_START=63
 PART_SECTORS=$((TOTAL_SECTORS - PART_START))
@@ -226,6 +253,68 @@ if [ -d "$IMGDIR/dos/net" ]; then
     fi
     echo "  Installed NE2000.COM, mTCP (FTP, TELNET, PING, HTGET, DHCP), FDNET"
 fi
+
+# =========================================================================
+# Install attribution / license / source files (GPL §3 compliance)
+# =========================================================================
+echo "Installing license texts and attribution files..."
+DC="$IMGDIR/disk-content"
+
+to_dos() {
+    sed 's/\r$//' "$1" | sed 's/$/'$'\r''/' > "$2"
+}
+
+if [ -d "$DC/freedos" ]; then
+    for f in README.TXT CREDITS.TXT SOURCE.TXT; do
+        if [ -f "$DC/freedos/$f" ]; then
+            to_dos "$DC/freedos/$f" "/tmp/$f"
+            mcopy -D o "/tmp/$f" "c:/$f"
+        fi
+    done
+fi
+
+mmd c:/LICENSE 2>/dev/null || true
+if [ -d "$DC/licenses" ]; then
+    for f in GPL2.TXT GPL3.TXT MIT.TXT; do
+        if [ -f "$DC/licenses/$f" ]; then
+            to_dos "$DC/licenses/$f" "/tmp/$f"
+            mcopy -D o "/tmp/$f" "c:/LICENSE/$f"
+        fi
+    done
+fi
+
+# Source archives -- shared cache with build_hdd.sh
+SRCCACHE="$IMGDIR/fd/source-cache"
+mkdir -p "$SRCCACHE"
+
+fetch_source() {
+    local out="$1"
+    local url="$2"
+    if [ ! -f "$out" ]; then
+        echo "  fetching $(basename "$out") from $url"
+        curl -L --retry 3 --connect-timeout 30 -fsS -o "$out.tmp" "$url" \
+            && mv "$out.tmp" "$out" \
+            || { echo "  WARNING: download failed for $(basename "$out")"; rm -f "$out.tmp"; }
+    fi
+}
+
+echo "Installing source archives (GPL §3)..."
+fetch_source "$SRCCACHE/KERNEL-SRC.ZIP" \
+    "https://github.com/FDOS/kernel/archive/refs/heads/master.zip"
+fetch_source "$SRCCACHE/FREECOM-SRC.ZIP" \
+    "https://github.com/FDOS/freecom/archive/refs/heads/master.zip"
+fetch_source "$SRCCACHE/MTCP-SRC.ZIP" \
+    "https://www.brutman.com/mTCP/download/mTCP-src_2025-01-10.zip"
+
+mmd c:/SOURCE 2>/dev/null || true
+for f in KERNEL-SRC.ZIP FREECOM-SRC.ZIP MTCP-SRC.ZIP; do
+    if [ -f "$SRCCACHE/$f" ]; then
+        mcopy -D o "$SRCCACHE/$f" "c:/SOURCE/$f"
+        echo "  installed C:\\SOURCE\\$f ($(ls -lh "$SRCCACHE/$f" | awk '{print $5}'))"
+    else
+        echo "  WARNING: $f missing -- disk will violate GPL §3 until rebuilt with network"
+    fi
+done
 
 # =========================================================================
 # 7. Boot sector

@@ -1,0 +1,100 @@
+                qxDOS FreeDOS Disk - Credits
+                ============================
+
+The software on this disk is the work of many independent projects.
+Each is listed below with its license and source.  qxDOS bundles
+their work but did not write it; all credit and any criticism for
+their code belongs to their respective authors.
+
+
+FreeDOS Kernel
+--------------
+  License:    GNU General Public License v2 or later
+  Copyright:  Copyright (c) 1995-2012 Pasquale J. Villani and
+              The FreeDOS Project
+  Authors:    Pat Villani, Bart Oldeman, Tom Ehlert, Jeremy Davis,
+              Lucho Georgiev, James Tabor, Steffen Kaiser, and many
+              other contributors named in the kernel source files.
+  Website:    https://www.freedos.org/
+  Source:     https://github.com/FDOS/kernel
+              and on this disk in C:\SOURCE\KERNEL-SRC.ZIP
+
+
+FreeCom (COMMAND.COM)
+---------------------
+  License:    GNU General Public License v2 or later
+  Authors:    Bart Oldeman, Tom Ehlert, Steffen Kaiser, Aitor Santamaria
+              Merino, Eric Auer, Lucho Georgiev, and others.
+  Website:    https://github.com/FDOS/freecom
+  Source:     https://github.com/FDOS/freecom
+              and on this disk in C:\SOURCE\FREECOM-SRC.ZIP
+
+
+FreeDOS Utilities (FREEDOS\BIN)
+-------------------------------
+  Licenses:   Various -- mostly GNU GPL v2+ and 2-clause BSD.
+              Each package directory contains a LICENSE or
+              COPYING file naming its author and license.
+  Source:     Each package directory under C:\FREEDOS\<PKG>\ also
+              contains a SOURCE\ subdirectory with the original
+              source as published by the FreeDOS Project.
+  Website:    https://www.freedos.org/
+  Catalog:    https://github.com/FDOS
+
+
+CWSDPMI (DPMI server)
+---------------------
+  License:    Modified GNU GPL v2 (with embedding exception, "no
+              fee" clause).  See C:\FREEDOS\CWSDPMI\LICENSE for the
+              exact text used by the CWSDPMI distribution.
+  Author:     Charles W Sandmann
+  Source:     http://sandmann.dotster.com/cwsdpmi/
+              and on this disk in
+              C:\FREEDOS\CWSDPMI\SOURCE\ when present in the
+              FreeDOS LiveCD package.
+
+
+mTCP (FTP, TELNET, PING, HTGET, DHCP)
+-------------------------------------
+  License:    GNU General Public License v3 or later
+  Author:     Michael Brutman <mbbrutman@gmail.com>
+  Website:    https://www.brutman.com/mTCP/
+  Source:     https://www.brutman.com/mTCP/  (download page; the
+              latest source archive is linked there)
+              and on this disk in C:\SOURCE\MTCP-SRC.ZIP
+
+
+NE2000 Packet Driver (NE2000.COM)
+---------------------------------
+  License:    GNU General Public License v2 or later (Crynwr
+              packet driver collection).
+  Author:     Russell Nelson, Crynwr Software, and contributors.
+  Source:     http://crynwr.com/drivers/
+              http://crynwr.com/nelson/
+
+
+qxDOS App (host side, not on this disk)
+---------------------------------------
+  License:    GNU General Public License v3 or later
+  Author:     Aaron Wohl
+  Source:     https://github.com/avwohl/qxDOS
+
+  qxDOS includes:
+    DOSBox Staging       GPL v2+   github.com/dosbox-staging/dosbox-staging
+    emu88 (alt backend)  GPL v3    bundled in qxDOS source tree
+    libslirp             BSD-3     gitlab.freedesktop.org/slirp/libslirp
+    ZIPFoundation        MIT       github.com/weichsel/ZIPFoundation
+
+
+Source Offer
+------------
+
+If for any reason the source code for a GPL-licensed binary on this
+disk is missing, incomplete, or unreadable, you may request a
+corrected copy by opening an issue at:
+
+  https://github.com/avwohl/qxDOS/issues
+
+This offer is valid for three years from the date this disk image
+was built.  See C:\LICENSE\ for the full text of the GPL v2 and
+GPL v3.

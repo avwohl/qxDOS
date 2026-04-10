@@ -1,0 +1,60 @@
+                qxDOS MS-DOS 4.0 Disk - Credits
+                ===============================
+
+The software on this disk is the work of Microsoft Corporation, IBM,
+and their original authors, repackaged onto a bootable disk image
+by the qxDOS project.  qxDOS bundles their work but did not write
+it; all credit for the operating system itself belongs to Microsoft,
+IBM, and the original developers named in the source files.
+
+
+MS-DOS 4.0
+----------
+  License:     MIT License
+  Copyright:   Copyright (c) IBM Corporation and Microsoft Corporation.
+  Authors:     Microsoft Corporation, IBM Corporation, and the
+               original MS-DOS team (1981-1988).  Individual file
+               headers in the source release name the developers.
+  Released:    Open-sourced by Microsoft in April 2024.
+  Source:      https://github.com/microsoft/MS-DOS
+               and on this disk in C:\SOURCE\MSDOS40.ZIP (the 1988
+               production MS-DOS 4.00/4.01 source) and
+               C:\SOURCE\MDOS4OZ.ZIP (the 1985-86 Multitasking MS-DOS
+               4.0 BETA, recovered by Ray Ozzie and released by
+               Microsoft in 2024 -- this is the version that boots
+               from this disk).
+
+  See C:\LICENSE.TXT for the full text of the MIT License as
+  shipped in microsoft/MS-DOS v4.0/LICENSE.
+
+
+qxDOS App (host side, not on this disk)
+---------------------------------------
+  License:     GNU General Public License v3 or later
+  Author:      Aaron Wohl
+  Source:      https://github.com/avwohl/qxDOS
+
+  qxDOS includes:
+    DOSBox Staging       GPL v2+   github.com/dosbox-staging/dosbox-staging
+    emu88 (alt backend)  GPL v3    bundled in qxDOS source tree
+    libslirp             BSD-3     gitlab.freedesktop.org/slirp/libslirp
+    ZIPFoundation        MIT       github.com/weichsel/ZIPFoundation
+    FreeDOS (other disk) GPL v2+   github.com/FDOS
+    mTCP (other disk)    GPL v3    brutman.com/mTCP
+
+  Complete corresponding source for any GPL component qxDOS uses
+  is available from the URLs above, or by opening an issue at
+  https://github.com/avwohl/qxDOS/issues .  This offer is valid
+  for at least three years from the date of each release.
+
+
+Trademarks
+----------
+
+"MS-DOS" and "Microsoft" are trademarks of Microsoft Corporation.
+"IBM" is a trademark of International Business Machines Corporation.
+qxDOS is not affiliated with, endorsed by, or sponsored by
+Microsoft Corporation or IBM Corporation.  Use of the MS-DOS name
+in this document and in qxDOS is descriptive only and refers
+solely to the operating system whose source code Microsoft
+released under the MIT License at github.com/microsoft/MS-DOS .

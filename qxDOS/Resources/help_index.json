@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "base_url": "https://github.com/avwohl/qxDOS/releases/latest/download/",
   "topics": [
     {
@@ -63,16 +63,64 @@
       "url": "https://github.com/dosbox-staging/dosbox-staging"
     },
     {
+      "id": "emu88_source",
+      "title": "emu88 Backend Source (GPL v3)",
+      "description": "Alternate 8088/286/386 interpreter shipped inside qxDOS as the second hardware backend",
+      "url": "https://github.com/avwohl/qxDOS/tree/main/emu88"
+    },
+    {
+      "id": "freedos_kernel_source",
+      "title": "FreeDOS Kernel Source (GPL v2+)",
+      "description": "FreeDOS kernel source on GitHub",
+      "url": "https://github.com/FDOS/kernel"
+    },
+    {
+      "id": "freecom_source",
+      "title": "FreeCom (COMMAND.COM) Source (GPL v2+)",
+      "description": "FreeDOS shell (COMMAND.COM) source code",
+      "url": "https://github.com/FDOS/freecom"
+    },
+    {
       "id": "freedos_source",
-      "title": "FreeDOS Source Code (GPL v2+)",
-      "description": "FreeDOS kernel, drivers, and utilities on GitHub",
+      "title": "FreeDOS Utilities (GPL v2+)",
+      "description": "FreeDOS utility packages on GitHub",
       "url": "https://github.com/FDOS"
+    },
+    {
+      "id": "cwsdpmi_source",
+      "title": "CWSDPMI Source",
+      "description": "Charles W Sandmann's DPMI server, used by DJGPP-compiled programs",
+      "url": "http://sandmann.dotster.com/cwsdpmi/"
     },
     {
       "id": "mtcp_source",
       "title": "mTCP Source (GPL v3)",
       "description": "TCP/IP networking tools for DOS by Michael Brutman",
       "url": "https://www.brutman.com/mTCP/"
+    },
+    {
+      "id": "crynwr_source",
+      "title": "Crynwr Packet Drivers Source",
+      "description": "NE2000 packet driver and the Crynwr packet driver collection",
+      "url": "http://crynwr.com/drivers/"
+    },
+    {
+      "id": "libslirp_source",
+      "title": "libslirp Source (BSD-3)",
+      "description": "Userspace TCP/IP stack used for NE2000 NAT networking",
+      "url": "https://gitlab.freedesktop.org/slirp/libslirp"
+    },
+    {
+      "id": "zipfoundation_source",
+      "title": "ZIPFoundation Source (MIT)",
+      "description": "Swift ZIP archive library used to extract downloaded disk archives",
+      "url": "https://github.com/weichsel/ZIPFoundation"
+    },
+    {
+      "id": "msdos_source",
+      "title": "MS-DOS Source (MIT, IBM/Microsoft)",
+      "description": "Microsoft's open-source release of MS-DOS 1.25, 2.0, 4.0 and Multitasking 4.0",
+      "url": "https://github.com/microsoft/MS-DOS"
     }
   ]
 }

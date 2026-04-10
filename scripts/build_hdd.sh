@@ -14,12 +14,16 @@ FINALIMG="$IMGDIR/fd/freedos_hd.img"
 OUTIMG="/tmp/freedos_hd_build.img"
 SRCIMG="$IMGDIR/fd/freedos.img"
 
-# Download FreeDOS boot floppy if not present
-if [ ! -f "$SRCIMG" ]; then
-  echo "Downloading FreeDOS 1.4 boot floppy..."
-  # Original: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BOOT.img
-  curl -L --retry 3 --connect-timeout 30 -o "$SRCIMG" \
-    https://www.awohl.com/freedos/freedos.img
+# Download FreeDOS boot floppy if not present (or cached file is bogus)
+if [ ! -f "$SRCIMG" ] || [ "$(stat -f%z "$SRCIMG" 2>/dev/null || stat -c%s "$SRCIMG")" != "1474560" ]; then
+  echo "Downloading FreeDOS 1.4 FloppyEdition zip..."
+  curl -L --retry 3 --connect-timeout 30 -o /tmp/fd14floppy.zip \
+    https://download.freedos.org/1.4/FD14-FloppyEdition.zip
+  echo "Extracting 1.44 MB boot floppy..."
+  rm -rf /tmp/fd14floppy
+  mkdir -p /tmp/fd14floppy
+  unzip -j -o /tmp/fd14floppy.zip '144m/x86BOOT.img' -d /tmp/fd14floppy
+  cp /tmp/fd14floppy/x86BOOT.img "$SRCIMG"
 fi
 
 # --- Locate ISOs ---
@@ -57,7 +61,11 @@ echo "Bonus ISO:   ${BONUSISO:-not found}"
 # Geometry: 16 heads, 63 sectors/track
 HEADS=16
 SPT=63
-CYLS=407  # ~200MB
+# Bumped from 407 (~200 MB) to 650 (~320 MB) to make room for the
+# FreeDOS package source trees that now travel with every binary
+# (GPL §3 compliance), plus the kernel/FreeCom/mTCP source archives
+# under C:\SOURCE\.
+CYLS=650  # ~320MB
 TOTAL_SECTORS=$((CYLS * HEADS * SPT))
 PART_START=63
 PART_SECTORS=$((TOTAL_SECTORS - PART_START))
@@ -111,7 +119,9 @@ dd if=/tmp/mbr.bin of="$OUTIMG" bs=512 count=1 conv=notrunc 2>/dev/null
 
 # 3. Format partition as FAT16
 dd if=/dev/zero of=/tmp/partition.img bs=512 count=$PART_SECTORS 2>/dev/null
-mkfs.fat -F 16 -n "FREEDOS" -h $PART_START -S 512 -s 8 -g $HEADS/$SPT /tmp/partition.img
+# -s 16 (8 KB clusters) is required for FAT16 on a ~320 MB partition;
+# anything smaller produces >65525 clusters, which mkfs.fat rejects.
+mkfs.fat -F 16 -n "FREEDOS" -h $PART_START -S 512 -s 16 -g $HEADS/$SPT /tmp/partition.img
 dd if=/tmp/partition.img of="$OUTIMG" bs=512 seek=$PART_START conv=notrunc 2>/dev/null
 
 # 4. Set up mtools
@@ -190,12 +200,24 @@ copy_tree() {
 }
 
 # Helper: extract a FreeDOS package ZIP into C:\FREEDOS
+#
+# IMPORTANT (GPL §3 compliance): we used to pass `-x 'SOURCE/*' 'source/*'`
+# here to skip the source trees and save disk space.  That was wrong --- many
+# of the packages are GPL and the LiveCD ships its source archive *inside*
+# each package zip exactly so that distributors can satisfy §3(a) ("the
+# corresponding source code, on a medium customarily used for software
+# interchange") just by passing the package along.  Stripping the SOURCE/
+# tree turns binary redistribution into a license violation.
+#
+# We now extract the entire zip --- BIN, DOC, NLS, HELP, *and* SOURCE --- so
+# the source code travels with the binaries on every disk we ship.  The
+# SOURCE/ tree lands at  C:\FREEDOS\<PKG>\SOURCE\  next to the binaries.
 install_pkg() {
   local zipfile="$1"
   local tmpdir="/tmp/fdpkg_$$"
   [ -f "$zipfile" ] || return 0
   mkdir -p "$tmpdir"
-  unzip -o -q "$zipfile" -d "$tmpdir" -x 'SOURCE/*' 'source/*' 2>/dev/null || true
+  unzip -o -q "$zipfile" -d "$tmpdir" 2>/dev/null || true
   for d in "$tmpdir"/*/; do
     [ -d "$d" ] || continue
     local dname=$(basename "$d" | tr '[:lower:]' '[:upper:]')
@@ -313,6 +335,83 @@ if [ -d "$IMGDIR/dos/net" ]; then
     fi
     echo "  Installed NE2000.COM, mTCP (FTP, TELNET, PING, HTGET, DHCP), FDNET"
 fi
+
+# =========================================================================
+# Install attribution / license / source files (GPL §3 compliance)
+# =========================================================================
+#
+# Every disk we ship has to carry the license texts and the
+# corresponding source for any GPL binary on the disk.  We do this
+# by:
+#
+#   1. Copying disk-content/freedos/*.TXT to the root of the disk.
+#   2. Copying disk-content/licenses/*.TXT to C:\LICENSE\.
+#   3. Downloading kernel + freecom + mTCP source archives once and
+#      caching them under  fd/source-cache/ , then copying them to
+#      C:\SOURCE\ on the disk.  The FreeDOS package sources are
+#      already on the disk because install_pkg() no longer strips
+#      SOURCE/ from the package zips.
+#
+echo "Installing license texts and attribution files..."
+DC="$IMGDIR/disk-content"
+
+# DOS-line-ending the host text files into /tmp before mcopying
+to_dos() {
+    sed 's/\r$//' "$1" | sed 's/$/'$'\r''/' > "$2"
+}
+
+if [ -d "$DC/freedos" ]; then
+    for f in README.TXT CREDITS.TXT SOURCE.TXT; do
+        if [ -f "$DC/freedos/$f" ]; then
+            to_dos "$DC/freedos/$f" "/tmp/$f"
+            mcopy -D o "/tmp/$f" "c:/$f"
+        fi
+    done
+fi
+
+mmd c:/LICENSE 2>/dev/null || true
+if [ -d "$DC/licenses" ]; then
+    for f in GPL2.TXT GPL3.TXT MIT.TXT; do
+        if [ -f "$DC/licenses/$f" ]; then
+            to_dos "$DC/licenses/$f" "/tmp/$f"
+            mcopy -D o "/tmp/$f" "c:/LICENSE/$f"
+        fi
+    done
+fi
+
+# Source archives -- cache under fd/source-cache/ so we don't
+# re-download on every build.
+SRCCACHE="$IMGDIR/fd/source-cache"
+mkdir -p "$SRCCACHE"
+
+fetch_source() {
+    local out="$1"
+    local url="$2"
+    if [ ! -f "$out" ]; then
+        echo "  fetching $(basename "$out") from $url"
+        curl -L --retry 3 --connect-timeout 30 -fsS -o "$out.tmp" "$url" \
+            && mv "$out.tmp" "$out" \
+            || { echo "  WARNING: download failed for $(basename "$out")"; rm -f "$out.tmp"; }
+    fi
+}
+
+echo "Installing source archives (GPL §3)..."
+fetch_source "$SRCCACHE/KERNEL-SRC.ZIP" \
+    "https://github.com/FDOS/kernel/archive/refs/heads/master.zip"
+fetch_source "$SRCCACHE/FREECOM-SRC.ZIP" \
+    "https://github.com/FDOS/freecom/archive/refs/heads/master.zip"
+fetch_source "$SRCCACHE/MTCP-SRC.ZIP" \
+    "https://www.brutman.com/mTCP/download/mTCP-src_2025-01-10.zip"
+
+mmd c:/SOURCE 2>/dev/null || true
+for f in KERNEL-SRC.ZIP FREECOM-SRC.ZIP MTCP-SRC.ZIP; do
+    if [ -f "$SRCCACHE/$f" ]; then
+        mcopy -D o "$SRCCACHE/$f" "c:/SOURCE/$f"
+        echo "  installed C:\\SOURCE\\$f ($(ls -lh "$SRCCACHE/$f" | awk '{print $5}'))"
+    else
+        echo "  WARNING: $f missing -- disk will violate GPL §3 until rebuilt with network"
+    fi
+done
 
 # =========================================================================
 # 7. Boot sector
