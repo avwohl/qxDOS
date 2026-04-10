@@ -1,0 +1,13 @@
+todo.txt
+
+make this dos emulator more configurable
+for the hardware level make the emulator selectable 
+from ../iosFreeDOS and the current dosbox in this repo.
+
+For the DOS level support https://freedos.org/
+real msdos
+and the dosbox built in dos
+
+On the settings screen the above can be set.
+Once set and started it cant be changed that run
+(we never got reuse/restart of an emulator to work)
