@@ -1,4 +1,8 @@
 #include "dos_machine.h"
+#include "pc_speaker.h"
+#include "opl.h"
+#include "sound_blaster.h"
+#include "uart16550.h"
 #include <cstdio>
 #include <cstring>
 
@@ -57,6 +61,40 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
 
 dos_machine::~dos_machine() {
   delete nic;
+  delete pcspk;
+  delete opl;
+  delete sb;
+  delete uart;
+}
+
+//=============================================================================
+// Optionally-attached audio: the host pulls PCM at its output rate.
+//=============================================================================
+bool dos_machine::audio_render(int16_t *out, int frames, int rate) {
+  if (n_audio_dev == 0 || frames <= 0) return false;
+  // Refresh the PC speaker's tone from the live PIT ch2 / port-0x61 state.
+  if (pcspk) {
+    uint32_t reload = pit_reload[2] ? pit_reload[2] : 65536u;
+    int hz = (int)(1193182u / reload);
+    pcspk->set_tone(hz, (port_b & 0x03) == 0x03);
+  }
+  // Mix all attached sources into a 32-bit accumulator, then clamp to int16.
+  static thread_local int32_t mix[4096 * 2];
+  int n = frames > 4096 ? 4096 : frames;
+  for (int i = 0; i < n * 2; i++) mix[i] = 0;
+  for (int d = 0; d < n_audio_dev; d++)
+    if (audio_dev[d]) audio_dev[d]->render(mix, n, rate);
+  for (int i = 0; i < n * 2; i++) {
+    int32_t s = mix[i];
+    if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
+    out[i] = (int16_t)s;
+  }
+  return true;
+}
+
+void dos_machine::set_joystick(int ax0, int ax1, int ax2, int ax3, unsigned buttons) {
+  joy_axis[0] = ax0; joy_axis[1] = ax1; joy_axis[2] = ax2; joy_axis[3] = ax3;
+  joy_btn = buttons;
 }
 
 // Simulate PIT counter decrement based on elapsed CPU cycles.
@@ -195,6 +233,38 @@ void dos_machine::init_machine() {
       io->net_send(data, len);
     };
   }
+
+  // --- Optionally-attached peripherals (audio sources collected for the mixer) ---
+  delete opl;  opl  = nullptr;
+  delete sb;   sb   = nullptr;
+  delete uart; uart = nullptr;
+  n_audio_dev = 0;
+  if (config.speaker_enabled) {
+    if (!pcspk) pcspk = new PCSpeaker();
+    pcspk->reset();
+    audio_dev[n_audio_dev++] = pcspk;
+  }
+  // AdLib (OPL2) or Sound Blaster (OPL3 + DSP/DMA digitized audio).
+  if (config.sound_card == 1) {                 // AdLib
+    opl = new OPL(false);
+    audio_dev[n_audio_dev++] = opl;
+  } else if (config.sound_card == 2) {          // Sound Blaster (incl. OPL3 FM)
+    opl = new OPL(true);
+    sb  = new SoundBlaster(config.sb_iobase, config.sb_irq, config.sb_dma, 5);
+    sb->mem_read  = [this](uint32_t a) -> uint8_t { return mem->fetch_mem(a); };
+    sb->raise_irq = [this](int irq) { hw_irq_pending |= (1u << (irq & 15)); };
+    audio_dev[n_audio_dev++] = opl;
+    audio_dev[n_audio_dev++] = sb;
+  }
+  if (config.serial_enabled) {                  // 16550 UART (COM1)
+    uart = new UART16550(config.serial_iobase, config.serial_irq);
+    uart->tx = [this](uint8_t b) { io->serial_tx(b); };
+    uart->rx = [this]() -> int { return io->serial_rx(); };
+  }
+  joystick_on = config.joystick_enabled;
+  lpt_on      = config.parallel_enabled;
+  lpt_data = 0; lpt_ctrl = 0;
+  herc_gfx_on = false;   // toggled at runtime by the HGC mode register (0x3BF/0x3B8)
 }
 
 void dos_machine::init_ivt() {
@@ -571,6 +641,23 @@ bool dos_machine::run_batch(int count) {
         request_int(pic_vector_base + ne2000_irq);
     }
 
+    // 16550 UART (COM1): pull host bytes, raise RX/THRE IRQ.
+    if (uart && (i & 0x3FF) == 0) {
+      uart->poll();
+      if (uart->irq_pending() && get_flag(FLAG_IF) &&
+          !(pic_imr & (1 << uart->irq_number())))
+        request_int(pic_vector_base + uart->irq_number());
+    }
+
+    // Sound Blaster block-end IRQ (raised from the audio thread, serviced here).
+    if (hw_irq_pending && get_flag(FLAG_IF)) {
+      for (int irq = 0; irq < 16; irq++)
+        if ((hw_irq_pending & (1u << irq)) && !(pic_imr & (1 << irq))) {
+          hw_irq_pending &= ~(1u << irq);
+          request_int(pic_vector_base + irq);
+        }
+    }
+
     check_interrupts();
   }
   // HLT with IF=1 is just "waiting for interrupt" (idle), not a dead halt
@@ -848,6 +935,41 @@ void dos_machine::unimplemented_opcode(emu88_uint8 opcode) {
 //=============================================================================
 
 void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
+  // --- Optionally-attached peripherals (checked before the chipset switch) ---
+  if (joystick_on && port == 0x201) {        // game port: fire the axis monostables
+    for (int a = 0; a < 4; a++) {
+      double norm = (joy_axis[a] + 32768) / 65535.0;          // 0..1
+      joy_fire_cycle[a] = cycles + (uint64_t)(600 + norm * 4000);
+    }
+    return;
+  }
+  if (lpt_on && port == config.parallel_iobase) { lpt_data = value; return; }   // LPT data
+  if (lpt_on && port == config.parallel_iobase + 2) {                            // LPT control
+    if ((value & 0x01) && !(lpt_ctrl & 0x01)) io->lpt_output(lpt_data);          // strobe rising edge
+    lpt_ctrl = value; return;
+  }
+  if (port == 0x3BF) { herc_cfg = value; return; }     // HGC config (bit0 = allow graphics)
+  if (port == 0x3B8) {                                  // HGC/MDA mode control
+    herc_page1 = (value & 0x80) != 0;
+    herc_gfx_on = (config.display == DISPLAY_HERCULES) && (value & 0x02) && (herc_cfg & 0x01);
+    return;
+  }
+  // AdLib / OPL FM (0x388/0x389 primary, 0x38A/0x38B OPL3 bank 2)
+  if (opl && port >= 0x388 && port <= 0x38B) { opl->write_port(port - 0x388, value); return; }
+  if (sb) {                                              // Sound Blaster DSP/mixer + 8237 DMA
+    if (port >= config.sb_iobase && port < config.sb_iobase + 0x10) {
+      uint16_t rel = port - config.sb_iobase;
+      if (opl && rel <= 0x03) { opl->write_port(rel, value); return; }  // SB FM (OPL3) alias
+      sb->write_port(rel, value); return;
+    }
+    if (port <= 0x0F || (port >= 0x80 && port <= 0x8F) || (port >= 0xC0 && port <= 0xDF)) {
+      sb->dma_write(port, value); return;
+    }
+  }
+  if (uart && port >= config.serial_iobase && port < config.serial_iobase + 8) {
+    uart->write_port(port - config.serial_iobase, value); return;
+  }
+
   switch (port) {
     // --- PIC (8259A) Master ---
     case 0x20:
@@ -1092,6 +1214,31 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
 }
 
 emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
+  // --- Optionally-attached peripherals ---
+  if (port == 0x201) {                       // analog game port
+    if (!joystick_on) return 0xFF;           // absent -> all bits high (no joystick present)
+    emu88_uint8 b = 0;
+    for (int a = 0; a < 4; a++)
+      if (cycles < joy_fire_cycle[a]) b |= (emu88_uint8)(1 << a);       // axis monostable high
+    for (int j = 0; j < 4; j++)
+      if (!(joy_btn & (1u << j))) b |= (emu88_uint8)(1 << (4 + j));     // button released -> high
+    return b;
+  }
+  if (lpt_on && port == config.parallel_iobase + 1) return 0xDF;  // LPT status: not busy, no error
+  if (lpt_on && port == config.parallel_iobase + 2) return lpt_ctrl;
+  if (opl && port >= 0x388 && port <= 0x38B) return opl->read_port(port - 0x388);
+  if (sb) {
+    if (port >= config.sb_iobase && port < config.sb_iobase + 0x10) {
+      uint16_t rel = port - config.sb_iobase;
+      if (opl && rel <= 0x03) return opl->read_port(rel);            // SB FM status alias
+      return sb->read_port(rel);
+    }
+    if (port <= 0x0F || (port >= 0x80 && port <= 0x8F) || (port >= 0xC0 && port <= 0xDF))
+      return sb->dma_read(port);
+  }
+  if (uart && port >= config.serial_iobase && port < config.serial_iobase + 8)
+    return uart->read_port(port - config.serial_iobase);
+
   switch (port) {
     // --- PIC ---
     case 0x20: return 0;

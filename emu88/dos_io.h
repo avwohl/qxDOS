@@ -58,6 +58,12 @@ public:
     (void)freq_hz; (void)duration_ms;
   }
 
+  // Parallel port (LPT1) byte output, e.g. to a host print/capture file.
+  virtual void lpt_output(uint8_t byte) { (void)byte; }
+  // Serial port (COM1) host transport (for the optional 16550 UART).
+  virtual void serial_tx(uint8_t byte) { (void)byte; }
+  virtual int  serial_rx() { return -1; }   // -1 = no byte available
+
   // Mouse input from host (optional)
   // Returns current mouse state: x (0-639), y (0-199), buttons (bit0=L, bit1=R, bit2=M)
   virtual void mouse_get_state(int &x, int &y, int &buttons) {

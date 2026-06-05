@@ -1961,8 +1961,32 @@ void dos_machine::mouse_screen_dims(int &w, int &h) const {
   h = screen_rows * 16;
 }
 
+void dos_machine::herc_composite() {
+  // Hercules 720x348 mono: 1bpp, four interleaved 8KB banks. Scanline y lives at
+  // base + (y & 3)*0x2000 + (y>>2)*90; pixel (x,y) is bit 7-(x&7) of byte x>>3.
+  static uint8_t buf[720 * 348];
+  static uint8_t pal[256][3];
+  static bool pal_init = false;
+  if (!pal_init) {
+    memset(pal, 0, sizeof(pal));
+    pal[15][0] = 63; pal[15][1] = 42; pal[15][2] = 0;  // amber-on-black
+    pal_init = true;
+  }
+  uint32_t base = herc_page1 ? 0xB8000 : 0xB0000;
+  for (int y = 0; y < 348; y++) {
+    uint32_t row = base + (uint32_t)(y & 3) * 0x2000 + (uint32_t)(y >> 2) * 90;
+    uint8_t *dst = buf + (size_t)y * 720;
+    for (int x = 0; x < 720; x++) {
+      uint8_t byte = mem->fetch_mem(row + (x >> 3));
+      dst[x] = ((byte >> (7 - (x & 7))) & 1) ? 15 : 0;
+    }
+  }
+  io->video_refresh_gfx(buf, 720, 348, pal);
+}
+
 void dos_machine::emit_video_frame() {
   if (vesa.active) { svga_composite(); return; }
+  if (herc_gfx_on)  { herc_composite(); return; }
   if (video_mode == 0x13) {
     if (mem->vga_planar) {
       uint16_t crtc_start = (crtc_regs[12] << 8) | crtc_regs[13];

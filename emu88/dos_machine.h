@@ -4,6 +4,7 @@
 #include "emu88.h"
 #include "dos_io.h"
 #include "ne2000.h"
+#include "audio_device.h"
 #include <chrono>
 
 #ifndef IOSFREEDOS_VERSION
@@ -78,9 +79,20 @@ public:
     SpeedMode speed = SPEED_PC_4_77;
     bool mouse_enabled = true;
     bool speaker_enabled = true;
-    // Sound card type: 0=none, 1=Adlib, 2=SoundBlaster (future)
+    // Sound card type: 0=none, 1=Adlib (OPL2), 2=SoundBlaster (DSP+OPL3)
     int sound_card = 0;
     bool cdrom_enabled = true;
+    // --- Optionally-attached peripherals (default off: a text-only / compiler
+    // configuration like dosiz attaches none; a game profile turns them on) ---
+    bool joystick_enabled = false;          // analog game port at 0x201
+    uint16_t sb_iobase = 0x220;             // Sound Blaster base / IRQ / 8-bit DMA
+    int sb_irq = 5, sb_dma = 1;
+    bool serial_enabled = false;            // 16550 UART (COM1)
+    uint16_t serial_iobase = 0x3F8;
+    int serial_irq = 4;
+    bool parallel_enabled = false;          // LPT1 (host-file / capture)
+    uint16_t parallel_iobase = 0x378;
+    bool hercules_graphics = false;         // enable HGC 720x348 graphics page
     // NE2000 NIC
     bool ne2000_enabled = false;
     uint16_t ne2000_iobase = 0x300;
@@ -95,6 +107,16 @@ public:
   void init_machine();
   bool boot(int drive = 0);
   bool run_batch(int count = 10000);
+
+  // Audio pull (host CoreAudio/SDL callback drives this at its output rate).
+  // Mixes all attached sound devices into `out` (interleaved stereo int16).
+  // Returns true if any audio device is attached (else `out` is untouched and
+  // the host should emit silence). Cheap no-op when nothing is attached.
+  bool audio_render(int16_t *out, int frames, int rate);
+  bool audio_active() const { return opl || sb || pcspk; }
+
+  // Host input setters for optionally-attached devices.
+  void set_joystick(int ax0, int ax1, int ax2, int ax3, unsigned buttons);
 
   // Config access
   const Config &get_config() const { return config; }
@@ -259,6 +281,7 @@ private:
   void vesa_init_rom();               // populate the VESA mode list / OEM strings
   void emit_video_frame();            // unified text / VGA / SVGA frame emit
   void svga_composite();              // composite the current SVGA framebuffer
+  void herc_composite();              // composite the Hercules 720x348 mono page
   void mouse_screen_dims(int &w, int &h) const;  // pixel size of the displayed frame
 
   // PIC state
@@ -372,6 +395,27 @@ private:
   ne2000 *nic;
   uint16_t ne2000_base;
   int ne2000_irq;
+
+  // --- Optionally-attached hardware (null/false unless the Config enables it).
+  // Concrete sound devices are owned here for port access; their AudioDevice
+  // views are collected in audio_dev[] and summed by audio_render(). OPL/SB/UART
+  // are added as their modules land; this keeps the render path type-agnostic.
+  class PCSpeaker *pcspk = nullptr;       // PC speaker (PIT ch2 square wave)
+  class OPL *opl = nullptr;               // AdLib / OPL2 (or OPL3 inside the SB)
+  class SoundBlaster *sb = nullptr;       // Sound Blaster (DSP + DMA + OPL3)
+  class UART16550 *uart = nullptr;        // COM1 serial
+  volatile unsigned hw_irq_pending = 0;   // bitmask of IRQs raised by audio-thread devices
+  AudioDevice *audio_dev[4] = {};         // sound sources to mix in audio_render
+  int n_audio_dev = 0;
+  bool joystick_on = false;               // game port at 0x201 attached
+  unsigned joy_btn = 0;                   // host buttons, bit0..3 = button 1..4 (pressed=1)
+  int joy_axis[4] = {0, 0, 0, 0};         // host axes, -32768..32767 (0 = centre)
+  uint64_t joy_fire_cycle[4] = {0, 0, 0, 0};  // 0x201 monostable expiry (CPU cycles)
+  bool lpt_on = false;                    // LPT1 attached
+  uint8_t lpt_data = 0, lpt_ctrl = 0;     // latched LPT data/control
+  bool herc_gfx_on = false;               // HGC 720x348 graphics page enabled
+  uint8_t herc_cfg = 0;                   // HGC config register (0x3BF)
+  bool herc_page1 = false;                // displaying page 1 (0xB8000) vs 0 (0xB0000)
 
   // Machine config
   Config config;
