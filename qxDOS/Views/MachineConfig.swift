@@ -47,7 +47,7 @@ enum EmulatorBackend: Int, Codable, CaseIterable {
             return BackendCapabilities(
                 maxRamMB: 64,
                 supportsSVGA: true,   // VESA VBE 2.0 (S3-class, 8MB LFB)
-                supportsSB16: false,
+                supportsSB16: true,   // Sound Blaster (DSP + 8237 DMA) + OPL3 FM
                 supportsDOSBoxBuiltinShell: false,
                 supportsCustomCycles: false,
                 supports486AndPentium: false)

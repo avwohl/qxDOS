@@ -360,6 +360,9 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate, Emu88E
 
             emu.setMouseEnabled(cfg.mouseEnabled)
             emu.setSpeakerEnabled(cfg.speakerEnabled)
+            // Sound Blaster (DSP + OPL3 FM, covers AdLib via the 0x388 alias) when
+            // enabled; else no sound card (PC speaker still works if enabled).
+            emu.setSoundCard(cfg.sbEnabled ? 2 : 0)
 
             // Map qxDOS speed modes onto emu88. Custom-cycles falls back to
             // full speed (capability disabled in UI).

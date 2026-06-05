@@ -76,6 +76,8 @@ typedef NS_ENUM(NSInteger, Emu88ControlifyMode) {
 - (void)setDisplayAdapter:(Emu88DisplayAdapter)adapter;
 - (void)setMouseEnabled:(BOOL)enabled;
 - (void)setSpeakerEnabled:(BOOL)enabled;
+/// Sound card: 0 = none, 1 = AdLib (OPL2), 2 = Sound Blaster (DSP + OPL3 FM).
+- (void)setSoundCard:(int)card;
 
 // Disk management — mmap-backed when loaded from a file path
 - (BOOL)loadDisk:(int)drive fromPath:(NSString *)path;

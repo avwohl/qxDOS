@@ -21,6 +21,7 @@
 
 #import "Emu88Emulator.h"
 #import "Emu88SlirpNet.h"
+#import <AVFoundation/AVFoundation.h>
 
 #include "../../emu88/dos_machine.h"
 #include "../../emu88/vga_font_8x16.h"
@@ -28,6 +29,44 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+
+namespace {
+// Lock-free SPSC ring of stereo int16 frames. The emu thread refills it via
+// dos_machine::audio_render() (so audio_render and the device port writes are
+// both on the emu thread — no race); the AVAudioSourceNode render block drains
+// it on the audio thread. CAP is a power of two.
+struct AudioRing {
+    static constexpr uint32_t CAP = 1u << 15;        // 32768 frames (~0.74s @ 44.1k)
+    int16_t L[CAP] = {0}, R[CAP] = {0};
+    std::atomic<uint32_t> wpos{0}, rpos{0};
+    uint32_t count() const {
+        return wpos.load(std::memory_order_acquire) - rpos.load(std::memory_order_acquire);
+    }
+    void push(const int16_t *stereo, uint32_t frames) {           // producer (emu thread)
+        uint32_t w = wpos.load(std::memory_order_relaxed);
+        uint32_t r = rpos.load(std::memory_order_acquire);
+        uint32_t space = CAP - (w - r);
+        if (frames > space) frames = space;
+        for (uint32_t i = 0; i < frames; i++) {
+            L[(w + i) & (CAP - 1)] = stereo[2 * i];
+            R[(w + i) & (CAP - 1)] = stereo[2 * i + 1];
+        }
+        wpos.store(w + frames, std::memory_order_release);
+    }
+    uint32_t pop(float *outL, float *outR, uint32_t frames) {      // consumer (audio thread)
+        uint32_t r = rpos.load(std::memory_order_relaxed);
+        uint32_t w = wpos.load(std::memory_order_acquire);
+        uint32_t avail = w - r;
+        if (frames > avail) frames = avail;
+        for (uint32_t i = 0; i < frames; i++) {
+            outL[i] = L[(r + i) & (CAP - 1)] * (1.0f / 32768.0f);
+            outR[i] = R[(r + i) & (CAP - 1)] * (1.0f / 32768.0f);
+        }
+        rpos.store(r + frames, std::memory_order_release);
+        return frames;
+    }
+};
+}  // namespace
 #include <string>
 #include <vector>
 
@@ -572,6 +611,11 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
     Emu88ControlifyMode    _controlifyMode;
 
     dos_machine::Config    _config;
+
+    // Audio output (CoreAudio pull): the emu thread refills _ring, the engine drains it.
+    AVAudioEngine         *_audioEngine;
+    AVAudioSourceNode     *_audioSrc;
+    AudioRing              _ring;
 }
 
 - (instancetype)init {
@@ -608,6 +652,64 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
 
 - (void)setSpeakerEnabled:(BOOL)enabled {
     _config.speaker_enabled = enabled;
+}
+
+// Sound card: 0 = none, 1 = AdLib (OPL2), 2 = Sound Blaster (DSP + OPL3).
+- (void)setSoundCard:(int)card {
+    _config.sound_card = card;
+}
+
+// ---- audio output (CoreAudio) ----
+
+- (void)startAudio {
+    if (_audioEngine) return;
+    if (!_machine || !_machine->audio_active()) return;  // nothing to play
+#if TARGET_OS_IOS
+    AVAudioSession *sess = [AVAudioSession sharedInstance];
+    [sess setCategory:AVAudioSessionCategoryPlayback
+                 mode:AVAudioSessionModeDefault
+              options:AVAudioSessionCategoryOptionMixWithOthers
+                error:nil];
+    [sess setActive:YES error:nil];
+#endif
+    AVAudioEngine *engine = [[AVAudioEngine alloc] init];
+    AVAudioFormat *fmt = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:44100.0 channels:2];
+    AudioRing *ring = &_ring;
+    AVAudioSourceNode *src = [[AVAudioSourceNode alloc] initWithFormat:fmt
+        renderBlock:^OSStatus(BOOL *isSilence, const AudioTimeStamp *ts,
+                              AVAudioFrameCount frameCount, AudioBufferList *abl) {
+            (void)ts;
+            float *outL = (float *)abl->mBuffers[0].mData;
+            float *outR = (abl->mNumberBuffers > 1) ? (float *)abl->mBuffers[1].mData : outL;
+            uint32_t got = ring->pop(outL, outR, frameCount);
+            for (uint32_t i = got; i < frameCount; i++) { outL[i] = 0.0f; outR[i] = 0.0f; }
+            if (got == 0) *isSilence = YES;
+            return noErr;
+        }];
+    [engine attachNode:src];
+    [engine connect:src to:engine.mainMixerNode format:fmt];
+    NSError *err = nil;
+    if (![engine startAndReturnError:&err]) {
+        NSLog(@"[emu88] audio engine failed to start: %@", err);
+        return;
+    }
+    _audioEngine = engine;
+    _audioSrc = src;
+    NSLog(@"[emu88] audio started (44100 Hz stereo, %s)",
+          _machine->get_config().sound_card == 2 ? "Sound Blaster" :
+          _machine->get_config().sound_card == 1 ? "AdLib" : "speaker");
+}
+
+- (void)stopAudio {
+    if (_audioEngine) {
+        [_audioEngine stop];
+        _audioEngine = nil;
+        _audioSrc = nil;
+    }
+#if TARGET_OS_IOS
+    [[AVAudioSession sharedInstance]
+        setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+#endif
 }
 
 // ---- disks ----
@@ -674,9 +776,11 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
         NSLog(@"[emu88] boot failed for drive 0x%02X", drive);
         return;
     }
-    NSLog(@"[emu88] booted drive 0x%02X (cpu=%d display=%d speed=%d ne2000=%d)",
+    NSLog(@"[emu88] booted drive 0x%02X (cpu=%d display=%d speed=%d ne2000=%d sound=%d)",
           drive, (int)_config.cpu, (int)_config.display,
-          (int)_machine->get_speed(), _config.ne2000_enabled);
+          (int)_machine->get_speed(), _config.ne2000_enabled, _config.sound_card);
+
+    [self startAudio];
 
     _shouldRun = YES;
     dispatch_async(_emulatorQueue, ^{ [self runLoop]; });
@@ -685,6 +789,7 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
 - (void)stop {
     if (!_shouldRun && !_machine) return;
     if (_io) _io->delegate = nil;
+    [self stopAudio];          // stop the render block before tearing down _machine/_ring
     _shouldRun = NO;
     // Wake the run loop if it's parked on the key semaphore so it can exit.
     dispatch_semaphore_signal(_keySemaphore);
@@ -713,6 +818,23 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
     while (_shouldRun) {
         bool ok = _machine->run_batch(10000);
         batch_count++;
+
+        // Keep the audio ring topped up to ~120ms so the source node (audio
+        // thread) never underruns. audio_render runs here on the emu thread,
+        // alongside the device port writes, so there is no cross-thread access
+        // to device state — only _ring crosses threads (lock-free).
+        if (_machine->audio_active()) {
+            const uint32_t kRate = 44100;
+            const uint32_t target = kRate * 120 / 1000;   // ~5292 frames buffered
+            uint32_t have = _ring.count();
+            if (have < target) {
+                uint32_t frames = target - have;
+                if (frames > 4096) frames = 4096;
+                static int16_t tmp[4096 * 2];
+                if (_machine->audio_render(tmp, (int)frames, (int)kRate))
+                    _ring.push(tmp, frames);
+            }
+        }
 
         // Drive the libslirp poll loop on the emulator thread (same pattern
         // as DOSBox's SlirpEthernetConnection).  Pump every batch with a
