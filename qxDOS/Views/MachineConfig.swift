@@ -134,6 +134,10 @@ struct MachineConfig: Codable, Identifiable, Equatable {
 
     // Input
     var mouseEnabled: Bool = true
+    var joystickEnabled: Bool = false   // analog game port (reads a Game Controller)
+
+    // Ports
+    var serialEnabled: Bool = false     // 16550 UART at COM1
 
     // Touch controls
     var touchLayoutId: UUID? = nil
@@ -196,7 +200,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
     // Coding keys for backward compatibility
     enum CodingKeys: String, CodingKey {
         case id, name, backend, dosType, machineType, speedMode, customCycles, cpuTypeStr, memoryMB
-        case speakerEnabled, sbEnabled, mouseEnabled
+        case speakerEnabled, sbEnabled, mouseEnabled, joystickEnabled, serialEnabled
         case touchLayoutId, touchLayoutName
         case floppyAFilename, floppyBFilename, hddCFilename, hddDFilename
         case bootDrive
@@ -230,6 +234,8 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         memoryMB = try c.decodeIfPresent(Int.self, forKey: .memoryMB) ?? 16
         speakerEnabled = try c.decodeIfPresent(Bool.self, forKey: .speakerEnabled) ?? true
         mouseEnabled = try c.decodeIfPresent(Bool.self, forKey: .mouseEnabled) ?? true
+        joystickEnabled = try c.decodeIfPresent(Bool.self, forKey: .joystickEnabled) ?? false
+        serialEnabled = try c.decodeIfPresent(Bool.self, forKey: .serialEnabled) ?? false
 
         if let sb = try c.decodeIfPresent(Bool.self, forKey: .sbEnabled) {
             sbEnabled = sb
@@ -261,6 +267,8 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         try c.encode(speakerEnabled, forKey: .speakerEnabled)
         try c.encode(sbEnabled, forKey: .sbEnabled)
         try c.encode(mouseEnabled, forKey: .mouseEnabled)
+        try c.encode(joystickEnabled, forKey: .joystickEnabled)
+        try c.encode(serialEnabled, forKey: .serialEnabled)
         try c.encodeIfPresent(touchLayoutId, forKey: .touchLayoutId)
         try c.encodeIfPresent(touchLayoutName, forKey: .touchLayoutName)
         try c.encode(floppyAFilename, forKey: .floppyAFilename)

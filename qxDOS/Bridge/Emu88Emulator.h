@@ -61,6 +61,8 @@ typedef NS_ENUM(NSInteger, Emu88ControlifyMode) {
 - (void)emulatorDidRequestInput;
 /// Emulator stopped (CPU halted, stop() called, etc.).
 - (void)emulatorDidExit;
+/// Guest wrote bytes to COM1 — the host may forward them (terminal, network, …).
+- (void)emulatorSerialOutput:(NSData *)data;
 @end
 
 @interface Emu88Emulator : NSObject
@@ -78,6 +80,12 @@ typedef NS_ENUM(NSInteger, Emu88ControlifyMode) {
 - (void)setSpeakerEnabled:(BOOL)enabled;
 /// Sound card: 0 = none, 1 = AdLib (OPL2), 2 = Sound Blaster (DSP + OPL3 FM).
 - (void)setSoundCard:(int)card;
+/// Analog game port (0x201). Reads a Game Controller automatically; the app may
+/// also drive an on-screen pad via -updateJoystickX:y:buttons:.
+- (void)setJoystickEnabled:(BOOL)enabled;
+/// 16550 UART at COM1. Guest output arrives via -emulatorSerialOutput:; feed
+/// guest input with -sendSerialData:.
+- (void)setSerialEnabled:(BOOL)enabled;
 
 // Disk management — mmap-backed when loaded from a file path
 - (BOOL)loadDisk:(int)drive fromPath:(NSString *)path;
@@ -102,6 +110,10 @@ typedef NS_ENUM(NSInteger, Emu88ControlifyMode) {
 - (void)sendScancodePress:(uint8_t)scancode;
 - (void)sendScancodeRelease:(uint8_t)scancode;
 - (void)updateMouseX:(int)x y:(int)y buttons:(int)buttons;
+/// On-screen joystick: x/y are -32768..32767 (0 = centre), buttons bit0..3.
+- (void)updateJoystickX:(int)x y:(int)y buttons:(int)buttons;
+/// Send bytes to the guest's COM1 receive line.
+- (void)sendSerialData:(NSData *)data;
 
 // Speed
 - (void)setSpeed:(Emu88SpeedMode)mode;

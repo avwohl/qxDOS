@@ -448,6 +448,28 @@ struct ContentView: View {
                 }
             ))
 
+            Toggle("Joystick", isOn: Binding(
+                get: { viewModel.config.joystickEnabled },
+                set: { val in
+                    var cfg = viewModel.config
+                    cfg.joystickEnabled = val
+                    viewModel.configManager.updateConfig(cfg)
+                }
+            ))
+            if viewModel.config.joystickEnabled {
+                Text("Analog game port. Reads a connected Game Controller.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Toggle("Serial Port (COM1)", isOn: Binding(
+                get: { viewModel.config.serialEnabled },
+                set: { val in
+                    var cfg = viewModel.config
+                    cfg.serialEnabled = val
+                    viewModel.configManager.updateConfig(cfg)
+                }
+            ))
+
             Toggle("PC Speaker", isOn: Binding(
                 get: { viewModel.config.speakerEnabled },
                 set: { val in

@@ -22,6 +22,7 @@
 #import "Emu88Emulator.h"
 #import "Emu88SlirpNet.h"
 #import <AVFoundation/AVFoundation.h>
+#import <GameController/GameController.h>
 
 #include "../../emu88/dos_machine.h"
 #include "../../emu88/vga_font_8x16.h"
@@ -29,6 +30,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <deque>
 
 namespace {
 // Lock-free SPSC ring of stereo int16 frames. The emu thread refills it via
@@ -161,6 +163,35 @@ public:
     std::atomic<int> mouse_y{100};
     std::atomic<int> mouse_btn{0};
     bool has_mouse = true;
+
+    // ---- joystick override fed by the host (on-screen pad / game controller) ----
+    std::atomic<int>      joy_x{0}, joy_y{0};   // -32768..32767, 0 = centre
+    std::atomic<unsigned> joy_btn{0};           // bit0..3 = button 1..4 (pressed)
+    std::atomic<bool>     joy_host_active{false};
+
+    // ---- serial (COM1) host transport: thread-safe byte FIFOs ----
+    std::deque<uint8_t> ser_in;    // host -> guest (RX)
+    std::deque<uint8_t> ser_out;   // guest -> host (TX)
+    std::mutex          ser_mtx;
+    void serial_tx(uint8_t b) override {
+        std::lock_guard<std::mutex> lk(ser_mtx);
+        ser_out.push_back(b);
+    }
+    int serial_rx() override {
+        std::lock_guard<std::mutex> lk(ser_mtx);
+        if (ser_in.empty()) return -1;
+        int v = ser_in.front(); ser_in.pop_front(); return v;
+    }
+    void push_serial_in(const uint8_t *data, int len) {
+        std::lock_guard<std::mutex> lk(ser_mtx);
+        for (int i = 0; i < len; i++) ser_in.push_back(data[i]);
+    }
+    int drain_serial_out(uint8_t *buf, int max_len) {
+        std::lock_guard<std::mutex> lk(ser_mtx);
+        int n = 0;
+        while (n < max_len && !ser_out.empty()) { buf[n++] = ser_out.front(); ser_out.pop_front(); }
+        return n;
+    }
 
     Emu88SlirpNet *net() { return slirp_.get(); }
 
@@ -659,6 +690,23 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
     _config.sound_card = card;
 }
 
+- (void)setJoystickEnabled:(BOOL)enabled { _config.joystick_enabled = enabled; }
+- (void)setSerialEnabled:(BOOL)enabled   { _config.serial_enabled   = enabled; }
+
+// On-screen joystick: x/y are -32768..32767 (0 = centre); buttons bit0..3.
+- (void)updateJoystickX:(int)x y:(int)y buttons:(int)buttons {
+    if (!_io) return;
+    _io->joy_x.store(x);
+    _io->joy_y.store(y);
+    _io->joy_btn.store((unsigned)buttons);
+    _io->joy_host_active.store(true);
+}
+
+// Serial input: bytes the host sends to the guest's COM1 RX.
+- (void)sendSerialData:(NSData *)data {
+    if (_io && data.length) _io->push_serial_in((const uint8_t *)data.bytes, (int)data.length);
+}
+
 // ---- audio output (CoreAudio) ----
 
 - (void)startAudio {
@@ -833,6 +881,38 @@ uint8_t ascii_to_scancode(uint8_t ascii) {
                 static int16_t tmp[4096 * 2];
                 if (_machine->audio_render(tmp, (int)frames, (int)kRate))
                     _ring.push(tmp, frames);
+            }
+        }
+
+        // Joystick: poll the game controller (or on-screen pad) and feed the
+        // game port. set_joystick runs here on the emu thread (no race).
+        if (_config.joystick_enabled && (batch_count & 0x1F) == 0) {
+            int jx = 0, jy = 0; unsigned jb = 0;
+            GCExtendedGamepad *gp = GCController.current.extendedGamepad;
+            if (gp) {
+                jx = (int)(gp.leftThumbstick.xAxis.value *  32767.0f);
+                jy = (int)(gp.leftThumbstick.yAxis.value * -32767.0f);  // up = -axis
+                if (gp.buttonA.isPressed) jb |= 1;
+                if (gp.buttonB.isPressed) jb |= 2;
+                if (gp.buttonX.isPressed) jb |= 4;
+                if (gp.buttonY.isPressed) jb |= 8;
+            }
+            if (_io && _io->joy_host_active.load()) {     // on-screen pad overrides
+                jx = _io->joy_x.load(); jy = _io->joy_y.load(); jb = _io->joy_btn.load();
+            }
+            _machine->set_joystick(jx, jy, 0, 0, jb);
+        }
+
+        // Serial: forward guest COM1 output to the delegate (coalesced).
+        if (_config.serial_enabled && _io && (batch_count & 0x3F) == 0) {
+            uint8_t sbuf[256];
+            int n = _io->drain_serial_out(sbuf, (int)sizeof(sbuf));
+            if (n > 0) {
+                id<Emu88EmulatorDelegate> d = _io->delegate;
+                if (d && [d respondsToSelector:@selector(emulatorSerialOutput:)]) {
+                    NSData *data = [NSData dataWithBytes:sbuf length:n];
+                    dispatch_async(dispatch_get_main_queue(), ^{ [d emulatorSerialOutput:data]; });
+                }
             }
         }
 
