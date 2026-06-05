@@ -102,8 +102,10 @@ struct MachineConfig: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String = "Default"
 
-    // Hardware-level emulator selection
-    var backend: EmulatorBackend = .dosbox
+    // Hardware-level emulator selection. emu88 (the in-house 386 interpreter,
+    // validated against test386 + SingleStepTests/80386) is the default; DOSBox
+    // remains selectable for SVGA / Sound Blaster / 486+ / built-in-shell needs.
+    var backend: EmulatorBackend = .emu88
 
     // DOS type — which kernel/shell runs above the hardware layer
     var dosType: DOSType = .freeDOS
@@ -212,7 +214,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Default"
-        backend = try c.decodeIfPresent(EmulatorBackend.self, forKey: .backend) ?? .dosbox
+        backend = try c.decodeIfPresent(EmulatorBackend.self, forKey: .backend) ?? .emu88
         dosType = try c.decodeIfPresent(DOSType.self, forKey: .dosType) ?? .freeDOS
 
         // Try new keys first, fall back to legacy
