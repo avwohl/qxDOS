@@ -49,6 +49,11 @@ static void init_default_vga_palette(uint8_t dac[][3]) {
 }
 
 void dos_machine::video_set_mode(int mode) {
+  // Selecting any legacy (VGA/EGA/CGA/text) mode leaves SVGA: the 0xA0000
+  // window reverts to the legacy VGA paths and the VESA framebuffer is idle.
+  vesa.active = false;
+  mem->svga_active = false;
+
   video_mode = mode;
   switch (mode) {
     case 0: case 1: screen_cols = 40; screen_rows = 25; break;
@@ -323,6 +328,9 @@ void dos_machine::bios_int10h() {
       io->video_mode_changed(video_mode, screen_cols, screen_rows);
       break;
     }
+    case 0x4F:    // VESA VBE (SVGA) services
+      vesa_bios();
+      break;
     case 0x01: {  // Set cursor shape
       uint8_t ch_val = get_reg8(reg_CH);
       uint8_t cl_val = get_reg8(reg_CL);
@@ -1237,7 +1245,17 @@ void dos_machine::bios_int33h() {
     int hx, hy, hb;
     io->mouse_get_state(hx, hy, hb);
 
-    // Clamp to virtual coordinate range
+    // The host reports the pointer in displayed-frame pixels (0..w-1, 0..h-1).
+    // Map that onto the guest's INT 33h virtual range [min..max] using the
+    // resolution emu88 itself renders, so the pointer spans the whole screen in
+    // any mode: a VGA 320x200 (mode 13h) keeps the classic 0..639 x range, while
+    // an 800x600 VESA mode whose program set a 0..799 range maps 1:1.
+    int sw = 0, sh = 0;
+    mouse_screen_dims(sw, sh);
+    if (sw > 1) hx = mouse.min_x + (int)((long long)hx * (mouse.max_x - mouse.min_x) / (sw - 1));
+    if (sh > 1) hy = mouse.min_y + (int)((long long)hy * (mouse.max_y - mouse.min_y) / (sh - 1));
+
+    // Clamp to the virtual coordinate range
     if (hx < mouse.min_x) hx = mouse.min_x;
     if (hx > mouse.max_x) hx = mouse.max_x;
     if (hy < mouse.min_y) hy = mouse.min_y;
@@ -1779,6 +1797,377 @@ void dos_machine::xms_dispatch() {
     default:
       set_reg32(reg_AX, 0);  // Zero full EAX to avoid stale upper bits
       regs[reg_BX] = 0x80;   // Function not implemented
+      break;
+  }
+}
+
+//============================================================================
+// VESA VBE 2.0 (SVGA) — INT 10h AH=4Fh
+//
+// emu88 advertises an S3-class SVGA card with an 8MB linear framebuffer.
+// Programs query the VBE controller/mode info, then SetMode (4F02) a packed-
+// pixel mode; pixels are written either through the bank-switched 64KB window
+// at 0xA0000 (4F05) or the linear-framebuffer aperture (PhysBasePtr). Both
+// views address emu88_mem::svga_vram. The compositor (svga_composite) hands the
+// framebuffer to the host bridge, which converts 8/15/16/24/32bpp -> RGBA.
+//============================================================================
+
+namespace {
+struct VesaMode { uint16_t num; uint16_t w; uint16_t h; uint8_t bpp; };
+static const VesaMode kVesaModes[] = {
+  // 8bpp packed-pixel (palettized)
+  {0x100, 640, 400, 8}, {0x101, 640, 480, 8}, {0x103, 800, 600, 8},
+  {0x105,1024, 768, 8}, {0x107,1280,1024, 8},
+  // 15bpp RGB555
+  {0x10D, 320, 200,15}, {0x110, 640, 480,15}, {0x113, 800, 600,15},
+  {0x116,1024, 768,15}, {0x119,1280,1024,15},
+  // 16bpp RGB565
+  {0x10E, 320, 200,16}, {0x111, 640, 480,16}, {0x114, 800, 600,16},
+  {0x117,1024, 768,16}, {0x11A,1280,1024,16},
+  // 24bpp RGB888
+  {0x10F, 320, 200,24}, {0x112, 640, 480,24}, {0x115, 800, 600,24},
+  {0x118,1024, 768,24}, {0x11B,1280,1024,24},
+  // 32bpp XRGB8888 (vendor mode numbers)
+  {0x140, 320, 200,32}, {0x141, 640, 480,32}, {0x142, 800, 600,32},
+  {0x143,1024, 768,32}, {0x144,1280,1024,32},
+};
+static const int kNumVesaModes = (int)(sizeof(kVesaModes)/sizeof(kVesaModes[0]));
+
+static const VesaMode *vesa_find(uint16_t num) {
+  num &= 0x3FFF;  // strip LFB(bit14) / no-clear(bit15) request bits
+  for (int i = 0; i < kNumVesaModes; i++)
+    if (kVesaModes[i].num == num) return &kVesaModes[i];
+  return nullptr;
+}
+static int vesa_bpp_bytes(int bpp) {
+  return bpp <= 8 ? 1 : bpp <= 16 ? 2 : bpp <= 24 ? 3 : 4;
+}
+
+// Persistent VBE structures live in the video-BIOS ROM region (segment 0xC000).
+static const uint32_t VBE_ROM_SEG     = 0xC000;
+static const uint32_t VBE_ROM_LIN     = 0xC0000;
+static const uint16_t VBE_OFF_OEM     = 0x0010;  // OEM string
+static const uint16_t VBE_OFF_VENDOR  = 0x0050;
+static const uint16_t VBE_OFF_PRODUCT = 0x0080;
+static const uint16_t VBE_OFF_REV     = 0x00C0;
+static const uint16_t VBE_OFF_MODES   = 0x0100;  // uint16 mode list, 0xFFFF terminated
+static const uint16_t VBE_OFF_PMINFO  = 0x0200;  // 4F0A protected-mode interface table
+// Virtual I/O ports written by the 4F0A protected-mode routines (the emulator
+// owns both the emitted code and these ports, so any unused port range works).
+static const uint16_t VBE_PM_PORT_WIN   = 0x9000;  // SetWindow: AX = bank (64KB granules)
+static const uint16_t VBE_PM_PORT_STARTX = 0x9002; // SetDisplayStart: latch pixel-in-line
+static const uint16_t VBE_PM_PORT_STARTY = 0x9004; // SetDisplayStart: scan line -> commit
+static const uint16_t VBE_PMINFO_LEN  = 40;        // header(8) + win(7) + start(15) + ports(10)
+}  // namespace
+
+void dos_machine::vesa_init_rom() {
+  if (vesa.rom_ready) return;
+  // Video BIOS ROM signature so probes find a ROM at 0xC0000.
+  mem->store_mem(VBE_ROM_LIN + 0, 0x55);
+  mem->store_mem(VBE_ROM_LIN + 1, 0xAA);
+  mem->store_mem(VBE_ROM_LIN + 2, 0x40);  // ROM size in 512-byte blocks (32KB)
+  auto put_str = [&](uint16_t off, const char *s) {
+    for (uint32_t i = 0; ; i++) {
+      mem->store_mem(VBE_ROM_LIN + off + i, (uint8_t)s[i]);
+      if (!s[i]) break;
+    }
+  };
+  put_str(VBE_OFF_OEM,     "S3 Incorporated. Trio64 (emu88)");
+  put_str(VBE_OFF_VENDOR,  "S3 Incorporated.");
+  put_str(VBE_OFF_PRODUCT, "Trio64 (emu88 VESA)");
+  put_str(VBE_OFF_REV,     "Rev 1.0");
+  uint32_t mp = VBE_ROM_LIN + VBE_OFF_MODES;
+  for (int i = 0; i < kNumVesaModes; i++) { mem->store_mem16(mp, kVesaModes[i].num); mp += 2; }
+  mem->store_mem16(mp, 0xFFFF);
+
+  // 4F0A protected-mode interface table: a header of routine offsets followed by
+  // real 16-bit machine code that performs the bank switch / display-start by
+  // OUTing to the emulator's virtual VBE ports (above). A PM client copies this
+  // and calls the routines without a real-mode round-trip.
+  uint32_t t = VBE_ROM_LIN + VBE_OFF_PMINFO;
+  uint16_t off_win = 8, off_start = 15, off_ports = 30;
+  mem->store_mem16(t + 0, off_win);    // SetDisplayWindow routine offset
+  mem->store_mem16(t + 2, off_start);  // SetDisplayStart routine offset
+  mem->store_mem16(t + 4, 0);          // SetPalette routine (0 = use 4F09)
+  mem->store_mem16(t + 6, off_ports);  // I/O port / memory list offset
+  auto emit = [&](uint32_t off, std::initializer_list<uint8_t> code) {
+    uint32_t a = t + off;
+    for (uint8_t b : code) mem->store_mem(a++, b);
+  };
+  // SetDisplayWindow: in BX=window(ignored, only A), DX=position(64KB granules).
+  //   MOV AX,DX ; MOV DX,9000h ; OUT DX,AX ; RETF
+  emit(off_win, {0x89, 0xD0, 0xBA, 0x00, 0x90, 0xEF, 0xCB});
+  // SetDisplayStart: in BX=0, CX=pixel-in-line, DX=scan line.
+  //   MOV BX,DX ; MOV AX,CX ; MOV DX,9002h ; OUT DX,AX ;
+  //   MOV AX,BX ; MOV DX,9004h ; OUT DX,AX ; RETF
+  emit(off_start, {0x89, 0xD3, 0x89, 0xC8, 0xBA, 0x02, 0x90, 0xEF,
+                   0x89, 0xD8, 0xBA, 0x04, 0x90, 0xEF, 0xCB});
+  // Port list: the three virtual ports, 0xFFFF (end ports), 0xFFFF (end memory).
+  mem->store_mem16(t + off_ports + 0, VBE_PM_PORT_WIN);
+  mem->store_mem16(t + off_ports + 2, VBE_PM_PORT_STARTX);
+  mem->store_mem16(t + off_ports + 4, VBE_PM_PORT_STARTY);
+  mem->store_mem16(t + off_ports + 6, 0xFFFF);
+  mem->store_mem16(t + off_ports + 8, 0xFFFF);
+
+  vesa.rom_ready = true;
+}
+
+bool dos_machine::vesa_set_mode(uint16_t modenum) {
+  bool no_clear = (modenum & 0x8000) != 0;   // bit15: preserve framebuffer
+  const VesaMode *m = vesa_find(modenum);
+  if (!m) return false;
+  int bypp = vesa_bpp_bytes(m->bpp);
+  uint32_t stride = (uint32_t)m->w * bypp;
+  uint32_t fbsize = stride * m->h;
+  uint32_t want = svga_vram_bytes < fbsize ? fbsize : svga_vram_bytes;
+  mem->svga_ensure(want);
+  if (!no_clear && mem->svga_base()) memset(mem->svga_base(), 0, mem->svga_vram_size);
+  vesa.active = true;
+  vesa.mode = m->num;
+  vesa.xres = m->w; vesa.yres = m->h; vesa.bpp = m->bpp;
+  vesa.bytes_per_scanline = (int)stride;
+  vesa.display_start = 0;
+  mem->svga_active = true;
+  mem->svga_window_off = 0;
+  mem->svga_lfb_phys = SVGA_LFB_PHYS;
+  mem->vga_planar = false;
+  if (m->bpp == 8) init_default_vga_palette(vga_dac);
+  io->video_mode_changed(0x4000 | m->num, m->w, m->h);
+  emit_video_frame();
+  return true;
+}
+
+void dos_machine::svga_composite() {
+  const uint8_t *fb = mem->svga_base();
+  if (!fb || !vesa.active || vesa.yres <= 0) return;
+  // The whole frame (display_start .. display_start + last-pixel) must fit in
+  // VRAM, or the bridge's compositor would read past svga_vram. A 4F07 pan can
+  // set display_start anywhere; bound the entire frame, not just its origin.
+  uint64_t need = (uint64_t)(vesa.yres - 1) * (uint32_t)vesa.bytes_per_scanline
+                + (uint64_t)vesa.xres * vesa_bpp_bytes(vesa.bpp);
+  uint32_t off = vesa.display_start;
+  if ((uint64_t)off + need > mem->svga_vram_size) off = 0;
+  io->video_refresh_direct(fb + off, vesa.xres, vesa.yres, vesa.bpp,
+                           vesa.bytes_per_scanline, vga_dac);
+}
+
+void dos_machine::mouse_screen_dims(int &w, int &h) const {
+  if (vesa.active && vesa.xres > 0) { w = vesa.xres; h = vesa.yres; return; }
+  if (video_mode == 0x13)           { w = 320; h = 200; return; }
+  // Text modes render at cell granularity (8x16); this matches the frame the
+  // host receives. (The default INT 33h range is 640x200, so a standard 80x25
+  // frame maps to the conventional mouse space.)
+  w = screen_cols * 8;
+  h = screen_rows * 16;
+}
+
+void dos_machine::emit_video_frame() {
+  if (vesa.active) { svga_composite(); return; }
+  if (video_mode == 0x13) {
+    if (mem->vga_planar) {
+      uint16_t crtc_start = (crtc_regs[12] << 8) | crtc_regs[13];
+      for (int i = 0; i < 320 * 200; i++)
+        modex_composite[i] = mem->vga_planes[i & 3][crtc_start + (i >> 2)];
+      io->video_refresh_gfx(modex_composite, 320, 200, vga_dac);
+    } else {
+      io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+    }
+  } else {
+    uint32_t base = vram_base();
+    io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
+    int page = bda_r8(bda::ACTIVE_PAGE);
+    uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
+    io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
+  }
+}
+
+void dos_machine::vesa_bios() {
+  vesa_init_rom();
+  uint8_t al = get_reg8(reg_AL);
+  auto es_di_lin = [&]() -> uint32_t {
+    if (protected_mode() && !v86_mode())
+      return seg_cache[seg_ES].base + get_reg32(reg_DI);
+    return EMU88_MK20(sregs[seg_ES], get_reg16(reg_DI));
+  };
+
+  switch (al) {
+    case 0x00: {  // Return VBE controller information -> ES:DI (VbeInfoBlock, 512 bytes)
+      uint32_t p = es_di_lin();
+      for (int i = 0; i < 512; i++) mem->store_mem(p + i, 0);
+      mem->store_mem(p + 0, 'V'); mem->store_mem(p + 1, 'E');
+      mem->store_mem(p + 2, 'S'); mem->store_mem(p + 3, 'A');
+      mem->store_mem16(p + 0x04, 0x0200);                              // VBE 2.0
+      mem->store_mem32(p + 0x06, (VBE_ROM_SEG << 16) | VBE_OFF_OEM);   // OemStringPtr
+      mem->store_mem32(p + 0x0A, 0x00000000);                         // Capabilities (6-bit DAC, no switch)
+      mem->store_mem32(p + 0x0E, (VBE_ROM_SEG << 16) | VBE_OFF_MODES); // VideoModePtr
+      mem->store_mem16(p + 0x12, (uint16_t)(svga_vram_bytes / 65536)); // TotalMemory (64KB units)
+      mem->store_mem16(p + 0x14, 0x0100);                             // OEM software rev
+      mem->store_mem32(p + 0x16, (VBE_ROM_SEG << 16) | VBE_OFF_VENDOR);
+      mem->store_mem32(p + 0x1A, (VBE_ROM_SEG << 16) | VBE_OFF_PRODUCT);
+      mem->store_mem32(p + 0x1E, (VBE_ROM_SEG << 16) | VBE_OFF_REV);
+      set_reg16(reg_AX, 0x004F);
+      break;
+    }
+    case 0x01: {  // Return VBE mode information -> ES:DI (ModeInfoBlock, 256 bytes)
+      uint16_t modenum = get_reg16(reg_CX);
+      const VesaMode *m = vesa_find(modenum);
+      uint32_t p = es_di_lin();
+      for (int i = 0; i < 256; i++) mem->store_mem(p + i, 0);
+      if (!m) { set_reg16(reg_AX, 0x014F); break; }
+      int bypp = vesa_bpp_bytes(m->bpp);
+      uint32_t stride = (uint32_t)m->w * bypp;
+      uint32_t fbsize = stride * m->h;
+      mem->store_mem16(p + 0x00, 0x009B);   // attrs: supported|info|color|graphics|LFB
+      mem->store_mem(p + 0x02, 0x07);       // WinA: relocatable|readable|writable
+      mem->store_mem(p + 0x03, 0x00);       // WinB
+      mem->store_mem16(p + 0x04, 64);       // WinGranularity (KB)
+      mem->store_mem16(p + 0x06, 64);       // WinSize (KB)
+      mem->store_mem16(p + 0x08, 0xA000);   // WinASegment
+      mem->store_mem16(p + 0x0A, 0x0000);   // WinBSegment
+      mem->store_mem32(p + 0x0C, 0);        // WinFuncPtr (programs use 4F05)
+      mem->store_mem16(p + 0x10, (uint16_t)stride);   // BytesPerScanLine
+      mem->store_mem16(p + 0x12, m->w);     // XResolution
+      mem->store_mem16(p + 0x14, m->h);     // YResolution
+      mem->store_mem(p + 0x16, 8);          // XCharSize
+      mem->store_mem(p + 0x17, 16);         // YCharSize
+      mem->store_mem(p + 0x18, 1);          // NumberOfPlanes
+      mem->store_mem(p + 0x19, (uint8_t)m->bpp);      // BitsPerPixel
+      mem->store_mem(p + 0x1A, 1);          // NumberOfBanks
+      mem->store_mem(p + 0x1B, m->bpp <= 8 ? 4 : 6);  // MemoryModel: 4=packed, 6=direct
+      mem->store_mem(p + 0x1C, 0);          // BankSize
+      uint8_t pages = (fbsize && svga_vram_bytes >= fbsize)
+                        ? (uint8_t)((svga_vram_bytes / fbsize) - 1) : 0;
+      mem->store_mem(p + 0x1D, pages);      // NumberOfImagePages
+      mem->store_mem(p + 0x1E, 1);          // reserved (=1 for VBE>=1.2)
+      auto setmask = [&](uint8_t rs, uint8_t rp, uint8_t gs, uint8_t gp,
+                         uint8_t bs, uint8_t bp, uint8_t xs, uint8_t xp) {
+        mem->store_mem(p + 0x1F, rs); mem->store_mem(p + 0x20, rp);
+        mem->store_mem(p + 0x21, gs); mem->store_mem(p + 0x22, gp);
+        mem->store_mem(p + 0x23, bs); mem->store_mem(p + 0x24, bp);
+        mem->store_mem(p + 0x25, xs); mem->store_mem(p + 0x26, xp);
+        mem->store_mem(p + 0x36, rs); mem->store_mem(p + 0x37, rp);  // VBE3 linear masks
+        mem->store_mem(p + 0x38, gs); mem->store_mem(p + 0x39, gp);
+        mem->store_mem(p + 0x3A, bs); mem->store_mem(p + 0x3B, bp);
+        mem->store_mem(p + 0x3C, xs); mem->store_mem(p + 0x3D, xp);
+      };
+      switch (m->bpp) {
+        case 15: setmask(5, 10, 5, 5, 5, 0, 1, 15); break;  // RGB555
+        case 16: setmask(5, 11, 6, 5, 5, 0, 0, 0);  break;  // RGB565
+        case 24: setmask(8, 16, 8, 8, 8, 0, 0, 0);  break;  // RGB888
+        case 32: setmask(8, 16, 8, 8, 8, 0, 8, 24); break;  // XRGB8888
+        default: break;                                     // 8bpp: palettized
+      }
+      mem->store_mem(p + 0x27, 0);                  // DirectColorModeInfo
+      mem->store_mem32(p + 0x28, SVGA_LFB_PHYS);    // PhysBasePtr (linear FB)
+      mem->store_mem16(p + 0x32, (uint16_t)stride); // LinBytesPerScanLine (VBE3)
+      mem->store_mem(p + 0x34, pages);              // BnkNumberOfImagePages
+      mem->store_mem(p + 0x35, pages);              // LinNumberOfImagePages
+      set_reg16(reg_AX, 0x004F);
+      break;
+    }
+    case 0x02: {  // Set VBE mode (BX = mode, bit14=LFB, bit15=no clear)
+      uint16_t modenum = get_reg16(reg_BX);
+      set_reg16(reg_AX, vesa_set_mode(modenum) ? 0x004F : 0x014F);
+      break;
+    }
+    case 0x03: {  // Return current VBE mode -> BX
+      set_reg16(reg_BX, vesa.active ? (uint16_t)(vesa.mode | 0x4000)
+                                    : (uint16_t)(video_mode & 0xFF));
+      set_reg16(reg_AX, 0x004F);
+      break;
+    }
+    case 0x05: {  // Display window control (bank switch)
+      uint8_t bh = get_reg8(reg_BH);   // 0=set, 1=get
+      uint8_t bl = get_reg8(reg_BL);   // window number (0=A)
+      if (bl != 0) { set_reg16(reg_AX, 0x014F); break; }
+      if (bh == 0) {
+        mem->svga_window_off = (uint32_t)get_reg16(reg_DX) * 65536u;  // DX in 64KB units
+        set_reg16(reg_AX, 0x004F);
+      } else if (bh == 1) {
+        set_reg16(reg_DX, (uint16_t)(mem->svga_window_off / 65536u));
+        set_reg16(reg_AX, 0x004F);
+      } else set_reg16(reg_AX, 0x014F);
+      break;
+    }
+    case 0x06: {  // Get/Set logical scan line length
+      uint8_t bl = get_reg8(reg_BL);
+      int bypp = vesa_bpp_bytes(vesa.bpp ? vesa.bpp : 8);
+      // BL=00 set in pixels (CX), BL=02 set in bytes (CX). A logical scanline
+      // wider than the displayed width gives a virtual screen the program pans
+      // across with 4F07. Clamp to >= visible width and to what VRAM holds.
+      if (vesa.active && (bl == 0x00 || bl == 0x02)) {
+        uint32_t want = (bl == 0x00) ? (uint32_t)get_reg16(reg_CX) * bypp
+                                     : (uint32_t)get_reg16(reg_CX);
+        uint32_t min_bytes = (uint32_t)vesa.xres * bypp;
+        if (want < min_bytes) want = min_bytes;
+        if (vesa.yres > 0 && want * (uint32_t)vesa.yres <= svga_vram_bytes)
+          vesa.bytes_per_scanline = (int)want;
+      }
+      uint32_t stride = vesa.bytes_per_scanline ? (uint32_t)vesa.bytes_per_scanline : 1;
+      set_reg16(reg_BX, (uint16_t)stride);                       // bytes per scan line
+      set_reg16(reg_CX, (uint16_t)(stride / (bypp ? bypp : 1))); // pixels per scan line
+      set_reg16(reg_DX, (uint16_t)(svga_vram_bytes / stride));   // max scan lines that fit
+      set_reg16(reg_AX, 0x004F);
+      break;
+    }
+    case 0x07: {  // Get/Set display start (pan)
+      uint8_t bl = get_reg8(reg_BL);
+      int bypp = vesa_bpp_bytes(vesa.bpp ? vesa.bpp : 8);
+      uint32_t stride = vesa.bytes_per_scanline ? (uint32_t)vesa.bytes_per_scanline : 1;
+      if (bl == 0x00 || bl == 0x80) {                      // set
+        vesa.display_start = (uint32_t)get_reg16(reg_DX) * stride
+                           + (uint32_t)get_reg16(reg_CX) * bypp;
+        set_reg16(reg_AX, 0x004F);
+      } else if (bl == 0x01) {                             // get
+        set_reg16(reg_DX, (uint16_t)(vesa.display_start / stride));
+        set_reg16(reg_CX, (uint16_t)((vesa.display_start % stride) / (bypp ? bypp : 1)));
+        set_reg16(reg_AX, 0x004F);
+      } else set_reg16(reg_AX, 0x014F);
+      break;
+    }
+    case 0x08: {  // Get/Set DAC palette format — we keep a 6-bit DAC
+      set_reg8(reg_BH, 6);
+      set_reg16(reg_AX, 0x004F);
+      break;
+    }
+    case 0x09: {  // Get/Set palette data (entries are B,G,R,align)
+      uint8_t bl = get_reg8(reg_BL);
+      uint16_t count = get_reg16(reg_CX);
+      uint16_t start = get_reg16(reg_DX);
+      uint32_t tbl = es_di_lin();
+      if (bl == 0x00 || bl == 0x80) {                      // set palette
+        for (uint16_t i = 0; i < count && (start + i) < 256; i++) {
+          uint8_t b = mem->fetch_mem(tbl + i * 4 + 0);
+          uint8_t g = mem->fetch_mem(tbl + i * 4 + 1);
+          uint8_t r = mem->fetch_mem(tbl + i * 4 + 2);
+          vga_dac[start + i][0] = r & 0x3F;
+          vga_dac[start + i][1] = g & 0x3F;
+          vga_dac[start + i][2] = b & 0x3F;
+        }
+        set_reg16(reg_AX, 0x004F);
+      } else if (bl == 0x01) {                             // get palette
+        for (uint16_t i = 0; i < count && (start + i) < 256; i++) {
+          mem->store_mem(tbl + i * 4 + 0, vga_dac[start + i][2]);  // B
+          mem->store_mem(tbl + i * 4 + 1, vga_dac[start + i][1]);  // G
+          mem->store_mem(tbl + i * 4 + 2, vga_dac[start + i][0]);  // R
+          mem->store_mem(tbl + i * 4 + 3, 0);
+        }
+        set_reg16(reg_AX, 0x004F);
+      } else set_reg16(reg_AX, 0x014F);
+      break;
+    }
+    case 0x0A: {  // Return VBE 2.0 protected-mode interface
+      if (get_reg8(reg_BL) != 0x00) { set_reg16(reg_AX, 0x014F); break; }
+      // ES:DI -> the PM interface table in the VBE ROM; CX = its length.
+      load_segment_real(seg_ES, VBE_ROM_SEG);
+      set_reg16(reg_DI, VBE_OFF_PMINFO);
+      set_reg16(reg_CX, VBE_PMINFO_LEN);
+      set_reg16(reg_AX, 0x004F);
+      break;
+    }
+    case 0x04:  // Save/restore state (optional)
+    default:
+      set_reg16(reg_AX, 0x014F);  // AL=4F (supported), AH=01 (failed/unsupported)
       break;
   }
 }

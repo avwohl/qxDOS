@@ -241,6 +241,26 @@ private:
   int screen_cols;
   int screen_rows;
 
+  // --- SVGA / VESA (VBE) state -------------------------------------------
+  struct VesaState {
+    bool     active = false;          // a VESA mode is current
+    uint16_t mode = 0;                // current VESA mode number (LFB bit stripped)
+    int      xres = 0, yres = 0;
+    int      bpp = 0;                 // 8/15/16/24/32
+    int      bytes_per_scanline = 0;
+    uint32_t display_start = 0;       // byte offset of displayed top-left (VBE 4F07)
+    uint32_t pm_start_x = 0;          // 4F0A SetDisplayStart: latched pixel-in-line
+    bool     rom_ready = false;       // mode list + OEM strings written to the ROM area
+  } vesa;
+  uint32_t svga_vram_bytes = 8u * 1024 * 1024;   // SVGA VRAM size (8MB; fits 1280x1024x32)
+  static constexpr uint32_t SVGA_LFB_PHYS = 0xE0000000u;  // linear framebuffer aperture
+  void vesa_bios();                   // INT 10h AH=4F dispatch (in dos_bios.cc)
+  bool vesa_set_mode(uint16_t mode);  // configure + activate a VESA mode
+  void vesa_init_rom();               // populate the VESA mode list / OEM strings
+  void emit_video_frame();            // unified text / VGA / SVGA frame emit
+  void svga_composite();              // composite the current SVGA framebuffer
+  void mouse_screen_dims(int &w, int &h) const;  // pixel size of the displayed frame
+
   // PIC state
   uint8_t pic_imr;
   uint8_t pic_vector_base;

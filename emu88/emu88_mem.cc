@@ -12,12 +12,37 @@ emu88_mem::emu88_mem(emu88_uint32 size)
 emu88_mem::~emu88_mem() {
   delete[] dat;
   dat = nullptr;
+  delete[] svga_vram;
+  svga_vram = nullptr;
+}
+
+void emu88_mem::svga_ensure(emu88_uint32 bytes) {
+  if (svga_vram_size >= bytes) return;
+  emu88_uint8 *nv = new emu88_uint8[bytes];
+  memset(nv, 0, bytes);
+  if (svga_vram) {
+    memcpy(nv, svga_vram, svga_vram_size);
+    delete[] svga_vram;
+  }
+  svga_vram = nv;
+  svga_vram_size = bytes;
 }
 
 emu88_uint8 emu88_mem::fetch_mem(emu88_uint32 addr) {
+  // SVGA linear-framebuffer aperture (high physical address, above the RAM
+  // array). Checked on the RAW address, before A20/size masking.
+  if (svga_lfb_phys && addr >= svga_lfb_phys &&
+      (addr - svga_lfb_phys) < svga_vram_size) {
+    return svga_vram[addr - svga_lfb_phys];
+  }
   emu88_uint32 masked = mask_addr(addr);
   if (masked >= mem_size) {
     return 0xFF;
+  }
+  // SVGA bank-switched window at 0xA0000 (active only while a VESA mode is set).
+  if (svga_active && masked >= 0xA0000 && masked < 0xB0000) {
+    emu88_uint32 off = svga_window_off + (masked - 0xA0000);
+    return off < svga_vram_size ? svga_vram[off] : 0xFF;
   }
   // VGA plane read: in planar mode, reads from 0xA0000-0xAFFFF return selected plane
   if (vga_planar && masked >= 0xA0000 && masked < 0xB0000) {
@@ -28,8 +53,20 @@ emu88_uint8 emu88_mem::fetch_mem(emu88_uint32 addr) {
 }
 
 void emu88_mem::store_mem(emu88_uint32 addr, emu88_uint8 abyte) {
+  // SVGA linear-framebuffer aperture (see fetch_mem): raw address, pre-masking.
+  if (svga_lfb_phys && addr >= svga_lfb_phys &&
+      (addr - svga_lfb_phys) < svga_vram_size) {
+    svga_vram[addr - svga_lfb_phys] = abyte;
+    return;
+  }
   emu88_uint32 masked = mask_addr(addr);
   if (masked >= mem_size) {
+    return;
+  }
+  // SVGA bank-switched window at 0xA0000 (active only while a VESA mode is set).
+  if (svga_active && masked >= 0xA0000 && masked < 0xB0000) {
+    emu88_uint32 off = svga_window_off + (masked - 0xA0000);
+    if (off < svga_vram_size) svga_vram[off] = abyte;
     return;
   }
   // VGA plane write: in planar mode, writes to 0xA0000-0xAFFFF go to selected planes

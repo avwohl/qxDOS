@@ -26,6 +26,18 @@ public:
                                   const uint8_t palette[][3]) {
     (void)framebuf; (void)width; (void)height; (void)palette;
   }
+  // SVGA / VESA graphics refresh. `framebuf` points at the top-left pixel; rows
+  // are `stride` bytes apart (>= width * bytes-per-pixel). `bpp` selects the
+  // pixel encoding the host must convert to RGBA:
+  //   8  -> palette index (use `palette`, 0-63 VGA DAC range)
+  //   15 -> RGB555 little-endian word
+  //   16 -> RGB565 little-endian word
+  //   24 -> B,G,R bytes
+  //   32 -> B,G,R,x bytes (x ignored)
+  virtual void video_refresh_direct(const uint8_t *framebuf, int width, int height,
+                                    int bpp, int stride, const uint8_t palette[][3]) {
+    (void)framebuf; (void)width; (void)height; (void)bpp; (void)stride; (void)palette;
+  }
   virtual void video_set_cursor(int row, int col) = 0;
 
   // Disk I/O (drive: 0=A, 1=B, 0x80=C, 0x81=D, 0xE0=CD-ROM)

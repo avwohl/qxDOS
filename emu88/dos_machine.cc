@@ -481,24 +481,7 @@ bool dos_machine::run_batch(int count) {
       // fire immediately when the CPU resumes after idle.
       tick_cycle_mark = cycles;
 
-      if (video_mode == 0x13) {
-        if (mem->vga_planar) {
-          // Mode X: composite 4 planes into linear buffer
-          // CRTC start address determines which page is displayed
-          uint16_t crtc_start = (crtc_regs[12] << 8) | crtc_regs[13];
-          for (int i = 0; i < 320 * 200; i++)
-            modex_composite[i] = mem->vga_planes[i & 3][crtc_start + (i >> 2)];
-          io->video_refresh_gfx(modex_composite, 320, 200, vga_dac);
-        } else {
-          io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
-        }
-      } else {
-        uint32_t base = vram_base();
-        io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
-        int page = bda_r8(bda::ACTIVE_PAGE);
-        uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
-        io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
-      }
+      emit_video_frame();
       // Reset poll count so the CPU gets a full batch of instructions
       // on the next call before re-triggering idle.  This lets timer-based
       // timeouts (e.g. FreeDOS F5/F8 boot prompt) make progress.
@@ -573,25 +556,7 @@ bool dos_machine::run_batch(int count) {
     // Video refresh (cycle-based: ~30 Hz)
     if (cycles - refresh_cycle_mark >= CYCLES_PER_REFRESH) {
       refresh_cycle_mark = cycles;
-      if (video_mode == 0x13) {
-        if (mem->vga_planar) {
-          // Mode X: composite 4 planes into linear buffer
-          // CRTC start address determines which page is displayed
-          uint16_t crtc_start = (crtc_regs[12] << 8) | crtc_regs[13];
-          for (int i = 0; i < 320 * 200; i++)
-            modex_composite[i] = mem->vga_planes[i & 3][crtc_start + (i >> 2)];
-          io->video_refresh_gfx(modex_composite, 320, 200, vga_dac);
-        } else {
-          io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
-        }
-      } else {
-        uint32_t base = vram_base();
-        io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
-
-        int page = bda_r8(bda::ACTIVE_PAGE);
-        uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
-        io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
-      }
+      emit_video_frame();
     }
 
     // NE2000: poll for incoming packets and deliver IRQ (every 1024 insns)
@@ -1270,6 +1235,22 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
 void dos_machine::port_out16(emu88_uint16 port, emu88_uint16 value) {
   if (nic && port >= ne2000_base && port < ne2000_base + 0x20) {
     nic->iowrite16(port - ne2000_base, value);
+    return;
+  }
+  // VESA VBE 2.0 protected-mode interface (4F0A) virtual registers. The emitted
+  // SetDisplayWindow / SetDisplayStart routines OUT to these.
+  if (port == 0x9000) {            // SetWindow: bank position in 64KB granules
+    mem->svga_window_off = (uint32_t)value * 65536u;
+    return;
+  }
+  if (port == 0x9002) {            // SetDisplayStart: latch pixel-in-line
+    vesa.pm_start_x = value;
+    return;
+  }
+  if (port == 0x9004) {            // SetDisplayStart: scan line -> commit start
+    int bypp = vesa.bpp <= 8 ? 1 : vesa.bpp <= 16 ? 2 : vesa.bpp <= 24 ? 3 : 4;
+    vesa.display_start = (uint32_t)value * (uint32_t)vesa.bytes_per_scanline
+                       + vesa.pm_start_x * (uint32_t)bypp;
     return;
   }
   // Default: two byte writes

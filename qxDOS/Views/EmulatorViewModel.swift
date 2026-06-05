@@ -148,6 +148,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate, Emu88E
     /// accepts absolute mouse coordinates. Reset on each restart.
     private var emu88MouseX: Int = 320
     private var emu88MouseY: Int = 100
+    /// Pixel size of the most recent emu88 frame. The virtual pointer is clamped
+    /// to this so it spans the whole screen in any mode (incl. SVGA); emu88 maps
+    /// these frame-pixel coordinates onto the guest's INT 33h range.
+    private var emu88FrameW: Int = 640
+    private var emu88FrameH: Int = 480
     private var diskSaveTimer: Timer?
     private var configCancellable: AnyCancellable?
     private var pendingAttachments: [String: Int] = [:]
@@ -431,8 +436,10 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate, Emu88E
                 self.emu88Emulator = emu
                 self.activeBackend = .emu88
                 self.heldSecurityScopes = heldScopes
+                self.emu88FrameW = 640
+                self.emu88FrameH = 480
                 self.emu88MouseX = 320
-                self.emu88MouseY = 100
+                self.emu88MouseY = 240
                 emu.delegate = self
 
                 for drive in manifests {
@@ -585,11 +592,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate, Emu88E
         case .dosbox:
             dosboxEmulator?.updateMouseDX(Int32(dx), dy: Int32(dy), buttons: Int32(buttons))
         case .emu88:
-            // emu88 only accepts absolute coordinates, so accumulate the
-            // delta into a virtual cursor and clamp to the standard
-            // 640×200 virtual display.
-            emu88MouseX = max(0, min(639, emu88MouseX + dx))
-            emu88MouseY = max(0, min(199, emu88MouseY + dy))
+            // emu88 takes absolute coordinates, so accumulate the delta into a
+            // virtual cursor clamped to the current frame's pixel size. emu88
+            // then maps these onto the guest's INT 33h range for the mode.
+            emu88MouseX = max(0, min(emu88FrameW - 1, emu88MouseX + dx))
+            emu88MouseY = max(0, min(emu88FrameH - 1, emu88MouseY + dy))
             emu88Emulator?.updateMouseX(Int32(emu88MouseX), y: Int32(emu88MouseY), buttons: Int32(buttons))
         case .none:
             break
@@ -1203,6 +1210,10 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate, Emu88E
     /// DOSBox rendered a new frame (RGBA pixels)
     func emulatorFrameReady(_ pixels: Data, width: Int32, height: Int32) {
         let w = Int(width), h = Int(height)
+        if w > 0 && h > 0 {            // track for the mouse coordinate mapping
+            emu88FrameW = w
+            emu88FrameH = h
+        }
         let colorSpace = Self.rgbColorSpace
         // Use CFDataCreateWithBytesNoCopy to avoid copying pixel data
         guard let provider = CGDataProvider(data: pixels as CFData) else { return }

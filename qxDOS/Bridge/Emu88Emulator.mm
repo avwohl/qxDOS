@@ -329,6 +329,69 @@ public:
         dispatch_to_delegate(out, width, height);
     }
 
+    // SVGA / VESA: convert an 8/15/16/24/32-bpp framebuffer (rows `stride`
+    // bytes apart) to RGBA. Keeps the bridge the single place that knows RGBA,
+    // so the delegate/SwiftUI path is unchanged for high-resolution modes.
+    void video_refresh_direct(const uint8_t *framebuf, int width, int height,
+                              int bpp, int stride, const uint8_t palette[][3]) override {
+        if (!should_refresh()) return;
+        if (!framebuf || width <= 0 || height <= 0) return;
+        if (stride <= 0) stride = width * (bpp <= 8 ? 1 : bpp <= 16 ? 2 : bpp <= 24 ? 3 : 4);
+
+        NSMutableData *out = [NSMutableData dataWithLength:(NSUInteger)(width * height * 4)];
+        if (!out) return;
+        RGBA *pixels = (RGBA *)out.mutableBytes;
+
+        if (bpp <= 8) {
+            RGBA pal[256];
+            for (int i = 0; i < 256; ++i)
+                pal[i] = expand_dac(palette[i][0], palette[i][1], palette[i][2]);
+            for (int y = 0; y < height; ++y) {
+                const uint8_t *row = framebuf + (size_t)y * stride;
+                RGBA *dst = pixels + (size_t)y * width;
+                for (int x = 0; x < width; ++x) dst[x] = pal[row[x]];
+            }
+        } else if (bpp == 15) {
+            for (int y = 0; y < height; ++y) {
+                const uint8_t *row = framebuf + (size_t)y * stride;
+                RGBA *dst = pixels + (size_t)y * width;
+                for (int x = 0; x < width; ++x) {
+                    uint16_t px = (uint16_t)(row[x*2] | (row[x*2+1] << 8));
+                    dst[x] = RGBA{ (uint8_t)(((px >> 10) & 0x1F) * 255 / 31),
+                                   (uint8_t)(((px >>  5) & 0x1F) * 255 / 31),
+                                   (uint8_t)(( px        & 0x1F) * 255 / 31), 0xFF };
+                }
+            }
+        } else if (bpp == 16) {
+            for (int y = 0; y < height; ++y) {
+                const uint8_t *row = framebuf + (size_t)y * stride;
+                RGBA *dst = pixels + (size_t)y * width;
+                for (int x = 0; x < width; ++x) {
+                    uint16_t px = (uint16_t)(row[x*2] | (row[x*2+1] << 8));
+                    dst[x] = RGBA{ (uint8_t)(((px >> 11) & 0x1F) * 255 / 31),
+                                   (uint8_t)(((px >>  5) & 0x3F) * 255 / 63),
+                                   (uint8_t)(( px        & 0x1F) * 255 / 31), 0xFF };
+                }
+            }
+        } else if (bpp == 24) {
+            for (int y = 0; y < height; ++y) {
+                const uint8_t *row = framebuf + (size_t)y * stride;
+                RGBA *dst = pixels + (size_t)y * width;
+                for (int x = 0; x < width; ++x)
+                    dst[x] = RGBA{ row[x*3+2], row[x*3+1], row[x*3+0], 0xFF };  // B,G,R
+            }
+        } else {  // 32bpp: B,G,R,x
+            for (int y = 0; y < height; ++y) {
+                const uint8_t *row = framebuf + (size_t)y * stride;
+                RGBA *dst = pixels + (size_t)y * width;
+                for (int x = 0; x < width; ++x)
+                    dst[x] = RGBA{ row[x*4+2], row[x*4+1], row[x*4+0], 0xFF };
+            }
+        }
+
+        dispatch_to_delegate(out, width, height);
+    }
+
     void video_set_cursor(int row, int col) override {
         cursor_row_ = row;
         cursor_col_ = col;

@@ -68,3 +68,26 @@ tests/build/test386 2>/dev/null
 
 **Result: PASS** — reaches POST `0xFF` and the `0xEE` arithmetic output matches
 `test386-EE-reference.txt` exactly.
+
+## 3. VESA / SVGA (VBE) — end-to-end
+
+Drives the full machine (`emu88` + the DOS/BIOS layer) through the real INT 10h
+dispatch to exercise the VESA VBE 2.0 SVGA implementation: `4F00` controller info,
+`4F01` mode info (8/16-bpp masks), `4F02` set mode, `4F05` bank switch, `4F06`
+logical-scanline set, `4F07` pan, and the `4F0A` protected-mode interface — whose
+emitted `SetWindow`/`SetDisplayStart` routines are actually **executed** and
+checked. Also covers the `0xA0000` window / `0xE0000000` linear-framebuffer VRAM
+routing, the compositor's pan clamp, and the INT 33h mouse coordinate scaling.
+
+```sh
+bash tests/build.sh            # also builds tests/build/vesa_test
+tests/build/vesa_test
+```
+
+**Result: PASS** — verifies the `VbeInfoBlock`/`ModeInfoBlock` byte layout, the
+LFB and bank-switched window both address the 8 MB SVGA VRAM, a set-mode emits a
+correctly-sized direct-color frame, a wider logical scanline (`4F06`) takes
+effect, the executed `4F0A` routines update the bank/display-start, a pan past
+the end of VRAM clamps to page 0 (no OOB; checked under AddressSanitizer), and
+the mouse maps frame-pixel coordinates onto the guest range (SVGA 1:1; VGA mode
+13h to the classic 640-wide virtual space).

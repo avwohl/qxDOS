@@ -46,7 +46,7 @@ enum EmulatorBackend: Int, Codable, CaseIterable {
         case .emu88:
             return BackendCapabilities(
                 maxRamMB: 64,
-                supportsSVGA: false,
+                supportsSVGA: true,   // VESA VBE 2.0 (S3-class, 8MB LFB)
                 supportsSB16: false,
                 supportsDOSBoxBuiltinShell: false,
                 supportsCustomCycles: false,

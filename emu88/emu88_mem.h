@@ -20,6 +20,21 @@ public:
   uint8_t vga_read_map = 0;       // GC reg 4: which plane to read (0-3)
   uint8_t vga_planes[4][65536];   // 4 planes × 64KB
 
+  // --- SVGA / VESA linear framebuffer -------------------------------------
+  // Separate store from the legacy 256KB vga_planes / 0xA0000 window. Allocated
+  // lazily when the first VESA mode is set. The guest reaches it two ways:
+  //   * a bank-switched 64KB window at 0xA0000 (VBE function 4F05), and
+  //   * a linear-framebuffer aperture at svga_lfb_phys (the VBE PhysBasePtr),
+  //     used by 32-bit / DOS4G / DPMI clients.
+  // Both views address the SAME svga_vram buffer.
+  emu88_uint8 *svga_vram = nullptr;
+  emu88_uint32 svga_vram_size = 0;
+  bool         svga_active = false;     // a VESA mode is current -> route 0xA0000 here
+  emu88_uint32 svga_window_off = 0;     // byte offset of the 0xA0000 window into svga_vram
+  emu88_uint32 svga_lfb_phys = 0;       // physical base of the LFB aperture (0 = disabled)
+  void svga_ensure(emu88_uint32 bytes); // grow svga_vram to at least `bytes`
+  emu88_uint8 *svga_base() { return svga_vram; }
+
   emu88_mem(emu88_uint32 size = 0x100000);  // default 1MB
   virtual ~emu88_mem();
 
