@@ -159,6 +159,10 @@ public:
 
   // Segment override state (per-instruction)
   int seg_override;       // -1 = none, 0-5 = seg index
+  // Effective segment index of the in-progress modrm memory access (-1 = none).
+  // Lets check_segment_* attribute #SS vs #GP by the segment actually used,
+  // rather than by the first segment register whose *value* happens to match.
+  int pending_seg_idx = -1;
 
   // REP prefix state
   enum RepType { REP_NONE, REP_REPZ, REP_REPNZ };
@@ -246,13 +250,14 @@ public:
 
   // Register access: 16-bit
   emu88_uint16 get_reg16(emu88_uint8 r) const { return regs[r]; }
-  void set_reg16(emu88_uint8 r, emu88_uint16 val) { regs[r] = val; }
+  void set_reg16(emu88_uint8 r, emu88_uint16 val) { if (fault_abort()) return; regs[r] = val; }
 
   // Register access: 32-bit (386+) — combines regs_hi:regs
   emu88_uint32 get_reg32(emu88_uint8 r) const {
     return EMU88_MK32(regs[r], regs_hi[r]);
   }
   void set_reg32(emu88_uint8 r, emu88_uint32 val) {
+    if (fault_abort()) return;
     regs[r] = val & 0xFFFF;
     regs_hi[r] = (val >> 16) & 0xFFFF;
   }
@@ -268,14 +273,8 @@ public:
   // EFLAGS access (386+)
   emu88_uint32 get_eflags() const { return EMU88_MK32(flags, eflags_hi); }
   void set_eflags(emu88_uint32 val) {
-    uint8_t old_iopl = (flags >> 12) & 3;
     flags = val & 0xFFFF;
     eflags_hi = (val >> 16) & 0xFFFF;
-    uint8_t new_iopl = (flags >> 12) & 3;
-    if (new_iopl != old_iopl) {
-      static int iopl_log = 0;
-      if (iopl_log < 5) { iopl_log++; fprintf(stderr, "[IOPL] %d→%d EFLAGS=%08X CS:IP=%04X:%08X\n", old_iopl, new_iopl, val, sregs[seg_CS], ip); }
-    }
   }
 
   // Operand size helpers
@@ -319,11 +318,15 @@ public:
                        emu88_uint8 desc[8]);
   static void parse_descriptor(const emu88_uint8 desc[8], SegDescCache &cache);
 
-  // Flags helpers
+  // Flags helpers. A faulting instruction must produce no architectural side
+  // effects: once a fault is pending (and we are not inside the exception
+  // dispatch itself, signalled by in_exception), flag updates are suppressed.
   bool get_flag(emu88_uint16 f) const { return (flags & f) != 0; }
-  void set_flag(emu88_uint16 f) { flags |= f; }
-  void clear_flag(emu88_uint16 f) { flags &= ~f; }
+  bool fault_abort() const { return exception_pending && !in_exception; }
+  void set_flag(emu88_uint16 f) { if (fault_abort()) return; flags |= f; }
+  void clear_flag(emu88_uint16 f) { if (fault_abort()) return; flags &= ~f; }
   void set_flag_val(emu88_uint16 f, bool val) {
+    if (fault_abort()) return;
     if (val) flags |= f; else flags &= ~f;
   }
 
@@ -369,11 +372,40 @@ public:
   emu88_uint16 fetch_ip_word(void);
   emu88_uint32 fetch_ip_dword(void);
 
+  // Effective-address arithmetic for the high part of a multi-word memory
+  // operand (e.g. the segment word of a far pointer at offset+2/+4). In 16-bit
+  // address mode the 386 computes the EA in 16 bits, so it wraps modulo 2^16;
+  // in 32-bit address mode it does not. Using plain off+delta would push the
+  // access past the 0xFFFF segment limit near the 64KB boundary and fault
+  // spuriously where real hardware wraps and succeeds.
+  emu88_uint32 ea_add(emu88_uint32 off, emu88_uint32 delta) const {
+    return addr_size_32 ? (off + delta) : ((off + delta) & 0xFFFF);
+  }
+
   // Stack operations (protected mode aware - use ESP when stack_32)
   void push_word(emu88_uint16 val);
   emu88_uint16 pop_word(void);
   void push_dword(emu88_uint32 val);
   emu88_uint32 pop_dword(void);
+
+  // Stack access that always reports #SS (vector 12) on a limit cross, instead
+  // of guessing the segment by selector value (which mis-attributes #SS as #GP
+  // when SS shares its value with an earlier segment register). Faults set
+  // ip=insn_ip and leave ESP untouched (no partial commit).
+  bool check_stack_access(emu88_uint32 off, emu88_uint8 width);
+  // Non-committing stack reads at an explicit SS:offset (do NOT advance ESP).
+  emu88_uint16 stack_peek_word(emu88_uint32 off);
+  emu88_uint32 stack_peek_dword(emu88_uint32 off);
+  // Stack writes at an explicit SS:offset (do NOT advance ESP). #SS on cross.
+  void stack_poke_word(emu88_uint32 off, emu88_uint16 val);
+  void stack_poke_dword(emu88_uint32 off, emu88_uint32 val);
+  // Validate a near control-transfer target against the CS limit. Returns true
+  // if the target is legal; otherwise raises #GP(0) (ip=insn_ip) and returns
+  // false. (Real mode: limit is 0xFFFF; protected mode: CS descriptor limit.)
+  bool check_code_target(emu88_uint32 new_eip);
+  // POP into a segment register: read the value without committing ESP, load
+  // the segment, then commit ESP only if no fault occurred.
+  void pop_segment(int seg_idx);
 
   // ModR/M decoding
   struct modrm_result {
@@ -383,6 +415,9 @@ public:
     emu88_uint8 rm_field;   // r/m field (bits 2-0)
     emu88_uint8 mod_field;  // mod field (bits 7-6)
     bool is_register;       // true if r/m refers to register, not memory
+    bool esp_base = false;  // 32-bit addr: ESP used as a base register. POP uses
+                            // the POST-pop ESP for an ESP-relative destination.
+    emu88_uint8 seg_idx = 3; // effective segment index (ES..GS) used for the operand
   };
   modrm_result decode_modrm(emu88_uint8 modrm);
   modrm_result decode_modrm_32(emu88_uint8 modrm);  // 386+ 32-bit addressing with SIB

@@ -19,3 +19,9 @@ fd/
 
 # DOS COM programs (built from asm)
 dos/*.com
+
+# emu88 CPU test data (SingleStepTests, large) and build artifacts
+tests/data/
+tests/build/
+tests/*.bin
+tests/baseline_*.txt

@@ -618,7 +618,7 @@ void dos_machine::bios_int13h() {
 
 #ifdef DISK_TRACE
   if (dl >= 0xE0)
-    fprintf(stderr, "  [INT13h] AH=%02X DL=%02X\n", ah, dl);
+;
 #endif
 
   switch (ah) {
@@ -656,10 +656,7 @@ void dos_machine::bios_int13h() {
       uint32_t buf_addr = EMU88_MK20(sregs[seg_ES], regs[reg_BX]);
 
 #ifdef DISK_TRACE
-      fprintf(stderr, "  [DISK READ] C=%d H=%d S=%d -> LBA=%llu offset=%llu "
-              "to %05X count=%d\n", cyl, head, sector,
-              (unsigned long long)lba, (unsigned long long)offset,
-              buf_addr, count);
+;
 #endif
 
       uint8_t sectors_read = 0;
@@ -824,8 +821,7 @@ void dos_machine::bios_int13h() {
 
 #ifdef DISK_TRACE
       if (dl >= 0xE0)
-        fprintf(stderr, "  [EXT READ] LBA=%u count=%u -> %04X:%04X secsize=%d\n",
-                lba_lo, count, buf_seg, buf_off, sec_size);
+;
 #endif
       uint16_t sectors_read = 0;
       for (uint16_t i = 0; i < count; i++) {
@@ -845,8 +841,7 @@ void dos_machine::bios_int13h() {
 
 #ifdef DISK_TRACE
       if (dl >= 0xE0 && sectors_read != count)
-        fprintf(stderr, "  [EXT READ] FAILED: read %u of %u sectors\n",
-                sectors_read, count);
+;
 #endif
 
       set_reg8(reg_AH, sectors_read == count ? 0 : 0x04);
@@ -979,9 +974,6 @@ void dos_machine::bios_int14h() {
 void dos_machine::bios_int15h() {
   uint8_t ah = get_reg8(reg_AH);
   uint16_t ax = regs[reg_AX];
-  fprintf(stderr, "[INT15] AH=%02X AX=%04X BX=%04X CX=%04X DX=%04X EBX=%08X EDX=%08X\n",
-          ah, ax, regs[reg_BX], regs[reg_CX], regs[reg_DX],
-          get_reg32(reg_BX), get_reg32(reg_DX));
 
   switch (ah) {
     case 0x41:  // Wait for external event - not supported
@@ -1170,7 +1162,6 @@ void dos_machine::bios_int19h() {
     return;
   }
 
-  fprintf(stderr, "No bootable disk found\n");
   halted = true;
 }
 
@@ -1476,7 +1467,6 @@ void dos_machine::bios_int2fh() {
     regs[reg_SI] = 0;          // No private data paragraph needed
     sregs[seg_ES] = 0xF000;
     regs[reg_DI] = dpmi.mode_switch_off;
-    fprintf(stderr, "[DPMI] Detection: returning entry F000:%04X\n", dpmi.mode_switch_off);
     return;
   }
 
@@ -1505,8 +1495,6 @@ void dos_machine::bios_int2fh() {
 
 void dos_machine::xms_dispatch() {
   uint8_t func = get_reg8(reg_AH);
-  fprintf(stderr, "[XMS] func=0x%02X AX=%04X BX=%04X DX=%04X EDX=%08X\n",
-          func, regs[reg_AX], regs[reg_BX], regs[reg_DX], get_reg32(reg_DX));
 
   switch (func) {
     case 0x00: {  // Get XMS version
@@ -1789,7 +1777,6 @@ void dos_machine::xms_dispatch() {
       break;
     }
     default:
-      fprintf(stderr, "[XMS] Unhandled function 0x%02X\n", func);
       set_reg32(reg_AX, 0);  // Zero full EAX to avoid stale upper bits
       regs[reg_BX] = 0x80;   // Function not implemented
       break;

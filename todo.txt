@@ -1,13 +1,41 @@
-todo.txt
+A previous project was an 8080 emulator (see ../cpmemu).
+on top of the instructions the CP/M os calls were emulated.
+See the ../copmemu .cfg system for mapping linux files into
+a 8.3 file space.
 
-make this dos emulator more configurable
-for the hardware level make the emulator selectable 
-from ../iosFreeDOS and the current dosbox in this repo.
+We started doing the same thing here.  You created emu88 as an 8088 emulator.
+you later extended to 386.  But when I asked to extend it to add protected mode
+you balked and suggested using dosobox as they spent over 2 years tweaking
+protected mode to work right.
 
-For the DOS level support https://freedos.org/
-real msdos
-and the dosbox built in dos
+Id like to back off the dosbox part. Dont remove it --yet.  But focus on the emu88 emultator.
+Get it working 100% for 386 all modes.  I suggest finding test suites / instruction exercisors
+for testing.
 
-On the settings screen the above can be set.
-Once set and started it cant be changed that run
-(we never got reuse/restart of an emulator to work)
+
+--- STATUS (emu88 386 validation) ----------------------------------------------
+
+Two industry-standard suites now drive emu88; harnesses + docs live in tests/.
+
+1. test386.asm (full-system, ALL MODES): real -> protected -> paging -> V86,
+   GDT/LDT, call gates, TSS task switching.  RESULT: PASS (POST 0xFF, EE output
+   matches reference exactly).
+
+2. SingleStepTests/80386 (per-instruction, 1.76M cases): 99.983% pass
+   (1,758,403 / 1,758,700).  Every architecturally DEFINED behavior is correct:
+   all results, defined flags, all addressing + prefix combos, segment-limit /
+   64KB-boundary / CS-limit-fetch exceptions with correct #GP vs #SS attribution,
+   string-op boundary faults, and all mode transitions.
+
+   The remaining ~0.017% (11 of 941 opcode files) is officially-undefined or
+   environment-specific, NOT defined-CPU-behavior bugs:
+     - IMUL undefined SF/PF/AF flags: modelled to ~96% (guard-bit add-shift
+       datapath); last ~4% is gate-level multiplier-array state (not public).
+     - IN from peripheral ports: device-specific capture data, not CPU behavior.
+     - Self-modifying REP within the 386 prefetch window: needs a cycle-accurate
+       prefetch-queue model; the architectural result is already correct.
+
+   See tests/README.md for full detail.
+
+
+

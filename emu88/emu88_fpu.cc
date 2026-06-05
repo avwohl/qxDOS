@@ -416,7 +416,6 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           fpu.sw &= ~SW_C2;
           break;
         default:
-          fprintf(stderr, "[FPU] unhandled D9 register op: %02X\n", op2);
           break;
       }
     }
@@ -497,7 +496,6 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           break;
         }
         default:
-          fprintf(stderr, "[FPU] unhandled DB mem reg=%d\n", reg);
           break;
       }
     } else {
@@ -543,7 +541,6 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           set_flag(FLAG_ZF);
         }
       } else {
-        fprintf(stderr, "[FPU] unhandled DB register op: %02X\n", op2);
       }
     }
     break;
@@ -666,7 +663,6 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           store_word(mr.seg, mr.offset, fpu.sw);
           break;
         default:
-          fprintf(stderr, "[FPU] unhandled DD mem reg=%d\n", reg);
           break;
       }
     } else {
@@ -691,7 +687,6 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         fpu_compare(ST(0), ST(rm));
         fpu_pop(fpu);
       } else {
-        fprintf(stderr, "[FPU] unhandled DD register op: %02X\n", op2);
       }
     }
     break;
@@ -856,14 +851,12 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         }
         fpu_pop(fpu);
       } else {
-        fprintf(stderr, "[FPU] unhandled DF register op: %02X\n", op2);
       }
     }
     break;
   }
 
   default:
-    fprintf(stderr, "[FPU] unhandled ESC%d\n", esc);
     break;
   }
 }

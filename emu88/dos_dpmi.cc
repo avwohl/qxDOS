@@ -149,8 +149,6 @@ void dos_machine::dpmi_mode_switch() {
   dpmi.next_mem_base = 0x200000;
   dpmi.next_handle = 1;
 
-  fprintf(stderr, "[DPMI] Mode switch: 32bit=%d PSP=%04X ret=%04X:%04X mem_top=%08X dpmi_base=%08X\n",
-          is_32bit, psp_seg, ret_cs, ret_ip, mem_top, dpmi.base);
 
   // Clear structures
   for (uint32_t i = 0; i < 0x9000; i++)
@@ -237,16 +235,9 @@ void dos_machine::dpmi_mode_switch() {
       dpmi_write_ldt_entry(env_sel, (uint32_t)env_seg << 4, 0xFFFF, 0x93, 0x00);
       // Patch PSP[0x2C] with the PM selector (through the raw memory, before PM is fully up)
       mem->store_mem16(psp_phys + 0x2C, env_sel);
-      fprintf(stderr, "[DPMI] Environment: seg=%04X -> sel=%04X (base=%05X)\n",
-              env_seg, env_sel, (uint32_t)env_seg << 4);
     }
   }
 
-  fprintf(stderr, "[DPMI] Selectors: CS=%04X(base=%05X) DS=%04X(base=%05X) SS=%04X(base=%05X) ES=%04X(base=%05X)\n",
-          client_cs, (uint32_t)ret_cs << 4,
-          client_ds, (uint32_t)saved_ds << 4,
-          client_ss, (uint32_t)saved_ss << 4,
-          client_es, (uint32_t)psp_seg << 4);
 
   // === Enable Protected Mode ===
   cr0 |= CR0_PE;
@@ -325,8 +316,6 @@ void dos_machine::dpmi_mode_switch() {
   dpmi.is_32bit = is_32bit;
   dpmi.vif = true;
 
-  fprintf(stderr, "[DPMI] PM active: CS:EIP=%04X:%08X SS:ESP=%04X:%08X CPL=%d IOPL=%d\n",
-          sregs[seg_CS], ip, sregs[seg_SS], get_esp(), cpl, get_iopl());
 }
 
 //=============================================================================
@@ -343,8 +332,6 @@ void dos_machine::dpmi_raw_pm_to_rm() {
   uint16_t new_cs = regs[reg_SI];
   uint16_t new_ip = regs[reg_DI];
 
-  fprintf(stderr, "[DPMI-RAW] PM->RM: CS:IP=%04X:%04X DS=%04X ES=%04X SS:SP=%04X:%04X\n",
-          new_cs, new_ip, new_ds, new_es, new_ss, new_sp);
 
   // Switch to real mode
   cr0 &= ~CR0_PE;
@@ -380,8 +367,6 @@ void dos_machine::dpmi_raw_rm_to_pm() {
   uint16_t new_cs = regs[reg_SI];
   uint32_t new_eip = get_reg32(reg_DI);
 
-  fprintf(stderr, "[DPMI-RAW] RM->PM: CS:EIP=%04X:%08X DS=%04X ES=%04X SS:ESP=%04X:%08X\n",
-          new_cs, new_eip, new_ds, new_es, new_ss, new_esp);
 
   // Switch to protected mode
   cr0 |= CR0_PE;
@@ -397,8 +382,6 @@ void dos_machine::dpmi_raw_rm_to_pm() {
   load_segment(seg_FS, 0);
   load_segment(seg_GS, 0);
 
-  fprintf(stderr, "[DPMI-RAW] RM->PM done: CS:EIP=%04X:%08X SS:ESP=%04X:%08X\n",
-          sregs[seg_CS], ip, sregs[seg_SS], get_esp());
 }
 
 //=============================================================================
@@ -412,8 +395,6 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
     static int exc_trace = 0;
     if (exc_trace < 10) {
       exc_trace++;
-      fprintf(stderr, "[DPMI-INTERCEPT] vec=%02X sw=%d err=%d active=%d CPL=%d at %04X:%08X\n",
-              vector, is_software_int, has_error_code, dpmi.active, cpl, sregs[seg_CS], insn_ip);
     }
   }
   if (!dpmi.active) return false;
@@ -481,23 +462,17 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
       uint32_t dbase = desc[2] | (desc[3] << 8) | (desc[4] << 16) | (desc[7] << 24);
       uint32_t dlimit = desc[0] | (desc[1] << 8) | ((desc[6] & 0x0F) << 16);
       if (desc[6] & 0x80) dlimit = (dlimit << 12) | 0xFFF;
-      fprintf(stderr, "[DPMI-EXC] Faulting sel=%04X (%s idx=%d) desc: base=%08X limit=%08X access=%02X flags=%02X %s\n",
-              fsel, use_ldt ? "LDT" : "GDT", idx, dbase, dlimit, desc[5], desc[6] >> 4,
-              (desc[5] & 0x80) ? "PRESENT" : "NOT-PRESENT");
       // Also dump raw descriptor bytes
-      fprintf(stderr, "[DPMI-EXC] Raw desc: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-              desc[0], desc[1], desc[2], desc[3], desc[4], desc[5], desc[6], desc[7]);
+;
     }
     // Also dump LDT entries to see what's been written
     if (vector == 0x0B) {
-      fprintf(stderr, "[DPMI-EXC] LDT dump (first 80 entries with data):\n");
       for (int e = 0; e < 80; e++) {
         uint32_t a = ldtr_cache.base + e * 8;
         uint8_t d[8];
         for (int b = 0; b < 8; b++) d[b] = mem->fetch_mem(a + b);
         if (d[0]||d[1]||d[2]||d[3]||d[4]||d[5]||d[6]||d[7])
-          fprintf(stderr, "  LDT[%d] sel=%04X: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-                  e, (e << 3)|4, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7]);
+;
       }
     }
     // Build DPMI exception frame and dispatch to handler
@@ -510,24 +485,10 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
     static int unhandled_exc_log = 0;
     if (unhandled_exc_log < 50) {
       unhandled_exc_log++;
-      fprintf(stderr, "[DPMI] Unhandled exception #%02X (err_code=%08X has_err=%d) at %04X:%08X CPL=%d\n",
-              vector, error_code, has_error_code, sregs[seg_CS], insn_ip, cpl);
-      fprintf(stderr, "[DPMI]   EAX=%08X EBX=%08X ECX=%08X EDX=%08X\n",
-              get_reg32(reg_AX), get_reg32(reg_BX), get_reg32(reg_CX), get_reg32(reg_DX));
-      fprintf(stderr, "[DPMI]   ESI=%08X EDI=%08X EBP=%08X ESP=%08X\n",
-              get_reg32(reg_SI), get_reg32(reg_DI), get_reg32(reg_BP), get_esp());
-      fprintf(stderr, "[DPMI]   CS=%04X DS=%04X ES=%04X SS=%04X FS=%04X GS=%04X\n",
-              sregs[seg_CS], sregs[seg_DS], sregs[seg_ES], sregs[seg_SS],
-              sregs[seg_FS], sregs[seg_GS]);
-      fprintf(stderr, "[DPMI]   CS base=%08X limit=%08X SS base=%08X limit=%08X\n",
-              seg_cache[seg_CS].base, seg_cache[seg_CS].limit,
-              seg_cache[seg_SS].base, seg_cache[seg_SS].limit);
       // Dump instruction bytes at faulting address
       uint32_t lin = seg_cache[seg_CS].base + insn_ip;
-      fprintf(stderr, "[DPMI]   Instruction bytes:");
       for (int i = 0; i < 16; i++)
-        fprintf(stderr, " %02X", mem->fetch_mem(lin + i));
-      fprintf(stderr, "\n");
+;
     }
     dpmi_reflect_to_rm(vector);
     return true;
@@ -539,7 +500,6 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
 //=============================================================================
 
 void dos_machine::dpmi_terminate(uint8_t exit_code) {
-  fprintf(stderr, "[DPMI] Client terminate: exit_code=%02X\n", exit_code);
 
   // End the DPMI session
   dpmi.active = false;
@@ -581,8 +541,6 @@ void dos_machine::dpmi_terminate(uint8_t exit_code) {
   load_segment_real(seg_CS, handler_seg);
   ip = handler_off;
 
-  fprintf(stderr, "[DPMI] Returning to real mode, INT 21h at %04X:%04X\n",
-          handler_seg, handler_off);
 }
 
 //=============================================================================
@@ -675,11 +633,6 @@ void dos_machine::dpmi_reflect_to_rm(uint8_t vector, bool preserve_regs) {
       safety++;
     }
     if (safety >= 5000000) {
-      fprintf(stderr, "[DPMI] WARNING: RM callback for INT %02Xh exceeded 5M insns at %04X:%04X SS:SP=%04X:%04X\n",
-              vector, sregs[seg_CS], (uint16_t)ip, sregs[seg_SS], regs[reg_SP]);
-      fprintf(stderr, "  handler was %04X:%04X  IVT[%02X]=%04X:%04X\n",
-              handler_seg, handler_off, vector,
-              mem->fetch_mem16(vector * 4 + 2), mem->fetch_mem16(vector * 4));
     }
   }
 
@@ -794,8 +747,6 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
   static int exc_disp_log = 0;
   if (exc_disp_log < 10) {
     exc_disp_log++;
-    fprintf(stderr, "[DPMI-EXC] Dispatch #%02X err=%08X at %04X:%08X -> handler %04X:%08X\n",
-            vector, error_code, fault_cs, fault_eip, handler_sel, handler_off);
     // Dump handler bytes to check for 66 CB vs CB
     uint32_t handler_lin = seg_cache[seg_CS].base + handler_off;
     // Re-resolve handler CS base from descriptor
@@ -807,21 +758,16 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
       read_descriptor(htbase, hidx, hdesc);
       uint32_t hbase = hdesc[2] | (hdesc[3] << 8) | (hdesc[4] << 16) | (hdesc[7] << 24);
       handler_lin = hbase + handler_off;
-      fprintf(stderr, "[DPMI-EXC] Handler base=%08X lin=%08X bytes:", hbase, handler_lin);
       for (int bi = 0; bi < 32; bi++)
-        fprintf(stderr, " %02X", mem->fetch_mem(handler_lin + bi));
-      fprintf(stderr, "\n");
+;
       // One-time dump of the common handler at 6AB7 (120 bytes)
       static bool common_dumped = false;
       if (!common_dumped) {
         common_dumped = true;
         uint32_t common_lin = hbase + 0x6AB7;
-        fprintf(stderr, "[DPMI-EXC] Common handler at %08X:", common_lin);
         for (int bi = 0; bi < 120; bi++) {
-          if (bi % 16 == 0) fprintf(stderr, "\n  %04X:", 0x6AB7 + bi);
-          fprintf(stderr, " %02X", mem->fetch_mem(common_lin + bi));
+          if (bi % 16 == 0) ;
         }
-        fprintf(stderr, "\n");
       }
     }
   }
@@ -855,8 +801,7 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
   set_esp(stack_off);
 
   // Debug: verify set_esp actually took effect
-  fprintf(stderr, "[DPMI-EXC] set_esp(%04X) -> regs[SP]=%04X regs_hi[SP]=%04X get_esp()=%08X\n",
-          stack_off, regs[reg_SP], regs_hi[reg_SP], get_esp());
+;
   dpmi_exc_dispatched = true;  // Inhibit ESP rollback in instruction handlers
   exc_dispatch_trace = true;   // Debug: verify at next instruction
 
@@ -879,12 +824,8 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
     static int frame_dump = 0;
     if (frame_dump < 5) {
       frame_dump++;
-      fprintf(stderr, "[DPMI-EXC] Frame at SS-off=%04X (phys=%08X) SS=%04X:\n",
-              stack_off, ss_base + stack_off, sregs[seg_SS]);
       for (int i = 0; i < 8; i++)
-        fprintf(stderr, "  [+%02X] = %08X\n", i*4, mem->fetch_mem32(ss_base + stack_off + i*4));
-      fprintf(stderr, "[DPMI-EXC] CS seg D-bit=%d (flags=%02X)\n",
-              (seg_cache[seg_CS].flags >> 2) & 1, seg_cache[seg_CS].flags);
+;
     }
   }
 
@@ -922,9 +863,6 @@ void dos_machine::dpmi_int31h() {
     uint32_t cur = ((uint32_t)ivt21_seg << 16) | ivt21_off;
     if (prev_ivt21 == 0xDEAD) prev_ivt21 = cur;
     if (cur != prev_ivt21) {
-      fprintf(stderr, "[IVT-WATCH] IVT[21h] changed: %04X:%04X -> %04X:%04X (before func=%04Xh)\n",
-              (uint16_t)(prev_ivt21 >> 16), (uint16_t)(prev_ivt21 & 0xFFFF),
-              ivt21_seg, ivt21_off, func);
       prev_ivt21 = cur;
     }
   }
@@ -932,13 +870,6 @@ void dos_machine::dpmi_int31h() {
   static int dpmi31_log = 0;
   if (dpmi31_log < 200) {
     dpmi31_log++;
-    fprintf(stderr, "[DPMI-31] AX=%04X BX=%04X CX=%04X DX=%04X SI=%04X DI=%04X "
-            "EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X CS:EIP=%04X:%08X\n",
-            func, regs[reg_BX], regs[reg_CX], regs[reg_DX],
-            regs[reg_SI], regs[reg_DI],
-            get_reg32(reg_BX), get_reg32(reg_CX), get_reg32(reg_DX),
-            get_reg32(reg_SI), get_reg32(reg_DI),
-            sregs[seg_CS], ip);
   }
 
   // Default: success (carry clear)
@@ -1154,10 +1085,6 @@ void dos_machine::dpmi_int31h() {
         static int set_desc_log = 0;
         if (set_desc_log < 50) {
           set_desc_log++;
-          fprintf(stderr, "[DPMI-000C] SetDesc sel=%04X base=%08X limit=%08X access=%02X flags=%X raw=[%02X %02X %02X %02X %02X %02X %02X %02X] src=%08X\n",
-                  sel, dbase, dlimit, desc[5], desc[6] >> 4,
-                  desc[0], desc[1], desc[2], desc[3], desc[4], desc[5], desc[6], desc[7],
-                  src);
         }
       }
       dpmi_write_ldt_raw(sel, desc);
@@ -1172,13 +1099,9 @@ void dos_machine::dpmi_int31h() {
         uint32_t dbase = desc[2] | (desc[3] << 8) | (desc[4] << 16) | (desc[7] << 24);
         uint32_t dlimit = desc[0] | (desc[1] << 8) | ((desc[6] & 0x0F) << 16);
         if (desc[6] & 0x80) dlimit = (dlimit << 12) | 0xFFF;
-        fprintf(stderr, "[0044-CONTENT] base=%08X first16: ", dbase);
-        for (int i = 0; i < 16; i++) fprintf(stderr, "%02X ", mem->fetch_mem(dbase + i));
-        fprintf(stderr, "\n  last16 (@%04X): ", dlimit - 15);
-        for (int i = dlimit - 15; i <= dlimit; i++) fprintf(stderr, "%02X ", mem->fetch_mem(dbase + i));
-        fprintf(stderr, "\n  orig(@2F520) last16: ");
-        for (uint32_t i = 0x57BF; i <= 0x57CF; i++) fprintf(stderr, "%02X ", mem->fetch_mem(0x2F520 + i));
-        fprintf(stderr, "\n");
+        for (int i = 0; i < 16; i++) ;
+        for (int i = dlimit - 15; i <= dlimit; i++) ;
+        for (uint32_t i = 0x57BF; i <= 0x57CF; i++) ;
       }
       break;
     }
@@ -1215,8 +1138,6 @@ void dos_machine::dpmi_int31h() {
         }
         regs[reg_AX] = seg;
         regs[reg_DX] = sel;
-        fprintf(stderr, "[DPMI] 0100h: allocated %d paragraphs -> seg=%04X sel=%04X (base=%05X)\n",
-                paragraphs, seg, sel, (uint32_t)seg << 4);
         clear_flag(FLAG_CF);
       }
       break;
@@ -1307,8 +1228,6 @@ void dos_machine::dpmi_int31h() {
         dpmi.exc_handler[exc].off = off;
         // Setting handler to 0000:00000000 means "uninstall" (restore default)
         dpmi.exc_installed[exc] = (sel != 0 || off != 0);
-        fprintf(stderr, "[DPMI] Set exception %02Xh handler -> %04X:%08X%s\n",
-                exc, sel, off, (sel == 0 && off == 0) ? " (uninstalled)" : "");
       }
       break;
     }
@@ -1338,8 +1257,6 @@ void dos_machine::dpmi_int31h() {
       dpmi.pm_int_installed[vec] = !is_default;
       if (!is_default)
         dpmi_write_idt_entry(vec, sel, off, 0, dpmi.is_32bit);
-      fprintf(stderr, "[DPMI] Set PM INT %02Xh -> %04X:%08X%s\n",
-              vec, sel, off, is_default ? " (default stub, not installed)" : "");
       break;
     }
 
@@ -1418,7 +1335,6 @@ void dos_machine::dpmi_int31h() {
       regs[reg_CX] = alloc_base & 0xFFFF;
       regs[reg_SI] = (handle >> 16) & 0xFFFF;
       regs[reg_DI] = handle & 0xFFFF;
-      fprintf(stderr, "[DPMI] Alloc memory: %u bytes at %08X handle=%u\n", size, alloc_base, handle);
       break;
     }
 
@@ -1566,10 +1482,6 @@ void dos_machine::dpmi_int31h() {
 
       regs[reg_CX] = thunk_seg;
       regs[reg_DX] = thunk_off;
-      fprintf(stderr, "[DPMI] Alloc RM callback #%d -> %04X:%04X pm=%04X:%08X struct=%04X:%08X\n",
-              next_callback, thunk_seg, thunk_off,
-              sregs[seg_DS], get_reg32(reg_SI),
-              sregs[seg_ES], get_reg32(reg_DI));
       next_callback++;
       break;
     }
@@ -1605,8 +1517,7 @@ void dos_machine::dpmi_int31h() {
       //   This avoids corrupting high 16 bits of EDI for 16-bit DOS4GW code
       regs[reg_SI] = dpmi.bios_rom_cs;
       set_reg32(reg_DI, dpmi.raw_pm_to_rm_off);  // Just 0xEFE4
-      fprintf(stderr, "[DPMI-0306] Raw switch: RM->PM = F000:%04X, PM->RM = %04X:%08X\n",
-              dpmi.mode_switch_off, dpmi.bios_rom_cs, (uint32_t)dpmi.raw_pm_to_rm_off);
+;
       break;
     }
 
@@ -1619,8 +1530,6 @@ void dos_machine::dpmi_int31h() {
         if (!c) break;
         vendor[i] = c;
       }
-      fprintf(stderr, "[DPMI-0A00] Vendor API request: '%s' from %04X:%08X\n",
-              vendor, sregs[seg_CS], insn_ip);
       // Not supported — return CF
       set_flag(FLAG_CF);
       regs[reg_AX] = 0x8001;
@@ -1638,8 +1547,6 @@ void dos_machine::dpmi_int31h() {
       break;
 
     default:
-      fprintf(stderr, "[DPMI] Unsupported INT 31h func=%04X from %04X:%08X\n",
-              func, sregs[seg_CS], ip);
       set_flag(FLAG_CF);
       regs[reg_AX] = 0x8001;  // Unsupported function
       break;
@@ -1661,8 +1568,6 @@ void dos_machine::dpmi_save_pm_low_mem() {
     uint16_t ivt21_seg = mem->fetch_mem16(0x21 * 4 + 2);
     if (ivt21_seg != dpmi.rm_int_seg[0x21] || ivt21_off != dpmi.rm_int_off[0x21]) {
       dpmi.pm_overwrote_low_mem = true;
-      fprintf(stderr, "[DPMI] Detected PM overwrote IVT: 21h=%04X:%04X (expected %04X:%04X)\n",
-              ivt21_seg, ivt21_off, dpmi.rm_int_seg[0x21], dpmi.rm_int_off[0x21]);
     }
   }
   if (dpmi.pm_overwrote_low_mem) {
@@ -1803,20 +1708,13 @@ void dos_machine::dpmi_exec_rm(uint8_t vector, uint32_t struct_addr,
       // Dump diagnostic info and fall back to IVT-based dispatch.
       uint16_t ivt21_off = mem->fetch_mem16(0x21 * 4);
       uint16_t ivt21_seg = mem->fetch_mem16(0x21 * 4 + 2);
-      fprintf(stderr, "[DPMI] 030%dh CS:IP=0:0! IVT[21h]=%04X:%04X cached=%04X:%04X\n",
-              dpmi_func & 0xF, ivt21_seg, ivt21_off,
-              dpmi.rm_int_seg[0x21], dpmi.rm_int_off[0x21]);
-      fprintf(stderr, "  Call struct raw bytes at %08X:\n  ", struct_addr);
       for (int i = 0; i < 0x32; i++) {
-        fprintf(stderr, "%02X ", mem->fetch_mem(struct_addr + i));
-        if ((i & 0xF) == 0xF) fprintf(stderr, "\n  ");
+        if ((i & 0xF) == 0xF) ;
       }
-      fprintf(stderr, "\n");
       // Fall back: use cached IVT[21h] (DOS INT handler)
       // The AH value suggests DOS function call
       uint8_t ah = (rm_eax >> 8) & 0xFF;
       if (ah >= 0x01 && ah <= 0x6C) {
-        fprintf(stderr, "[DPMI] Falling back to IVT[21h] for AH=%02Xh\n", ah);
         handler_off = dpmi.rm_int_off[0x21];
         handler_seg = dpmi.rm_int_seg[0x21];
       }
@@ -1859,7 +1757,6 @@ void dos_machine::dpmi_exec_rm(uint8_t vector, uint32_t struct_addr,
       safety++;
     }
     if (safety >= 10000000) {
-      fprintf(stderr, "[DPMI] WARNING: RM exec for INT %02Xh exceeded 10M insns\n", vector);
     }
   }
 
@@ -1869,27 +1766,6 @@ void dos_machine::dpmi_exec_rm(uint8_t vector, uint32_t struct_addr,
   // Log RM call results
   {
     uint8_t rm_ah_pre = (rm_eax >> 8) & 0xFF;
-    fprintf(stderr, "[RM-RET] AH=%02Xh -> AX=%04X BX=%04X CF=%d ES=%04X\n",
-            rm_ah_pre, regs[reg_AX], regs[reg_BX],
-            (flags & FLAG_CF) ? 1 : 0, sregs[seg_ES]);
-    // Capture program stdout/stderr text (AH=40h writes to handle 1 or 2)
-    if (rm_ah_pre == 0x40) {
-      uint16_t rm_bx16 = rm_ebx & 0xFFFF;
-      if (rm_bx16 == 1 || rm_bx16 == 2) {
-        uint16_t rm_cx16 = rm_ecx & 0xFFFF;
-        uint16_t rm_dx16 = rm_edx & 0xFFFF;
-        uint16_t rm_ds16 = rm_ds;
-        uint32_t buf_addr = ((uint32_t)rm_ds16 << 4) + rm_dx16;
-        fprintf(stderr, "[PROG-%s] \"", rm_bx16 == 1 ? "STDOUT" : "STDERR");
-        for (uint16_t i = 0; i < rm_cx16 && i < 200; i++) {
-          uint8_t ch = mem->fetch_mem(buf_addr + i);
-          if (ch == '\n') fprintf(stderr, "\\n");
-          else if (ch == '\r') fprintf(stderr, "\\r");
-          else fputc((ch >= 0x20 && ch < 0x7F) ? ch : '.', stderr);
-        }
-        fprintf(stderr, "\"\n");
-      }
-    }
   }
 
   // Write results back to call structure

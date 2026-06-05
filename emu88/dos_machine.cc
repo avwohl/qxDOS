@@ -392,7 +392,6 @@ bool dos_machine::boot(int drive) {
   init_machine();
 
   if (!io->disk_present(drive)) {
-    fprintf(stderr, "Boot drive 0x%02X not present\n", drive);
     return false;
   }
 
@@ -400,11 +399,10 @@ bool dos_machine::boot(int drive) {
   uint8_t sector[512];
   size_t n = io->disk_read(drive, 0, sector, 512);
   if (n < 512) {
-    fprintf(stderr, "Failed to read boot sector\n");
     return false;
   }
   if (sector[510] != 0x55 || sector[511] != 0xAA)
-    fprintf(stderr, "Warning: boot sector missing 55AA signature\n");
+;
 
   for (int i = 0; i < 512; i++)
     mem->store_mem(BOOT_LOAD_ADDR + i, sector[i]);
@@ -519,19 +517,13 @@ bool dos_machine::run_batch(int count) {
       exec_count++;
       if (exec_count == 1 || exec_count == 100000 || exec_count == 1000000 ||
           (exec_count % 10000000 == 0))
-        fprintf(stderr, "[EXEC-COUNT] execute() called %ld times, halted=%d, IP=%04X:%08X cycles=%llu planar=%d vmode=%d\n",
-                exec_count, halted, sregs[seg_CS], ip, cycles, mem->vga_planar?1:0, video_mode);
+;
       // Dump boot sector at the stuck address
       if (exec_count == 100000 && ip == 0x7C31) {
-        fprintf(stderr, "[BOOT-STUCK] Code at 7C20-7C50:\n");
         for (int a = 0x7C20; a < 0x7C50; a += 16) {
-          fprintf(stderr, "  %04X:", a);
           for (int b = 0; b < 16; b++)
-            fprintf(stderr, " %02X", mem->fetch_mem(a + b));
-          fprintf(stderr, "\n");
+;
         }
-        fprintf(stderr, "[BOOT-STUCK] AX=%04X BX=%04X CX=%04X DX=%04X flags=%04X\n",
-                regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX], flags);
       }
     }
 
@@ -564,9 +556,6 @@ bool dos_machine::run_batch(int count) {
               vga_sum += mem->fetch_mem(VGA_VRAM_BASE + i);
           }
         }
-        fprintf(stderr, "[TIMER-TICK] #%d vec=0x%02X imr=0x%02X IF=%d pm=%d ticcount=%d bda=%u vga=%u CS:IP=%04X:%08X cycles=%llu\n",
-                timer_log, pic_vector_base, pic_imr, get_flag(FLAG_IF)?1:0, protected_mode()?1:0, doom_ticcount,
-                bda_timer, vga_sum, sregs[seg_CS], ip, cycles);
       }
       timer_log++;
 
@@ -662,7 +651,7 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
   static long int_count = 0;
   int_count++;
   if (int_count == 1 || int_count == 100000 || int_count == 1000000)
-    fprintf(stderr, "[INT-COUNT] do_interrupt called %ld times, vector=%02X pm=%d\n", int_count, vector, protected_mode());
+;
 
   // Trace DPMI and program termination
   if (vector == 0x2F && !protected_mode()) {
@@ -670,10 +659,7 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
     if (ax == 0x1687) {
       static int dpmi_log = 0;
       if (dpmi_log++ < 5)
-        fprintf(stderr, "[DPMI-DETECT] INT 2Fh AX=1687h called from %04X:%04X (all regs: AX=%04X BX=%04X CX=%04X DX=%04X SI=%04X DI=%04X DS=%04X ES=%04X)\n",
-                sregs[seg_CS], insn_ip,
-                regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
-                regs[reg_SI], regs[reg_DI], sregs[seg_DS], sregs[seg_ES]);
+;
       // Set up post-return trace to log what the handler returns
       int2f_1687_trace_pending = true;
       int2f_trace_ret_cs = sregs[seg_CS];
@@ -685,10 +671,8 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
   if (vector == 0x21 && !protected_mode()) {
     uint8_t ah = regs[reg_AX] >> 8;
     if (ah == 0x4C) {
-      fprintf(stderr, "[EXIT] INT 21h AH=4Ch AL=%02X from %04X:%04X\n",
-              regs[reg_AX] & 0xFF, sregs[seg_CS], insn_ip);
       // Dump VGA text buffer to see error messages
-      fprintf(stderr, "[EXIT] VGA text screen:\n");
+;
       for (int row = 0; row < 25; row++) {
         char line[81];
         bool has_content = false;
@@ -698,7 +682,7 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
           if (ch > 0x20 && ch < 0x7F) has_content = true;
         }
         line[80] = 0;
-        if (has_content) fprintf(stderr, "[SCR %02d] %s\n", row, line);
+        if (has_content) ;
       }
     } else if (ah == 0x4B) {
       // EXEC - load and execute program
@@ -710,21 +694,10 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
         if (!fn[i]) break;
       }
       fn[63] = 0;
-      fprintf(stderr, "[EXEC] INT 21h AH=4Bh AL=%02X file='%s' from %04X:%04X\n",
-              regs[reg_AX] & 0xFF, fn, sregs[seg_CS], insn_ip);
     }
   }
   // Log divide-by-zero exceptions with full context for debugging
   if (vector == 0) {
-    fprintf(stderr, "[DIV0] %s CS=%04X IP=%04X AX=%04X BX=%04X CX=%04X DX=%04X "
-            "SI=%04X DI=%04X SP=%04X BP=%04X DS=%04X ES=%04X SS=%04X "
-            "EAX=%08X EDX=%08X cycles=%llu\n",
-            protected_mode() ? "PM" : "RM",
-            sregs[seg_CS], ip,
-            regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
-            regs[reg_SI], regs[reg_DI], regs[reg_SP], regs[reg_BP],
-            sregs[seg_DS], sregs[seg_ES], sregs[seg_SS],
-            get_reg32(reg_AX), get_reg32(reg_DX), cycles);
   }
 
   // DPMI detection — intercept INT 2Fh AX=1687h before any chain
@@ -817,8 +790,6 @@ void dos_machine::unimplemented_opcode(emu88_uint8 opcode) {
       uint32_t new_esp    = mem->fetch_mem32(frame_phys + 0x10);
       uint16_t new_ss     = (uint16_t)mem->fetch_mem32(frame_phys + 0x14);
 
-      fprintf(stderr, "[DPMI-EXC] Handler RETF: restoring %04X:%08X EFLAGS=%08X SS:ESP=%04X:%08X\n",
-              new_cs, new_eip, new_eflags, new_ss, new_esp);
 
       // Restore CS
       sregs[seg_CS] = new_cs;
@@ -924,14 +895,14 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
     case 0x21:
       if (pic_init_step == 1) {
         pic_vector_base = value; pic_init_step = 2;  // ICW2
-        fprintf(stderr, "[PIC] ICW2: vector_base=0x%02X pm=%d\n", value, protected_mode());
+;
       } else if (pic_init_step == 2) {
         pic_init_step = pic_icw4_needed ? 3 : 0;  // ICW3, then ICW4 if needed
       } else if (pic_init_step == 3) {
         pic_init_step = 0;  // ICW4
       } else {
         pic_imr = value;     // OCW1
-        fprintf(stderr, "[PIC] IMR=0x%02X pm=%d\n", value, protected_mode());
+;
       }
       break;
 
@@ -1065,7 +1036,6 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
       adlib_index = value;
       break;
     case 0x389:
-      fprintf(stderr, "[ADLIB] write reg 0x%02X = 0x%02X\n", adlib_index, value);
       adlib_regs[adlib_index] = value;
       if (adlib_index == 0x04) {
         // Timer control register
@@ -1210,7 +1180,7 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
     // --- CMOS RTC ---
     case 0x71:
       if (cmos_index >= 0x15 && cmos_index <= 0x35)
-        fprintf(stderr, "[CMOS-RD] reg=0x%02X val=0x%02X\n", cmos_index, cmos_data[cmos_index]);
+;
       return cmos_data[cmos_index];
 
     // --- CGA status ---
@@ -1261,8 +1231,6 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
       static int adlib_read_log = 0;
       if (adlib_read_log < 30) {
         adlib_read_log++;
-        fprintf(stderr, "[ADLIB] read status = 0x%02X (timer1_running=%d elapsed=%llu)\n",
-                adlib_status, adlib_timer1_running, adlib_timer1_running ? cycles - adlib_timer1_start_cycle : 0ULL);
       }
       return adlib_status;
     }
