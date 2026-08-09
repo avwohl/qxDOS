@@ -128,8 +128,13 @@ void emu88_fatal(const char *fmt, ...) {
 // Constructor and initialization
 //=============================================================================
 
+// Initializer list order must match the member declaration order in emu88.h.
 emu88::emu88(emu88_mem *memory)
-  : mem(memory),
+  : gdtr_base(0), gdtr_limit(0),
+    idtr_base(0), idtr_limit(0x3FF),
+    cr0(0), cr2(0), cr3(0), cr4(0),
+    ldtr(0), tr(0), cpl(0),
+    mem(memory),
     trace(&dummy_trace),
     debug(false),
     cycles(0),
@@ -140,11 +145,7 @@ emu88::emu88(emu88_mem *memory)
     seg_override(-1),
     rep_prefix(REP_NONE),
     op_size_32(false),
-    addr_size_32(false),
-    gdtr_base(0), gdtr_limit(0),
-    idtr_base(0), idtr_limit(0x3FF),
-    cr0(0), cr2(0), cr3(0), cr4(0),
-    ldtr(0), tr(0), cpl(0) {
+    addr_size_32(false) {
   memset(regs, 0, sizeof(regs));
   memset(regs_hi, 0, sizeof(regs_hi));
   memset(sregs, 0, sizeof(sregs));
