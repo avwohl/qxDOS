@@ -451,21 +451,7 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
 
   // CPU exceptions (vectors 0-31, confirmed not hardware IRQ)
   if (dpmi.exc_installed[vector]) {
-    // Dump LDT/GDT entry for #NP/#SS faults (selector in error_code)
-    if ((vector == 0x0B || vector == 0x0C || vector == 0x0D) && error_code != 0) {
-      uint16_t fsel = error_code & 0xFFFC;  // mask out RPL/EXT
-      uint16_t idx = fsel >> 3;
-      bool use_ldt = (fsel & 4) != 0;
-      uint32_t tbase = use_ldt ? ldtr_cache.base : gdtr_base;
-      uint8_t desc[8];
-      read_descriptor(tbase, idx, desc);
-      uint32_t dbase = desc[2] | (desc[3] << 8) | (desc[4] << 16) | (desc[7] << 24);
-      uint32_t dlimit = desc[0] | (desc[1] << 8) | ((desc[6] & 0x0F) << 16);
-      if (desc[6] & 0x80) dlimit = (dlimit << 12) | 0xFFF;
-      // Also dump raw descriptor bytes
-;
-    }
-    // Also dump LDT entries to see what's been written
+    // Dump LDT entries to see what's been written
     if (vector == 0x0B) {
       for (int e = 0; e < 80; e++) {
         uint32_t a = ldtr_cache.base + e * 8;
@@ -481,18 +467,8 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
   }
 
   // No exception handler installed — terminate for CPU faults, reflect for others
-  {
-    static int unhandled_exc_log = 0;
-    if (unhandled_exc_log < 50) {
-      unhandled_exc_log++;
-      // Dump instruction bytes at faulting address
-      uint32_t lin = seg_cache[seg_CS].base + insn_ip;
-      for (int i = 0; i < 16; i++)
-;
-    }
-    dpmi_reflect_to_rm(vector);
-    return true;
-  }
+  dpmi_reflect_to_rm(vector);
+  return true;
 }
 
 //=============================================================================
@@ -696,9 +672,11 @@ void dos_machine::dpmi_reflect_to_rm(uint8_t vector, bool preserve_regs) {
     static constexpr uint16_t RESULT_FLAGS =
       FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF;
     flags = (flags & ~RESULT_FLAGS) | (rm_flags & RESULT_FLAGS);
-    // Restore IF and IOPL
-    flags = (flags & ~(FLAG_IF | (uint16_t)EFLAG_IOPL_MASK)) |
-            (save_eflags & (FLAG_IF | EFLAG_IOPL_MASK));
+    // Restore IF and IOPL (FLAG_IF and EFLAG_IOPL_MASK are separate enums that
+    // both name bits of the same low-16 FLAGS word — combine as plain bits)
+    static constexpr uint16_t IF_IOPL_MASK =
+      (uint16_t)FLAG_IF | (uint16_t)EFLAG_IOPL_MASK;
+    flags = (flags & ~IF_IOPL_MASK) | (save_eflags & IF_IOPL_MASK);
     eflags_hi = (save_eflags >> 16) & 0xFFFF;
   }
 
@@ -743,34 +721,6 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
   uint16_t save_fs = sregs[seg_FS], save_gs = sregs[seg_GS];
   SegDescCache save_seg_cache[6];
   memcpy(save_seg_cache, seg_cache, sizeof(seg_cache));
-
-  static int exc_disp_log = 0;
-  if (exc_disp_log < 10) {
-    exc_disp_log++;
-    // Dump handler bytes to check for 66 CB vs CB
-    uint32_t handler_lin = seg_cache[seg_CS].base + handler_off;
-    // Re-resolve handler CS base from descriptor
-    {
-      uint16_t hidx = handler_sel >> 3;
-      bool hldt = (handler_sel & 4) != 0;
-      uint32_t htbase = hldt ? ldtr_cache.base : gdtr_base;
-      uint8_t hdesc[8];
-      read_descriptor(htbase, hidx, hdesc);
-      uint32_t hbase = hdesc[2] | (hdesc[3] << 8) | (hdesc[4] << 16) | (hdesc[7] << 24);
-      handler_lin = hbase + handler_off;
-      for (int bi = 0; bi < 32; bi++)
-;
-      // One-time dump of the common handler at 6AB7 (120 bytes)
-      static bool common_dumped = false;
-      if (!common_dumped) {
-        common_dumped = true;
-        uint32_t common_lin = hbase + 0x6AB7;
-        for (int bi = 0; bi < 120; bi++) {
-          if (bi % 16 == 0) ;
-        }
-      }
-    }
-  }
 
   // Use the PM stack segment for the exception frame.
   // This SS has base=dpmi.base so that frame offsets fit in 16 bits,
@@ -1078,30 +1028,12 @@ void dos_machine::dpmi_int31h() {
       uint8_t desc[8];
       for (int i = 0; i < 8; i++)
         desc[i] = mem->fetch_mem(src + i);
-      {
-        uint32_t dbase = desc[2] | (desc[3] << 8) | (desc[4] << 16) | (desc[7] << 24);
-        uint32_t dlimit = desc[0] | (desc[1] << 8) | ((desc[6] & 0x0F) << 16);
-        if (desc[6] & 0x80) dlimit = (dlimit << 12) | 0xFFF;
-        static int set_desc_log = 0;
-        if (set_desc_log < 50) {
-          set_desc_log++;
-        }
-      }
       dpmi_write_ldt_raw(sel, desc);
       // Update seg_cache
       for (int s = 0; s < 6; s++) {
         if (sregs[s] == sel) {
           parse_descriptor(desc, seg_cache[s]);
         }
-      }
-      // Debug: dump code segment contents when sel=0044 is relocated
-      if (sel == 0x0044) {
-        uint32_t dbase = desc[2] | (desc[3] << 8) | (desc[4] << 16) | (desc[7] << 24);
-        uint32_t dlimit = desc[0] | (desc[1] << 8) | ((desc[6] & 0x0F) << 16);
-        if (desc[6] & 0x80) dlimit = (dlimit << 12) | 0xFFF;
-        for (int i = 0; i < 16; i++) ;
-        for (int i = dlimit - 15; i <= dlimit; i++) ;
-        for (uint32_t i = 0x57BF; i <= 0x57CF; i++) ;
       }
       break;
     }
@@ -1112,7 +1044,8 @@ void dos_machine::dpmi_int31h() {
       uint16_t paragraphs = regs[reg_BX];
       // Use INT 21h AH=48h in real mode to allocate
       // Save PM state, switch to RM, call INT 21h, switch back
-      uint16_t save_ax = regs[reg_AX];
+      // (AX is not preserved: it carries the DPMI return value — the allocated
+      //  real-mode segment on success, or the error code on failure.)
       regs[reg_AX] = 0x4800;
       // BX already has paragraphs
       dpmi_reflect_to_rm(0x21);
@@ -1410,8 +1343,8 @@ void dos_machine::dpmi_int31h() {
 
     case 0x0800: {  // Physical Address Mapping
       uint32_t phys_addr = ((uint32_t)regs[reg_BX] << 16) | regs[reg_CX];
-      uint32_t size = ((uint32_t)regs[reg_SI] << 16) | regs[reg_DI];
-      // Identity mapping (linear = physical) since we have no paging
+      // Identity mapping (linear = physical) since we have no paging, so the
+      // requested size in SI:DI needs no page-table work and is ignored.
       regs[reg_BX] = (phys_addr >> 16) & 0xFFFF;
       regs[reg_CX] = phys_addr & 0xFFFF;
       break;
@@ -1705,12 +1638,6 @@ void dos_machine::dpmi_exec_rm(uint8_t vector, uint32_t struct_addr,
     handler_seg = rm_cs;
     if (handler_seg == 0 && handler_off == 0) {
       // CS:IP=0:0 in call structure — DOS4GW sometimes does this.
-      // Dump diagnostic info and fall back to IVT-based dispatch.
-      uint16_t ivt21_off = mem->fetch_mem16(0x21 * 4);
-      uint16_t ivt21_seg = mem->fetch_mem16(0x21 * 4 + 2);
-      for (int i = 0; i < 0x32; i++) {
-        if ((i & 0xF) == 0xF) ;
-      }
       // Fall back: use cached IVT[21h] (DOS INT handler)
       // The AH value suggests DOS function call
       uint8_t ah = (rm_eax >> 8) & 0xFF;
@@ -1762,11 +1689,6 @@ void dos_machine::dpmi_exec_rm(uint8_t vector, uint32_t struct_addr,
 
   // Restore PM's low memory data after RM execution
   dpmi_restore_pm_low_mem();
-
-  // Log RM call results
-  {
-    uint8_t rm_ah_pre = (rm_eax >> 8) & 0xFF;
-  }
 
   // Write results back to call structure
   mem->store_mem32(struct_addr + 0x00, get_reg32(reg_DI));

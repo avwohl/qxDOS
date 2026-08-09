@@ -7,7 +7,7 @@ OUT=tests/build
 mkdir -p "$OUT"
 
 CXX=${CXX:-clang++}
-CXXFLAGS="-std=c++20 -O2 -g -Wall -Wno-unused-parameter -I emu88 -I tests/vendor -DMOO_USE_ZLIB"
+CXXFLAGS="-std=c++20 -O2 -g -Wall -I emu88 -I tests/vendor -DMOO_USE_ZLIB"
 
 CORE="emu88/emu88.cc emu88/emu88_pmode.cc emu88/emu88_fpu.cc emu88/emu88_mem.cc"
 DOS="emu88/dos_machine.cc emu88/dos_bios.cc emu88/dos_dpmi.cc emu88/ne2000.cc \

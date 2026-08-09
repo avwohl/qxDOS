@@ -981,7 +981,6 @@ void dos_machine::bios_int14h() {
 
 void dos_machine::bios_int15h() {
   uint8_t ah = get_reg8(reg_AH);
-  uint16_t ax = regs[reg_AX];
 
   switch (ah) {
     case 0x41:  // Wait for external event - not supported

@@ -590,28 +590,6 @@ bool dos_machine::run_batch(int count) {
       }
       bda_w32(bda::TIMER_COUNT, ticks);
 
-      static int timer_log = 0;
-      if (timer_log < 10 || (timer_log % 1000 == 0)) {
-        // Check DOOM's ticcount at linear 0x498E3C (CS_base 0x400000 + 0x98E3C)
-        uint32_t ticcount_addr = 0x498E3C;
-        int32_t doom_ticcount = (mem->get_mem_size() > ticcount_addr + 4) ?
-          (int32_t)(mem->fetch_mem(ticcount_addr) | (mem->fetch_mem(ticcount_addr+1) << 8) |
-                    (mem->fetch_mem(ticcount_addr+2) << 16) | (mem->fetch_mem(ticcount_addr+3) << 24)) : -1;
-        // Check BDA timer count and VGA framebuffer
-        uint32_t bda_timer = bda_r32(bda::TIMER_COUNT);
-        uint32_t vga_sum = 0;
-        if (video_mode == 0x13) {
-          if (mem->vga_planar) {
-            for (int i = 0; i < 16000; i += 250)
-              vga_sum += mem->vga_planes[0][i];
-          } else {
-            for (int i = 0; i < 320*200; i += 1000)
-              vga_sum += mem->fetch_mem(VGA_VRAM_BASE + i);
-          }
-        }
-      }
-      timer_log++;
-
       if (get_flag(FLAG_IF) && !(pic_imr & 0x01))
         request_int(pic_vector_base);
 
@@ -718,34 +696,6 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
       int2f_trace_ret_ip = ip;  // ip already points past INT 2Fh (CD 2F = 2 bytes)
       // Enable real-mode trace after DPMI detection (reduced)
       rm_trace_count = 200;
-    }
-  }
-  if (vector == 0x21 && !protected_mode()) {
-    uint8_t ah = regs[reg_AX] >> 8;
-    if (ah == 0x4C) {
-      // Dump VGA text buffer to see error messages
-;
-      for (int row = 0; row < 25; row++) {
-        char line[81];
-        bool has_content = false;
-        for (int col = 0; col < 80; col++) {
-          uint8_t ch = mem->fetch_mem(0xB8000 + (row * 80 + col) * 2);
-          line[col] = (ch >= 0x20 && ch < 0x7F) ? ch : ' ';
-          if (ch > 0x20 && ch < 0x7F) has_content = true;
-        }
-        line[80] = 0;
-        if (has_content) ;
-      }
-    } else if (ah == 0x4B) {
-      // EXEC - load and execute program
-      // DS:DX = filename
-      uint32_t fn_addr = ((uint32_t)sregs[seg_DS] << 4) + regs[reg_DX];
-      char fn[64];
-      for (int i = 0; i < 63; i++) {
-        fn[i] = mem->fetch_mem(fn_addr + i);
-        if (!fn[i]) break;
-      }
-      fn[63] = 0;
     }
   }
   // Log divide-by-zero exceptions with full context for debugging
