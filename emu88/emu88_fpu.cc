@@ -439,6 +439,14 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         case 7: if (ST(0) != 0.0) ST(0) = val / ST(0); else { fpu.sw |= SW_ZE; ST(0) = INFINITY; } break;
       }
       if (reg <= 1 || reg >= 4) TAG(0) = compute_tag(ST(0));
+    } else if (modrm_byte == 0xE9) {
+      // FUCOMPP (DA E9) — unordered compare ST(0) with ST(1), then pop both.
+      // The only register-form DA opcode that is NOT an FCMOV. GCC emits this
+      // for long-double relational operators; without it the comparison is a
+      // no-op (stale C0..C3) and the two pops are skipped, desyncing the stack.
+      fpu_compare(ST(0), ST(1));
+      fpu_pop(fpu);
+      fpu_pop(fpu);
     } else {
       // FCMOV — conditional moves based on EFLAGS
       bool cond = false;
