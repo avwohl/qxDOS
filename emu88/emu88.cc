@@ -1558,23 +1558,16 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     emu88_int32 quotient = dividend / divisor;
     emu88_int16 remainder = dividend % divisor;
     if (quotient > 32767 || quotient < -32768) {
-      // 386 iterative-divider quirk (see IDIV r/m8): a narrow band of would-overflow
-      // results does not fault but yields the largest negative quotient (0x8000) and
-      // AX wrapping.  Band (signs differ):
-      //   (|dividend| - 0x8000*|divisor|) in [0x40000000, 0x40000000 + |divisor|)
-      // 0x40000000 == 0x8000*0x8000.
-      emu88_uint32 ad = emu88_uint32(dividend < 0 ? -dividend : dividend);
-      emu88_uint32 av = emu88_uint32(divisor  < 0 ? -divisor  : divisor);
-      bool signs_differ = (dividend < 0) != (divisor < 0);
-      emu88_int64 band = emu88_int64(ad) - emu88_int64(0x8000) * emu88_int64(av);
-      if (signs_differ && band >= emu88_int64(0x40000000) &&
-          band < emu88_int64(0x40000000) + emu88_int64(av)) {
-        quotient = emu88_int16(0x8000);
-        remainder = emu88_int16(emu88_uint16(emu88_uint32(dividend) - 0x8000u * val));
-      } else {
-        ip = insn_ip; do_interrupt(0);
-        return;
-      }
+      // Overflow faults, with no exception.  The non-faulting band modelled for
+      // IDIV r/m8 is an 8-bit-only quirk and does NOT generalise to this width:
+      // extending it here made four test386.asm cases disagree with the
+      // reference (two IDIV AX, two IDIV EAX, all of them #DE on real hardware)
+      // while making no SingleStepTests case pass - measured both ways, the
+      // 1.76M-case real-mode suite scores identically with the band present and
+      // absent.  The 8-bit band, by contrast, is load-bearing: removing it costs
+      // six cases in F6.7.
+      ip = insn_ip; do_interrupt(0);
+      return;
     }
     regs[reg_AX] = emu88_uint16(quotient);
     regs[reg_DX] = emu88_uint16(remainder);
@@ -1750,26 +1743,10 @@ void emu88::execute_grp3_rm32(emu88_uint8 modrm_byte) {
     emu88_int64 quotient = dividend / divisor;
     emu88_int32 remainder = (emu88_int32)(dividend % divisor);
     if (quotient > 0x7FFFFFFFLL || quotient < -(emu88_int64)0x80000000LL) {
-      // 386 iterative-divider quirk (see IDIV r/m8): narrow non-faulting band that
-      // yields the largest negative quotient (0x80000000).  Band (signs differ):
-      //   (|dividend| - 0x80000000*|divisor|) in
-      //       [0x4000000000000000, 0x4000000000000000 + |divisor|)
-      // 0x4000000000000000 == 0x80000000*0x80000000.  Use unsigned 64-bit magnitudes
-      // (|-0x8000000000000000| does not fit in signed 64-bit, so compute in unsigned).
-      emu88_uint64 ad = (dividend < 0) ? (emu88_uint64)(-(emu88_uint64)dividend)
-                                       : (emu88_uint64)dividend;
-      emu88_uint64 av = (divisor < 0) ? (emu88_uint64)(-divisor) : (emu88_uint64)divisor;
-      bool signs_differ = (dividend < 0) != (divisor < 0);
-      emu88_uint64 base = (emu88_uint64)0x80000000ULL * av;     // 0x80000000*|divisor|
-      // band == ad - base, valid only when ad >= base (it always is for overflow here)
-      if (signs_differ && ad >= base &&
-          (ad - base) >= (emu88_uint64)0x4000000000000000ULL &&
-          (ad - base) < (emu88_uint64)0x4000000000000000ULL + av) {
-        quotient = (emu88_int64)(emu88_int32)0x80000000u;
-        remainder = (emu88_int32)((emu88_uint32)dividend - 0x80000000u * (emu88_uint32)val);
-      } else {
-        ip = insn_ip; do_interrupt(0); return;
-      }
+      // Overflow faults.  See IDIV r/m16: the non-faulting band is an 8-bit-only
+      // quirk of the 386 divider and modelling it at this width contradicted
+      // test386.asm's reference without buying a single SingleStepTests case.
+      ip = insn_ip; do_interrupt(0); return;
     }
     set_reg32(reg_AX, (emu88_uint32)quotient);
     set_reg32(reg_DX, (emu88_uint32)remainder);

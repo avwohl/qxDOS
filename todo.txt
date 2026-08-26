@@ -21,6 +21,25 @@ Two industry-standard suites now drive emu88; harnesses + docs live in tests/.
    GDT/LDT, call gates, TSS task switching.  RESULT: PASS (POST 0xFF, EE output
    matches reference exactly).
 
+   Corrected 2026-08-26: that was true of POST 0xFF and false of the EE output
+   when it was written.  Four IDIV overflow lines differed from the reference -
+   emu88 raised no #DE where the 386 does - because the non-faulting divider
+   band that IDIV r/m8 genuinely needs had been extended to r/m16 and r/m32,
+   which the hardware does not do.  Fixed; the output matches exactly now, and
+   SingleStepTests is unchanged at 1758402/1758699 with the band gone from
+   those two widths.  Nobody had compared the output: POST 0xFF was the only
+   thing checked.
+
+   The scope of claim 2 below is worth stating plainly, because this is what let
+   that sit unnoticed.  SingleStepTests as run here is REAL MODE only - every
+   one of the 1.76M cases loads segments as base = sel<<4, limit 0xFFFF - so
+   "every architecturally defined behavior is correct" is a statement about
+   real-mode per-instruction behaviour and nothing else.  32-bit protected-mode
+   instruction execution, which is where every DJGPP client runs, is covered
+   only by test386.asm's full-system pass, and that is a check of the machinery
+   rather than exhaustive per-instruction coverage.  The IDIV bug lived in
+   exactly that gap.
+
 2. SingleStepTests/80386 (per-instruction, 1.76M cases): 99.983% pass
    (1,758,403 / 1,758,700).  Every architecturally DEFINED behavior is correct:
    all results, defined flags, all addressing + prefix combos, segment-limit /

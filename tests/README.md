@@ -49,8 +49,13 @@ from one particular 386EX test bench:
   cycle-accurate prefetch-queue model. The architectural result (memory, `ECX`,
   `EDI`) is correct.
 
-DIV/IDIV overflow-boundary microcode and the multi-prefix / load-far / far-jump
-`#GP` corners that earlier dominated this list are now **100%** correct. Reaching
+The multi-prefix / load-far / far-jump `#GP` corners that earlier dominated this
+list are now **100%** correct. DIV/IDIV overflow-boundary microcode was claimed
+here as 100% correct and was not: this suite scores identically whether the
+`r/m16`/`r/m32` non-faulting band is present or absent — all four `F7.7`
+variants are 2500/2500 either way — so it never had an opinion, and test386.asm
+turned out to disagree with the band in four cases. See the correction under
+test386.asm below. Reaching
 a literal 100% on the per-instruction suite would require bit-exact replication
 of the 386's unpublished multiplier-array state and its prefetch queue.
 
@@ -68,6 +73,16 @@ tests/build/test386 2>/dev/null
 
 **Result: PASS** — reaches POST `0xFF` and the `0xEE` arithmetic output matches
 `test386-EE-reference.txt` exactly.
+
+> Corrected 2026-08-26, in place rather than edited away. Both sentences above
+> were false when written. The run reached POST `0xFF`, which is the harness's
+> success flag and is what "PASS" was being read off — but the arithmetic output
+> differed from the reference in **four** lines, every one of them an `IDIV`
+> overflow that raised no `#DE`. The cause was the non-faulting band described
+> under IDIV below, modelled correctly for `r/m8` and then extended to `r/m16`
+> and `r/m32`, where the 386 does not behave that way. Nothing detected it
+> because POST `0xFF` was the only thing checked; the reference comparison was
+> never automated. It still is not — see "Not covered" below.
 
 ## 3. VESA / SVGA (VBE) — end-to-end
 
@@ -91,3 +106,25 @@ effect, the executed `4F0A` routines update the bank/display-start, a pan past
 the end of VRAM clamps to page 0 (no OOB; checked under AddressSanitizer), and
 the mouse maps frame-pixel coordinates onto the guest range (SVGA 1:1; VGA mode
 13h to the classic 640-wide virtual space).
+
+## Not covered, and not automated
+
+Written down 2026-08-26 after an `IDIV` bug sat in the gap between these suites
+for as long as they have both existed.
+
+- **SingleStepTests is real mode only.** `sst386.cc` loads every one of the
+  1.76M cases with `base = sel<<4, limit 0xFFFF`. Its pass rate says nothing
+  about 32-bit protected-mode instruction execution, which is where every DJGPP
+  or PMODE/W client runs. Quote it with that scope attached.
+- **It also never exercises exception delivery.** The corpus injects a `HALT`
+  at the exception ISRs, so a fault is scored by the register and RAM state it
+  leaves, not by whether the right vector was dispatched with the right frame.
+- **`build.sh` does not build `test386`.** The one suite that enters protected
+  mode, paging and V86 is the only one you have to compile by hand out of the
+  command in section 2. The automated half of the validation is the real-mode
+  half.
+- **Nothing compares test386's output to the reference.** The harness reports
+  POST `0xFF` and stops there, which is how four wrong `IDIV` lines were read as
+  a pass. The comparison is one `diff` and should be wired in.
+- **There is no CI for any of this.** The only workflow in the repo builds
+  release assets. Both suites are run by hand, on a core two products compile.
