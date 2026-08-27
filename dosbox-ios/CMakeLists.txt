@@ -290,7 +290,6 @@ add_library(dosbox-core STATIC
     ${DB}/dos/programs/help.cpp
     ${DB}/dos/programs/makeimg.cpp
     ${DB}/dos/programs/manual.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/imgmount_fix.cpp
     ${DB}/dos/programs/keyb.cpp
     ${DB}/dos/programs/loadfix.cpp
     ${DB}/dos/programs/loadrom.cpp

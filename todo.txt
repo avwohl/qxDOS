@@ -20,9 +20,10 @@ inaccuracies.  Two more were narrowed rather than closed - the x87 entry lost
 its nine defects and kept its register format, and the dosiz entry gained a gate
 and kept its pin - and both are below with what is left of them.
 
-Eleven items, then.  One of them is a live defect that breaks a documented build
-step and it is first below, because it is the only entry here that stops somebody
-who has just cloned this repository.  Two are standing statements of scope rather
+Eleven items, then.  The first is the live one - a half-finished submodule bump -
+and it is first because it is the only thing here that a Mac could finish today.
+The clone-breaking pin it replaced is closed and is in CHANGELOG.md rather than
+here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
 need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
 a decision that is the owner's, which is the release tagging scheme.  Two are real work
@@ -32,72 +33,54 @@ dependency that lives on their side.  The last two were found on
 reason: closing either is a decision about what the product does, not a
 cleanup.
 
-- THE dosbox-staging SUBMODULE POINTS AT A COMMIT THAT NO LONGER EXISTS, so
-`git submodule update --init' and `git clone --recursive' - the documented first
-build step in both README.md and CLAUDE.md - cannot work for anybody.  measured
-2026-08-27, four ways:
-    gh api repos/dosbox-staging/dosbox-staging/commits/019bbfd5...
-      422 "No commit found for SHA"
-    git ls-remote https://github.com/dosbox-staging/dosbox-staging.git
-      no ref points at it
-    git fetch origin 019bbfd5...   (against a fresh upstream clone)
-      fatal: remote error: upload-pack: not our ref 019bbfd5...
-    git clone file:///.../qxDOS fresh && cd fresh && git submodule update --init
-      fatal: Fetched in submodule path 'dosbox-staging', but it did not contain
-      019bbfd5...  Direct fetching of that commit failed.       exit 128
-  it does not fail cleanly, which is the worse half.  the clone of upstream
-succeeds and only the checkout of the pinned commit fails, so the working tree is
-left on whatever upstream's default branch tip is - `git submodule status' in
-that fresh clone printed
-`+8becfce8cfac2a3cce4376bcb8296078deb624c0 dosbox-staging (v0.82.0-alpha-4276-g8becfce8c)',
-and the leading + means the checked-out commit is not the recorded one.  a
-developer who does not read the error builds against an arbitrary DOSBox tip,
-roughly 4276 commits past v0.82.0-alpha, believing they are on the pin.  silent
-wrong version rather than a stopped build.
-  it has been broken since ebc7465 (2026-03-23), and the pattern says what
-happened.  walking the gitlink back: a461494 pinned e8461f4, which STILL EXISTS
-upstream (2026-02-14, "Update Italian (it_IT) translation"); ebc7465 pinned
-822e1aa, 9fc3427 pinned 0267ba2 and 5d200dd pinned 019bbfd, and none of those
-three resolves.  the first pin is the only one that was ever a real upstream
-commit.  avwohl has no dosbox-staging fork (`gh api users/avwohl/repos' finds
-none), so the three later SHAs were never pushed anywhere reachable.
-  nothing caught it: a working copy that already has the objects never notices,
-tests.yml never touches the submodule, and release.yml would but only runs on a
-release tag.  what surfaced it was Dependabot, which clones with submodules
-unconditionally and so failed on 2026-08-27 with job_repo_not_found before it
-could read .github/dependabot.yml at all.  that config is correct and is not the
-problem; it will keep failing until this is.
-  DO THIS: bump the pin to a current upstream commit, build it once on a Mac,
-and see whether dosbox-ios/patches/sdl_renderer_frame_hook.patch still applies.
-That patch is the only thing that can fail - it is applied with `patch -p2'
-against gui/render/sdl_renderer.cpp and dosbox-ios/CMakeLists.txt says it "will
-fail loudly at build time" if upstream moved the file, which across ~4276
-commits it may have.  Nothing else is at risk, because there is no state being
-preserved: this has been broken for five months and nobody noticed, which means
-nobody has built the DOSBox backend in that time.  019bbfd is unknowable now
-anyway - it does not exist to inspect - so "which DOSBox commit" is a question
-with no wrong answer left in it.  Take upstream's.
-  The owner's direction as of 2026-08-27 is DO NOT PIN ANYTHING.  Applied here
-it does not give a third option, and it is worth writing down why rather than
-rediscovering it: a git submodule IS a SHA pin by construction.  `git ls-tree
-HEAD dosbox-staging' prints `160000 commit 019bbfd5...'; mode 160000 stores a
-commit and that is the git object model, not a setting.  There is no floating
-mode.  `git submodule set-branch --branch main' was checked on a fresh clone on
-2026-08-27 and adds one line to .gitmodules while leaving the gitlink byte for
-byte identical, so every consumer still gets the recorded SHA; `--remote' is a
-command the maintainer runs to move it, and it would not have prevented this bug
-either, because the failure was recording a SHA that was never pushed.  So the
-policy and the submodule cannot both stand.  Honouring the policy literally means
-DROPPING the submodule and getting DOSBox another way - a release tarball fetched
-at build time, or vendoring the subset dosbox-ios/ actually compiles - and that
-is real work on the app, not a re-pin: the app links dosbox-core for the libslirp
-symbols Emu88SlirpNet.mm uses rather than linking libslirp itself, so the
-submodule cannot simply go away.  That is the choice.  The bump above is the
-cheap one and unblocks a clone today; dropping it is the one that matches the
-policy.
-  Either needs a Mac.  Until one happens, README.md's and CLAUDE.md's build
-instructions are wrong in a way a new contributor hits on their first command,
-and both now carry a warning saying so.
+- THE v0.83.0 BUMP DOES NOT BUILD YET, and what is left is a decision rather
+than a fix.  e4ade9d moved the submodule off a pin that did not exist upstream
+and 359a287 closed eleven build breaks found by static audit: the six lost fork
+patches recovered into dosbox-ios/patches/, the two renamed webserver classes,
+the MidiSynth reparenting in the fluidsynth stub, three newly-required upstream
+sources, DOSBOX_VERSION_SHORT, and imgmount_fix.cpp - which upstream made
+obsolete by merging IMGMOUNT into MOUNT, so dos_programs.cpp:97 registers
+IMGMOUNT.COM as ProgramCreate<MOUNT> and `class IMGMOUNT' now exists in zero
+files.  The twelfth break is the shader path and it cannot be closed by adding a
+file to the source list.
+  measured 2026-08-27 against the checked-out submodule:
+    src/gui/render/private/shader_common.h:14 does `#include "glad/gl.h"' with
+      NO C_OPENGL guard.  five compiled translation units reach it transitively -
+      gui/render/render.cpp, gui/render/shader_manager.cpp,
+      gui/render/auto_image_adjustments.cpp, gui/sdl_gui.cpp and the patched
+      gui/render/sdl_renderer.cpp.  glad exists upstream at src/libs/glad, but
+      `grep -n glad dosbox-ios/CMakeLists.txt' returns NOTHING - it is not on the
+      include path, because this build has never needed it.
+    src/gui/render/shader_manager.cpp contains ZERO occurrences of C_OPENGL and
+      calls glDeleteProgram at :114 and Shader::BuildShaderProgram at :184.
+      glDeleteProgram is a glad function pointer defined only in glad's gl.c,
+      which upstream compiles only when C_OPENGL is on.  BuildShaderProgram is
+      defined in src/gui/render/shader.cpp, whose entire body sits behind
+      `#if C_OPENGL' at line 6.
+    this build sets C_OPENGL 0, at dosbox_config.h:52 and as a compile definition
+      at CMakeLists.txt:570.
+  so with C_OPENGL=0 those two symbols are unresolvable NO MATTER WHAT is added
+to the source list.  upstream made the shader path assume OpenGL is present and
+this build assumes it is not.  three options, none mechanical:
+    turn C_OPENGL on and vendor glad.  the largest change, and it runs against
+      the grain of the platform: the app renders through SDL's Metal backend and
+      OpenGL ES is deprecated on Apple platforms.
+    stop compiling shader_manager.cpp and auto_image_adjustments.cpp and patch
+      render.cpp and sdl_gui.cpp not to need them.  fits the patch mechanism
+      dosbox-ios/patches/ already provides and is the most in keeping with what
+      this integration does, but it is a real patch against churning upstream
+      code, not a one-liner.
+    add glad's include directory and gl.c so the header resolves and the function
+      pointers link.  NOT sufficient alone: BuildShaderProgram still does not
+      exist with C_OPENGL=0.
+  whoever picks one needs a Mac.  eleven breaks were found without building; the
+twelfth is where a compiler has to be involved, and where the count of remaining
+ones stops being knowable from here.
+
+  one smaller thing from the same audit, NOT fixed because it predates the bump:
+dosbox-ios/CMakeLists.txt globs src/libs/residfp and gets 18 files where
+upstream's own build compiles 17.  the extra one is resample/test.cpp, which has
+an `int main()' at line 42.
 
 - the two validation runs are worth quoting, and worth quoting with their scope
 attached, because the scope is what went wrong last time.  re-measured

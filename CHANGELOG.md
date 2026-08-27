@@ -407,6 +407,29 @@ and not for what comes after it.
   is exactly the shape of thing that becomes a bug the first time somebody
   changes the host. `hardware_test` asserts a 5000-frame request writes its
   tail, and reverting the chunking turns it red.
+- **`git submodule update --init` works again**, which it had not since
+  `ebc7465` (2026-03-23). The `dosbox-staging` pin was `019bbfd5`, a commit that
+  does not exist upstream: GitHub's API returns `422 No commit found`, no remote
+  ref points at it, and a direct `git fetch` gets `upload-pack: not our ref`. It
+  did not fail cleanly either - the upstream clone succeeded and only the
+  checkout of the pin failed, leaving a fresh clone on upstream's default branch
+  tip with `git submodule status` showing a leading `+`. Anyone who did not read
+  the error built an arbitrary DOSBox believing they were on the pin.
+
+  **The pin was never an upstream commit.** Walking the gitlink back, `a461494`'s
+  `e8461f4` still resolves and all three later pins do not, and there is no fork
+  of dosbox-staging under this account - so those commits lived only in one
+  working copy and were never pushed. What they carried is in *Fixed* below.
+
+  Nothing caught it because a working copy that already has the objects never
+  notices, `tests.yml` never touches the submodule, and `release.yml` would but
+  only runs on a release tag. What surfaced it was Dependabot, added an hour
+  earlier for an unrelated reason: it clones with submodules unconditionally and
+  so could not read its own config.
+
+  The pin is `v0.83.0` (`7b40053b`, tagged 2026-08-26) - a release rather than
+  `main`'s tip, which breaks five source paths where the tag breaks three. A
+  fresh clone now runs `git submodule update --init` to exit 0 with no `+`.
 - **The DPMI descriptor services validate the selector they are handed.**
   `0006h`-`000Ch` all took a selector in `BX` and indexed the LDT with it
   unchecked. `sel >> 3` runs to 8191 where the table holds 2048 entries, so a
