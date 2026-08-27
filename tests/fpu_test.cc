@@ -45,6 +45,25 @@
 //               lowered deliberately.  A known bug can therefore never quietly
 //               become "the way it works".
 //
+//               THE LEDGER IS EMPTY: KNOWN_BUGS_EXPECTED is 0.  All nine
+//               defects this harness was written to record — the m80real
+//               subnormal encode/decode, 0/0 taking the zero-divide path
+//               instead of #IA, the two integer divide-by-zero results that
+//               lost their sign, the stale C1 out of fpu_compare, FPREM1's
+//               half-away-from-zero quotient, the OF/SF/AF that FCOMI left
+//               alone, and the half-written 32-bit FNSAVE environment — are
+//               fixed, and each assertion stayed put as an ordinary check().
+//               The machinery is left here for the next defect.
+//
+//               One gap this file used to name as UNTESTABLE is closed too.
+//               FIST/FISTP/FISTTP of an out-of-range value cast a double
+//               straight to int16_t/int32_t/int64_t, which is undefined
+//               behaviour rather than the 387's #IA-and-integer-indefinite, so
+//               a test there would have been testing the compiler.  All eight
+//               store paths go through one range check now and section 8
+//               asserts it at both boundaries of all three widths, across the
+//               rounding boundary, and for infinities and a NaN.
+//
 // Exit code is non-zero if any check()/diverge() fails, or if the number of
 // known bugs still present is not exactly KNOWN_BUGS_EXPECTED.
 
@@ -62,8 +81,8 @@
 //===========================================================================
 
 // Number of bug() assertions that are still failing.  See the header comment.
-// Lower this (and delete the bug() call) when one is fixed.
-static const int KNOWN_BUGS_EXPECTED = 9;
+// Lower this (and turn the bug() call into a check()) when one is fixed.
+static const int KNOWN_BUGS_EXPECTED = 0;
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -92,11 +111,11 @@ static void diverge(bool cond, const char *what) {
 // `behaves_correctly` states the REAL-387 behaviour, which is expected to be
 // false today.  If it ever becomes true the bug was fixed and the baseline is
 // stale — that fails the run, loudly.
-static void bug(bool behaves_correctly, const char *what) {
+[[maybe_unused]] static void bug(bool behaves_correctly, const char *what) {
   g_bug_asserts++;
   if (behaves_correctly) {
     g_bugs_fixed++;
-    std::printf("  FIXED (lower KNOWN_BUGS_EXPECTED and drop this bug()): %s\n", what);
+    std::printf("  FIXED (lower KNOWN_BUGS_EXPECTED, make this a check()): %s\n", what);
   } else {
     g_bugs_hit++;
     std::printf("  KNOWN BUG: %s\n", what);
@@ -598,19 +617,17 @@ int main() {
     FNINIT(); FLDm80(0x0120);
     check(st(0) == 0.0 && !std::signbit(st(0)), "FLD m80real +0.0");
 
-    // BUG 1: a subnormal double is written as if it were normalised — the J
-    // bit is forced on and the exponent is biased from dexp=0 instead of from
-    // the true -1074.  5e-324 comes back as ~1.1e-308.
+    // A subnormal double has no implied 1, so it has to be normalised on the
+    // way out: 5e-324 is 2^-1074 * 1.0, giving exponent -1074 + 16383 = 0x3BCD
+    // and the J bit alone in the mantissa.
     FNINIT();
     push(5e-324);
     FSTPm80(0x0120);
-    bug(rd80_exp(0x0120) == 0x3BCD,
-        "fpu_write_m80real(5e-324) should encode exponent 0x3BCD "
-        "(it forces the J bit and writes 0x3C00)");
+    check(rd80_exp(0x0120) == 0x3BCD,
+          "fpu_write_m80real(5e-324) encodes exponent 0x3BCD");
     FLDm80(0x0120);
-    bug(st(0) == 5e-324,
-        "m80real round-trip of a subnormal double should be lossless "
-        "(it returns ~1.1e-308)");
+    check(st(0) == 5e-324,
+          "m80real round-trip of a subnormal double is lossless");
   }
 
   //=========================================================================
@@ -786,31 +803,25 @@ int main() {
     check(std::isinf(st(1)) && st(1) > 0 && (sw() & SW_ZE) != 0,
           "DC F9 FDIV ST(1),ST(0) by zero: +infinity and ZE");
 
-    // BUG 2: 0/0 is an invalid operation on real hardware (#IA, result QNaN),
-    // not a zero-divide.  Here it takes the ZE path and yields +infinity.
+    // 0/0 is an invalid operation (#IA, result QNaN), not a zero-divide.
     FNINIT(); push(0.0); wrf(0x0100, 0.0f);
     opm(0xD8, 6, 0x0100);
-    bug(std::isnan(st(0)),
-        "FDIV 0/0 should raise IE and produce QNaN (it sets ZE and gives +inf)");
+    check(std::isnan(st(0)), "FDIV 0/0 gives a QNaN, not an infinity");
 
-    // BUG 3+4: the integer divide paths use a bare INFINITY instead of
-    // copysign(), so the sign of the result is lost — the m32real/m64real
-    // paths twenty lines away get this right.  The SIGN is the defect; the ZE
-    // flag and the TAG_SPECIAL retag are not, and are checked here because all
-    // four integer divide-by-zero branches raise ZE in their own code (the
-    // real-operand branches above share none of it).
+    // The integer divide paths sign the infinity exactly the way the
+    // m32real/m64real paths twenty lines above do, and raise ZE and retag the
+    // result TAG_SPECIAL with it.  All four integer divide-by-zero branches
+    // are exercised here.
     FNINIT(); push(-6.0); wr32(0x0100, 0);
     opm(0xDA, 6, 0x0100);
     check((sw() & SW_ZE) != 0, "FIDIV m32int by zero sets ZE");
     check(tg(0) == TAG_SPECIAL, "FIDIV m32int by zero tags the infinity TAG_SPECIAL");
-    bug(std::isinf(st(0)) && st(0) < 0,
-        "FIDIV -6 by 0 should be -infinity (gives +infinity: no copysign)");
+    check(std::isinf(st(0)) && st(0) < 0, "FIDIV -6 by 0 = -infinity");
     FNINIT(); push(0.0); wr16(0x0100, (uint16_t)(int16_t)-5);
     opm(0xDE, 7, 0x0100);
     check((sw() & SW_ZE) != 0, "FIDIVR m16int with ST(0)=0 sets ZE");
     check(tg(0) == TAG_SPECIAL, "FIDIVR m16int with ST(0)=0 tags the infinity TAG_SPECIAL");
-    bug(std::isinf(st(0)) && st(0) < 0,
-        "FIDIVR -5 by 0 should be -infinity (gives +infinity: no copysign)");
+    check(std::isinf(st(0)) && st(0) < 0, "FIDIVR -5 by 0 = -infinity");
     // The other two of the four integer divide-by-zero branches.
     FNINIT(); push(0.0); wr32(0x0100, 7);
     opm(0xDA, 7, 0x0100);
@@ -875,6 +886,90 @@ int main() {
     opm(0xDF, 7, 0x0118);
     diverge((int64_t)rd64(0x0118) == 9007199254740992LL,
             "FISTP m64int returns 2^53, not the 2^53+1 that went in");
+
+    // Out of range, a NaN, an infinity.  A 387 raises #IA and, with #IA masked
+    // (which is the only way this host runs one), stores the INTEGER INDEFINITE
+    // value: the most negative integer of the destination width.
+    //
+    // This block did not exist until 2026-08-27, and the header of this file
+    // and tests/README.md both said why: every one of these paths cast a double
+    // straight to int16_t/int32_t/int64_t, which is undefined behaviour rather
+    // than a defined result, so a test here would have been testing the
+    // compiler.  It is a defined result now, so it is asserted.
+    struct IntCase { double v; const char *what; };
+    static const IntCase over32[] = {
+      { 2147483648.0,  "2^31, one past INT32_MAX" },
+      { -2147483649.0, "-2^31-1, one below INT32_MIN" },
+      { 1e300,         "1e300" },
+      { INFINITY,      "+infinity" },
+      { -INFINITY,     "-infinity" },
+      { NAN,           "a NaN" },
+    };
+    for (const auto &c : over32) {
+      char msg[144];
+      FNINIT(); push(c.v); wr32(0x0100, 0x5A5A5A5A);
+      opm(0xDB, 3, 0x0100);                       // FISTP m32int
+      std::snprintf(msg, sizeof msg, "FISTP m32int of %s stores the integer indefinite 80000000h", c.what);
+      check(rd32(0x0100) == 0x80000000u, msg);
+      std::snprintf(msg, sizeof msg, "FISTP m32int of %s raises IE", c.what);
+      check((sw() & SW_IE) != 0, msg);
+    }
+    // The exact boundaries on the other side: the largest and smallest values
+    // that DO fit must still store normally and raise nothing.
+    FNINIT(); push(2147483647.0); opm(0xDB, 3, 0x0100);
+    check((int32_t)rd32(0x0100) == 2147483647 && (sw() & SW_IE) == 0,
+          "FISTP m32int of INT32_MAX stores it and raises nothing");
+    FNINIT(); push(-2147483648.0); opm(0xDB, 3, 0x0100);
+    check((int32_t)rd32(0x0100) == (-2147483647 - 1) && (sw() & SW_IE) == 0,
+          "FISTP m32int of INT32_MIN stores it and raises nothing");
+    // Rounding decides the range: 2147483647.6 rounds to 2^31, which does not
+    // fit, so the check has to be made after rounding rather than before.
+    FNINIT(); push(2147483647.6); opm(0xDB, 3, 0x0100);
+    check(rd32(0x0100) == 0x80000000u && (sw() & SW_IE) != 0,
+          "FISTP m32int of 2147483647.6 is out of range AFTER rounding");
+
+    FNINIT(); push(32768.0); opm(0xDF, 3, 0x0100);      // FISTP m16int
+    check(rd16(0x0100) == 0x8000 && (sw() & SW_IE) != 0,
+          "FISTP m16int of 2^15 stores the integer indefinite 8000h and raises IE");
+    FNINIT(); push(32767.0); opm(0xDF, 3, 0x0100);
+    check((int16_t)rd16(0x0100) == 32767 && (sw() & SW_IE) == 0,
+          "FISTP m16int of INT16_MAX stores it and raises nothing");
+    FNINIT(); push(-32769.0); opm(0xDF, 3, 0x0100);
+    check(rd16(0x0100) == 0x8000 && (sw() & SW_IE) != 0,
+          "FISTP m16int of -2^15-1 stores the integer indefinite and raises IE");
+
+    FNINIT(); push(1e300); opm(0xDF, 7, 0x0110);        // FISTP m64int
+    check(rd64(0x0110) == 0x8000000000000000ULL && (sw() & SW_IE) != 0,
+          "FISTP m64int of 1e300 stores the integer indefinite and raises IE");
+    // The 64-bit boundary, both sides.  -2^63 is exactly representable as a
+    // double and IS in range; +2^63 is exactly representable and is NOT, because
+    // INT64_MAX is not.  The pair matters: a bound written `v > hi' instead of
+    // `v >= hi' passes every other case in this block.
+    FNINIT(); push(-9223372036854775808.0); opm(0xDF, 7, 0x0110);
+    check(rd64(0x0110) == 0x8000000000000000ULL && (sw() & SW_IE) == 0,
+          "FISTP m64int of -2^63 stores INT64_MIN and raises nothing - it is in range");
+    FNINIT(); push(9223372036854775808.0); opm(0xDF, 7, 0x0110);
+    check(rd64(0x0110) == 0x8000000000000000ULL && (sw() & SW_IE) != 0,
+          "FISTP m64int of +2^63 is out of range: integer indefinite and IE");
+    // The largest double below 2^63 is 2^63 - 1024, which fits.
+    FNINIT(); push(9223372036854774784.0); opm(0xDF, 7, 0x0110);
+    check(rd64(0x0110) == 9223372036854774784ULL && (sw() & SW_IE) == 0,
+          "FISTP m64int of the largest double below 2^63 stores it and raises nothing");
+    FNINIT(); push(NAN); opm(0xDD, 1, 0x0110);          // FISTTP m64int
+    check(rd64(0x0110) == 0x8000000000000000ULL && (sw() & SW_IE) != 0,
+          "FISTTP m64int of a NaN stores the integer indefinite and raises IE");
+    FNINIT(); push(-1e30); opm(0xDF, 1, 0x0100);        // FISTTP m16int
+    check(rd16(0x0100) == 0x8000 && (sw() & SW_IE) != 0,
+          "FISTTP m16int of -1e30 stores the integer indefinite and raises IE");
+    FNINIT(); push(1e30); opm(0xDB, 1, 0x0100);         // FISTTP m32int
+    check(rd32(0x0100) == 0x80000000u && (sw() & SW_IE) != 0,
+          "FISTTP m32int of 1e30 stores the integer indefinite and raises IE");
+    FNINIT(); push(1e30); opm(0xDB, 2, 0x0100);         // FIST m32int (no pop)
+    check(rd32(0x0100) == 0x80000000u && (sw() & SW_IE) != 0 && ftop() == 7,
+          "FIST m32int of 1e30 stores the integer indefinite, raises IE, does not pop");
+    FNINIT(); push(1e30); opm(0xDF, 2, 0x0100);         // FIST m16int (no pop)
+    check(rd16(0x0100) == 0x8000 && (sw() & SW_IE) != 0 && ftop() == 7,
+          "FIST m16int of 1e30 stores the integer indefinite, raises IE, does not pop");
   }
 
   //=========================================================================
@@ -977,15 +1072,14 @@ int main() {
     opm(0xDD, 7, 0x0100);
     check(rd16(0x0100) == sw(), "FNSTSW m16 stores the status word");
 
-    // BUG 5: Intel specifies that FCOM/FUCOM/FTST clear C1.  fpu_compare()
-    // only touches C0/C2/C3, so a C1 left over from FXAM survives into the
-    // next FSTSW AX.
+    // Intel specifies that FCOM/FUCOM/FTST clear C1 along with C0/C2/C3, so a
+    // C1 left over from FXAM does not survive into the next FSTSW AX.
     FNINIT(); push(-1.0);
     opr(0xD9, 0xE5);                            // FXAM -> C1 = sign = 1
     check((sw() & 0x0200) != 0, "FXAM on a negative set C1 (setup for the C1 check)");
     push(3.0);
     opr(0xD8, 0xD1);                            // FCOM ST(1)
-    bug((sw() & 0x0200) == 0, "FCOM should clear C1 (fpu_compare leaves it stale)");
+    check((sw() & 0x0200) == 0, "FCOM clears C1");
   }
 
   //=========================================================================
@@ -1112,12 +1206,11 @@ int main() {
     opr(0xD9, 0xF5); check(st(0) == -2.0, "FPREM1 14 rem 4 = -2 (rounded quotient 4)");
     check(st(1) == 4.0, "FPREM1 leaves ST(1) alone");
 
-    // BUG 6: FPREM1 must round the quotient to NEAREST EVEN (IEEE remainder).
-    // round() is half-away-from-zero, so 10 rem 4 picks q=3 instead of q=2.
+    // FPREM1 rounds the quotient to NEAREST EVEN (IEEE remainder), so 10 rem 4
+    // takes q=2, not the half-away-from-zero q=3.
     FNINIT(); push(4.0); push(10.0);
     opr(0xD9, 0xF5);
-    bug(st(0) == 2.0,
-        "FPREM1 10 rem 4 should be 2 (q=2, ties-to-even); round() picks q=3 giving -2");
+    check(st(0) == 2.0, "FPREM1 10 rem 4 = 2 (q=2, ties-to-even)");
 
     // Real 387 does the reduction 64 exponent-bits at a time and sets C2 when
     // it did not finish.  This does the whole thing in one double divide and
@@ -1320,12 +1413,12 @@ int main() {
     check(cpu->get_flag(emu88::FLAG_ZF), "FUCOMIP equal sets ZF");
     check(ftop() == 7, "FUCOMIP pops");
 
-    // BUG 7: Intel specifies OF, SF and AF are cleared by all four of these.
+    // Intel specifies OF, SF and AF are cleared by all four of these.
     FNINIT(); push(2.0); push(1.0);
     cpu->flags = 0x0002 | emu88::FLAG_OF | emu88::FLAG_SF | emu88::FLAG_AF;
     opr(0xDB, 0xF1);
-    bug((cpu->flags & (emu88::FLAG_OF | emu88::FLAG_SF | emu88::FLAG_AF)) == 0,
-        "FCOMI should clear OF, SF and AF (they are left untouched)");
+    check((cpu->flags & (emu88::FLAG_OF | emu88::FLAG_SF | emu88::FLAG_AF)) == 0,
+          "FCOMI clears OF, SF and AF");
   }
 
   //=========================================================================
@@ -1408,14 +1501,13 @@ int main() {
     // self-consistent, not interchangeable with hardware or another emulator.
     diverge(rd16(SAVE + 4) == 0xFFCC, "FNSAVE tag word is TOP-relative, not physical order");
 
-    // BUG 8: the 32-bit (108-byte) form only ever stores 16-bit words, so the
-    // upper half of each 32-bit FIP/FDP field keeps whatever was there.
+    // The 32-bit (108-byte) form has 32-bit environment fields, so the whole
+    // of each FIP/FDP field is cleared, not just its low word.
     for (int i = 0; i < 120; i++) wr8((uint16_t)(SAVE + i), 0xFF);
     FNINIT(); push(1.0);
     run({0x66, 0xDD, mrm_disp16(6), (uint8_t)(SAVE & 0xFF), (uint8_t)(SAVE >> 8)});
-    bug(rd8((uint16_t)(SAVE + 14)) == 0 && rd8((uint16_t)(SAVE + 15)) == 0,
-        "FNSAVE 32-bit form should zero all of the FIP field at +12..+15 "
-        "(it writes only the low word)");
+    check(rd8((uint16_t)(SAVE + 14)) == 0 && rd8((uint16_t)(SAVE + 15)) == 0,
+          "FNSAVE 32-bit form zeroes all of the FIP field at +12..+15");
 
     // The rest of the 32-bit image, and the round trip back through it.  The
     // 32-bit environment is 28 bytes, not 14, so CW/SW/TW sit at +0/+4/+8 and

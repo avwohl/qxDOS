@@ -48,7 +48,13 @@ static void init_default_vga_palette(uint8_t dac[][3]) {
   }
 }
 
-void dos_machine::video_set_mode(int mode) {
+void dos_machine::video_set_mode(int mode) { video_set_mode_ex(mode, false); }
+
+// `keep_buffer' is INT 10h AH=00's AL bit 7, "do not clear the display buffer".
+// Everything else a mode set does - the BDA fields, the sequencer and CRTC
+// state, the palette, the cursor reset - happens either way; only the clear is
+// suppressed.
+void dos_machine::video_set_mode_ex(int mode, bool keep_buffer) {
   // Selecting any legacy (VGA/EGA/CGA/text) mode leaves SVGA: the 0xA0000
   // window reverts to the legacy VGA paths and the VESA framebuffer is idle.
   vesa.active = false;
@@ -74,10 +80,11 @@ void dos_machine::video_set_mode(int mode) {
     memset(mem->vga_planes, 0, sizeof(mem->vga_planes));
     crtc_regs[12] = 0;  // Clear CRTC start address
     crtc_regs[13] = 0;
-    for (uint32_t i = 0; i < 64000; i++)
-      mem->store_mem(VGA_VRAM_BASE + i, 0);
+    if (!keep_buffer)
+      for (uint32_t i = 0; i < 64000; i++)
+        mem->store_mem(VGA_VRAM_BASE + i, 0);
     init_default_vga_palette(vga_dac);
-  } else {
+  } else if (!keep_buffer) {
     // Text mode: clear VRAM
     uint32_t base = vram_base();
     int cells = screen_cols * screen_rows;
@@ -324,7 +331,11 @@ void dos_machine::bios_int10h() {
 
   switch (ah) {
     case 0x00: {  // Set video mode
-      video_set_mode(al & 0x7F);
+      // AL bit 7 means "do not clear the display buffer".  It used to be masked
+      // off and then ignored, so a program that re-selects its current mode to
+      // reset the CRTC - a normal thing for a text-mode program to do - lost the
+      // screen every time.
+      video_set_mode_ex(al & 0x7F, (al & 0x80) != 0);
       io->video_mode_changed(video_mode, screen_cols, screen_rows);
       break;
     }
@@ -653,6 +664,23 @@ void dos_machine::bios_int13h() {
         break;
       }
 
+      // CHS sector numbers are 1-based.  With sector 0 the unsigned `sector - 1'
+      // below evaluates to 2^64-1 and the byte offset to 2^64-512, which went to
+      // dos_io::disk_read/disk_write as-is; a host backend seeking with a signed
+      // off_t seeks backwards.  Head and cylinder are bounded too: an
+      // out-of-range head does not produce a nonsense offset, it produces a
+      // PLAUSIBLE one that aliases onto the next cylinder's data, which is worse
+      // than an error.  Note what the cylinder bound means on a large disk:
+      // get_geometry clamps a hard disk to 1024 cylinders, so CHS cannot reach
+      // past about 504 MB - which is the same limit AH=08 reports to the guest,
+      // and the reason INT 13h's LBA extensions (AH=42/43) exist.
+      if (sector == 0 || sector > g.spt || head >= g.heads || cyl >= g.cyls) {
+        set_reg8(reg_AH, 0x04);  // Sector not found
+        set_reg8(reg_AL, 0);
+        set_flag(FLAG_CF);
+        break;
+      }
+
       uint64_t lba = ((uint64_t)cyl * g.heads + head) * g.spt + (sector - 1);
       uint64_t offset = lba * g.sector_size;
 
@@ -688,6 +716,23 @@ void dos_machine::bios_int13h() {
       disk_geom g = get_geometry(dl);
       if (g.spt == 0 || !io->disk_present(dl)) {
         set_reg8(reg_AH, 0x01);
+        set_reg8(reg_AL, 0);
+        set_flag(FLAG_CF);
+        break;
+      }
+
+      // CHS sector numbers are 1-based.  With sector 0 the unsigned `sector - 1'
+      // below evaluates to 2^64-1 and the byte offset to 2^64-512, which went to
+      // dos_io::disk_read/disk_write as-is; a host backend seeking with a signed
+      // off_t seeks backwards.  Head and cylinder are bounded too: an
+      // out-of-range head does not produce a nonsense offset, it produces a
+      // PLAUSIBLE one that aliases onto the next cylinder's data, which is worse
+      // than an error.  Note what the cylinder bound means on a large disk:
+      // get_geometry clamps a hard disk to 1024 cylinders, so CHS cannot reach
+      // past about 504 MB - which is the same limit AH=08 reports to the guest,
+      // and the reason INT 13h's LBA extensions (AH=42/43) exist.
+      if (sector == 0 || sector > g.spt || head >= g.heads || cyl >= g.cyls) {
+        set_reg8(reg_AH, 0x04);  // Sector not found
         set_reg8(reg_AL, 0);
         set_flag(FLAG_CF);
         break;
@@ -757,8 +802,11 @@ void dos_machine::bios_int13h() {
     }
     case 0x15: {  // Get disk type
       if (!io->disk_present(dl)) {
-        set_reg8(reg_AH, 0);  // Not present
-        set_flag(FLAG_CF);
+        // AH=00h IS the answer for "drive not present", and it is a SUCCESS
+        // return: CF clear.  Setting CF made a caller that branches on CF first
+        // read a missing drive as an I/O error.
+        set_reg8(reg_AH, 0);
+        clear_flag(FLAG_CF);
         break;
       }
       if (dl < 0x80) {
@@ -1177,6 +1225,11 @@ void dos_machine::bios_int1ah() {
     case 0x01: {  // Set timer tick count
       uint32_t ticks = ((uint32_t)regs[reg_CX] << 16) | regs[reg_DX];
       bda_w32(bda::TIMER_COUNT, ticks);
+      // The AT BIOS clears the midnight-passed flag as part of this, because
+      // setting the count is what a program does AFTER handling a rollover.
+      // Leaving it set made the very next AH=00 report a rollover that had
+      // already been consumed.
+      bda_w8(bda::TIMER_ROLLOVER, 0);
       break;
     }
     case 0x02: {  // Get RTC time (BCD)
@@ -1618,6 +1671,19 @@ void dos_machine::xms_dispatch() {
       uint32_t dst_off = mem->fetch_mem16(struct_addr + 12) |
                          ((uint32_t)mem->fetch_mem16(struct_addr + 14) << 16);
 
+      // Length, offsets and handles are all guest-supplied, and the copy below
+      // is a raw store_mem loop.  Until 2026-08-27 none of it was checked, so a
+      // client that asked to move more bytes than the destination block holds
+      // got a SUCCESS return and a write straight past the end of the block into
+      // whatever the next allocation is.  XMS 3.0 gives error codes for exactly
+      // these: A7h = invalid source offset, A8h = invalid destination offset,
+      // A9h = length is not even.
+      //
+      // A handle of 0 means "conventional memory, the offset is a seg:off pair"
+      // and has no block to bound the move against; the A20-on address space is
+      // the only limit there, and store_mem already bounds that.
+      if (length & 1) { regs[reg_AX] = 0; regs[reg_BX] = 0xA9; break; }
+
       // Resolve source address
       uint32_t src_addr;
       if (src_handle == 0) {
@@ -1626,6 +1692,11 @@ void dos_machine::xms_dispatch() {
         int h = src_handle - 1;
         if (h < 0 || h >= XMS_MAX_HANDLES || !xms_handles[h].allocated) {
           regs[reg_AX] = 0; regs[reg_BX] = 0xA3; break;
+        }
+        uint64_t block = (uint64_t)xms_handles[h].size_kb * 1024;
+        if ((uint64_t)src_off + length > block) {
+          regs[reg_AX] = 0; regs[reg_BX] = 0xA7;  // Invalid source offset
+          break;
         }
         src_addr = xms_handles[h].base + src_off;
       }
@@ -1638,6 +1709,11 @@ void dos_machine::xms_dispatch() {
         int h = dst_handle - 1;
         if (h < 0 || h >= XMS_MAX_HANDLES || !xms_handles[h].allocated) {
           regs[reg_AX] = 0; regs[reg_BX] = 0xA3; break;
+        }
+        uint64_t block = (uint64_t)xms_handles[h].size_kb * 1024;
+        if ((uint64_t)dst_off + length > block) {
+          regs[reg_AX] = 0; regs[reg_BX] = 0xA8;  // Invalid destination offset
+          break;
         }
         dst_addr = xms_handles[h].base + dst_off;
       }

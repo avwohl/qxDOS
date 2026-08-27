@@ -53,6 +53,24 @@ void dos_machine::dpmi_read_ldt_raw(uint16_t sel, uint8_t desc[8]) {
     desc[i] = mem->fetch_mem(addr + i);
 }
 
+// Every DPMI descriptor service takes a selector in BX and indexes the LDT with
+// it.  Unvalidated, a GDT selector (TI=0) indexes the LDT anyway, and an index
+// past LDT_MAX reads or writes as much as 48KB beyond the end of the table -
+// `sel >> 3' runs to 8191 where the table holds 2048 entries.  The address is
+// entirely guest-controlled, and what sits past the LDT in this machine's layout
+// is the GDT, the IDT and the TSS.  8022h is what DPMI 0.9 specifies for a
+// selector the host will not accept; 0001h already validated this way and the
+// rest did not.
+bool dos_machine::dpmi_bad_selector(uint16_t sel) {
+  uint16_t index = (sel >> 3);
+  if (!(sel & 4) || index == 0 || index >= DpmiState::LDT_MAX) {
+    set_flag(FLAG_CF);
+    regs[reg_AX] = 0x8022;  // Invalid selector
+    return true;
+  }
+  return false;
+}
+
 void dos_machine::dpmi_write_ldt_raw(uint16_t sel, const uint8_t desc[8]) {
   uint16_t index = (sel >> 3);
   uint32_t addr = dpmi.ldt_phys + index * 8;
@@ -156,6 +174,7 @@ void dos_machine::dpmi_mode_switch() {
   memset(dpmi.ldt_alloc, 0, sizeof(dpmi.ldt_alloc));
   memset(dpmi.pm_int_installed, 0, sizeof(dpmi.pm_int_installed));
   memset(dpmi.exc_installed, 0, sizeof(dpmi.exc_installed));
+  memset(dpmi.rm_callback_used, 0, sizeof(dpmi.rm_callback_used));
   // Value-initialize rather than memset: the default member initializers on
   // MemBlock, DosBlock and SegMap make them non-trivial types, and clearing a
   // non-trivial type with memset is -Wclass-memaccess.  (They are trivially
@@ -398,13 +417,6 @@ void dos_machine::dpmi_raw_rm_to_pm() {
 
 bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
                                     bool has_error_code, emu88_uint32 error_code) {
-  // Debug: trace exception delivery in PIC range
-  if (!is_software_int && vector < 32 && vector != 8) {
-    static int exc_trace = 0;
-    if (exc_trace < 10) {
-      exc_trace++;
-    }
-  }
   if (!dpmi.active) return false;
 
   // INT 31h — DPMI API
@@ -559,8 +571,12 @@ void dos_machine::dpmi_reflect_to_rm(uint8_t vector, bool preserve_regs) {
     stack_idx = DpmiState::RM_REFLECT_STACK_COUNT - 1;
   uint32_t stack_top = DpmiState::RM_REFLECT_STACK_BASE +
                        (stack_idx + 1) * DpmiState::RM_REFLECT_STACK_SIZE;
-  uint16_t rm_ss = (uint16_t)(stack_top >> 4);
-  uint16_t rm_sp = (uint16_t)(stack_top & 0x0F);
+  // SS points at the base of the reserved window and SP is the offset within
+  // it: every level's stack_top is 512-byte aligned, so `stack_top & 0x0F' was
+  // always 0 and the first push wrapped SP to FFFEh, putting the frame 64KB
+  // above the window.
+  uint16_t rm_ss = (uint16_t)(DpmiState::RM_REFLECT_STACK_BASE >> 4);
+  uint16_t rm_sp = (uint16_t)(stack_top - DpmiState::RM_REFLECT_STACK_BASE);
   load_segment_real(seg_SS, rm_ss);
   regs[reg_SP] = rm_sp;
   regs_hi[reg_SP] = 0;
@@ -607,6 +623,10 @@ void dos_machine::dpmi_reflect_to_rm(uint8_t vector, bool preserve_regs) {
       safety++;
     }
     if (safety >= 5000000) {
+      emu88_fatal("[DPMI] WARNING: RM callback for INT %02Xh exceeded 5M insns at "
+                  "%04X:%04X SS:SP=%04X:%04X (handler %04X:%04X)",
+                  vector, sregs[seg_CS], (uint16_t)ip, sregs[seg_SS],
+                  (uint16_t)regs[reg_SP], handler_seg, handler_off);
     }
   }
 
@@ -749,7 +769,6 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
   set_esp(stack_off);
 
   dpmi_exc_dispatched = true;  // Inhibit ESP rollback in instruction handlers
-  exc_dispatch_trace = true;   // Debug: verify at next instruction
 
   // Jump to the handler
   sregs[seg_CS] = handler_sel;
@@ -790,23 +809,6 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
 
 void dos_machine::dpmi_int31h() {
   uint16_t func = regs[reg_AX];
-
-  // IVT[21h] watchpoint: detect when it gets zeroed
-  {
-    static uint32_t prev_ivt21 = 0xDEAD;
-    uint16_t ivt21_off = mem->fetch_mem16(0x21 * 4);
-    uint16_t ivt21_seg = mem->fetch_mem16(0x21 * 4 + 2);
-    uint32_t cur = ((uint32_t)ivt21_seg << 16) | ivt21_off;
-    if (prev_ivt21 == 0xDEAD) prev_ivt21 = cur;
-    if (cur != prev_ivt21) {
-      prev_ivt21 = cur;
-    }
-  }
-
-  static int dpmi31_log = 0;
-  if (dpmi31_log < 200) {
-    dpmi31_log++;
-  }
 
   // Default: success (carry clear)
   clear_flag(FLAG_CF);
@@ -869,7 +871,10 @@ void dos_machine::dpmi_int31h() {
       for (int i = 0; i < DpmiState::MAX_SEG_MAP; i++) {
         if (dpmi.seg_map[i].valid && dpmi.seg_map[i].rm_seg == rm_seg) {
           regs[reg_AX] = dpmi.seg_map[i].pm_sel;
-          break;
+          // `break' here would leave the for loop, not the switch case, and the
+          // allocate-a-new-descriptor path below would run anyway.  Nothing
+          // follows the switch in this function, so returning is the cache hit.
+          return;
         }
       }
       // Allocate new
@@ -897,6 +902,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x0006: {  // Get Segment Base Address
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       uint8_t desc[8];
       dpmi_read_ldt_raw(sel, desc);
       uint32_t base = desc[2] | (desc[3] << 8) | (desc[4] << 16) | (desc[7] << 24);
@@ -907,6 +913,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x0007: {  // Set Segment Base Address
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       uint32_t base = ((uint32_t)regs[reg_CX] << 16) | regs[reg_DX];
       uint8_t desc[8];
       dpmi_read_ldt_raw(sel, desc);
@@ -926,6 +933,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x0008: {  // Set Segment Limit
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       uint32_t limit = ((uint32_t)regs[reg_CX] << 16) | regs[reg_DX];
       uint8_t desc[8];
       dpmi_read_ldt_raw(sel, desc);
@@ -952,6 +960,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x0009: {  // Set Descriptor Access Rights
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       uint16_t rights = regs[reg_CX];
       uint8_t desc[8];
       dpmi_read_ldt_raw(sel, desc);
@@ -975,6 +984,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x000A: {  // Create Code Segment Alias Descriptor
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       uint8_t desc[8];
       dpmi_read_ldt_raw(sel, desc);
       // Create a data segment with the same base/limit
@@ -998,6 +1008,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x000B: {  // Get Descriptor
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       uint8_t desc[8];
       dpmi_read_ldt_raw(sel, desc);
       // Copy to ES:EDI
@@ -1009,6 +1020,7 @@ void dos_machine::dpmi_int31h() {
 
     case 0x000C: {  // Set Descriptor
       uint16_t sel = regs[reg_BX];
+      if (dpmi_bad_selector(sel)) break;
       // Read from ES:EDI
       uint32_t src = seg_cache[seg_ES].base + get_reg32(reg_DI);
       uint8_t desc[8];
@@ -1195,7 +1207,10 @@ void dos_machine::dpmi_int31h() {
 
     case 0x0400: {  // Get DPMI Version
       regs[reg_AX] = 0x005A;  // Version 0.90
-      regs[reg_BX] = 0x0005;  // Flags: 32-bit programs supported, no virtual memory
+      // Bit 0: 32-bit programs supported.  Bit 1: the host returns to REAL mode
+      // for reflected interrupts (dpmi_reflect_to_rm clears CR0.PE), not V86.
+      // Bit 2 (virtual memory) stays clear: there is no paging in this host.
+      regs[reg_BX] = 0x0003;  // Flags: 32-bit programs, real-mode reflection, no virtual memory
       set_reg8(reg_CL, 3);    // Processor type: 386
       set_reg8(reg_DH, pic_vector_base);  // Master PIC base
       set_reg8(reg_DL, 0x70);             // Slave PIC base
@@ -1373,16 +1388,20 @@ void dos_machine::dpmi_int31h() {
       //
       // We create a small stub in low memory that does INT FFh (unused),
       // which we intercept.
-      static int next_callback = 0;
-      if (next_callback >= 16) {
+      int slot = -1;
+      for (int i = 0; i < DpmiState::MAX_RM_CALLBACKS; i++) {
+        if (!dpmi.rm_callback_used[i]) { slot = i; break; }
+      }
+      if (slot < 0) {
         set_flag(FLAG_CF);
         regs[reg_AX] = 0x8015;  // Callback unavailable
         break;
       }
+      dpmi.rm_callback_used[slot] = true;
       // Store callback info for later dispatch
       // Use a small thunk area at 0000:6800 (unused conventional memory)
-      uint16_t thunk_seg = 0x0000;
-      uint16_t thunk_off = 0x6800 + next_callback * 4;
+      uint16_t thunk_seg = DpmiState::RM_CALLBACK_SEG;
+      uint16_t thunk_off = (uint16_t)(DpmiState::RM_CALLBACK_OFF + slot * 4);
       // Write: CD FF CB (INT FFh, RETF) at the thunk address
       uint32_t thunk_addr = thunk_off;
       mem->store_mem(thunk_addr, 0xCD);      // INT
@@ -1392,7 +1411,7 @@ void dos_machine::dpmi_int31h() {
       // Record callback info in IVT entry FFh area (or separate table)
       // We'll use a simple array. Store pm_sel:pm_off and rm_struct address.
       // For now, just save in the dpmi state.
-      if (next_callback == 0) {
+      if (slot == 0) {
         // First time: hook INT FFh to our BIOS trap
         // Make sure IVT[FF] points to our BIOS stub
         mem->store_mem16(0xFF * 4, bios_entry[0xFF]);
@@ -1401,14 +1420,27 @@ void dos_machine::dpmi_int31h() {
 
       regs[reg_CX] = thunk_seg;
       regs[reg_DX] = thunk_off;
-      next_callback++;
       break;
     }
 
-    case 0x0304:  // Free Real Mode Callback Address
-      // CX:DX = callback address — just succeed
-      clear_flag(FLAG_CF);
+    case 0x0304: {  // Free Real Mode Callback Address
+      // CX:DX = the callback address 0303h handed out.  Validate it and give
+      // the slot back, so allocate/free in a loop does not run out after 16.
+      uint16_t cb_seg = regs[reg_CX];
+      uint16_t cb_off = regs[reg_DX];
+      int slot = (cb_off - DpmiState::RM_CALLBACK_OFF) / 4;
+      if (cb_seg != DpmiState::RM_CALLBACK_SEG ||
+          cb_off < DpmiState::RM_CALLBACK_OFF ||
+          (cb_off - DpmiState::RM_CALLBACK_OFF) % 4 != 0 ||
+          slot >= DpmiState::MAX_RM_CALLBACKS ||
+          !dpmi.rm_callback_used[slot]) {
+        set_flag(FLAG_CF);
+        regs[reg_AX] = 0x8024;  // Invalid callback address (DPMI 0.9, 0304h)
+        break;
+      }
+      dpmi.rm_callback_used[slot] = false;
       break;
+    }
 
     case 0x0305: {  // Get State Save/Restore Addresses
       // Return addresses for saving/restoring DPMI client state
@@ -1667,6 +1699,7 @@ void dos_machine::dpmi_exec_rm(uint8_t vector, uint32_t struct_addr,
       safety++;
     }
     if (safety >= 10000000) {
+      emu88_fatal("[DPMI] WARNING: RM exec for INT %02Xh exceeded 10M insns", vector);
     }
   }
 

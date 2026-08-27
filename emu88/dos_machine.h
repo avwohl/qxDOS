@@ -216,6 +216,13 @@ public:
     static constexpr int MAX_SEG_MAP = 64;
     SegMap seg_map[MAX_SEG_MAP] = {};
 
+    // Real-mode callback allocation (0303h allocates, 0304h frees).
+    // Slot i's thunk is at RM_CALLBACK_SEG:RM_CALLBACK_OFF + i*4 in low memory.
+    static constexpr int MAX_RM_CALLBACKS = 16;
+    static constexpr uint16_t RM_CALLBACK_SEG = 0x0000;
+    static constexpr uint16_t RM_CALLBACK_OFF = 0x6800;
+    bool rm_callback_used[MAX_RM_CALLBACKS] = {};
+
     // Virtual interrupt flag
     bool vif = true;
 
@@ -487,6 +494,8 @@ private:
 
   // Video helpers (in dos_bios.cc)
   void video_set_mode(int mode);
+  // INT 10h AH=00 with AL bit 7 set: same mode set, display buffer left alone.
+  void video_set_mode_ex(int mode, bool keep_buffer);
   void video_tty(uint8_t ch);
   void video_write_char(uint8_t ch, uint8_t attr, int count);
   void video_scroll(int dir, int top, int left, int bottom, int right,
@@ -524,6 +533,9 @@ private:
                             uint8_t access, uint8_t flags_nibble);
   void dpmi_read_ldt_raw(uint16_t sel, uint8_t desc[8]);
   void dpmi_write_ldt_raw(uint16_t sel, const uint8_t desc[8]);
+  // Rejects a selector the descriptor services must not index the LDT with.
+  // Sets CF and AX=8022h and returns true when it does.
+  bool dpmi_bad_selector(uint16_t sel);
   void dpmi_write_idt_entry(int vector, uint16_t sel, uint32_t offset,
                             uint8_t dpl, bool is_32bit);
 };

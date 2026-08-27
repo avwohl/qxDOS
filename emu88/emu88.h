@@ -140,21 +140,7 @@ public:
   bool in_double_fault;
   bool exception_pending;  // Set by raise_exception to abort current instruction
   bool dpmi_exc_dispatched; // Set by DPMI dispatch — inhibits ESP rollback in insn handlers
-  bool exc_dispatch_trace; // Debug: trace ESP after DPMI exception dispatch
   bool unreal_mode;        // Set when CR0.PE transitions 1→0; cleared on far JMP/segment reload
-  int rm_trace_count;      // Instructions to trace in real mode (debug)
-
-  // DPMI post-call trace
-  uint16_t dpmi_trace_func;     // 0 = none, 0x500/0x501 = pending trace
-  uint16_t dpmi_trace_ret_cs;   // return CS to match
-  uint32_t dpmi_trace_ret_eip;  // return EIP to match
-  uint32_t dpmi_trace_es_base;  // ES base at time of call (for 0500h buffer dump)
-  uint32_t dpmi_trace_edi;      // EDI at time of call (for 0500h buffer dump)
-
-  // INT 2Fh AX=1687h post-return trace
-  bool int2f_1687_trace_pending;  // true = waiting for return from INT 2Fh 1687h
-  uint16_t int2f_trace_ret_cs;    // return CS to match
-  uint32_t int2f_trace_ret_ip;    // return IP to match
 
   // Segment override state (per-instruction)
   int seg_override;       // -1 = none, 0-5 = seg index

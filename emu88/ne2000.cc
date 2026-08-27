@@ -267,7 +267,15 @@ uint16_t ne2000::ioread16(int offset) {
     uint16_t hi = dma_read_byte();
     return lo | (hi << 8);
   }
-  return ioread(offset);
+  // Register ports: split into two byte reads, mirroring iowrite16.  The
+  // register file is decoded 8 bits wide and the card asserts IOCS16 only for
+  // the data port, so an ISA 16-bit access to a register port is two 8-bit
+  // cycles at offset and offset+1.  Returning ioread(offset) zero-extended made
+  // an INW of a register pair half a read - INW from base+0x03 lost TSR.
+  uint16_t lo = ioread(offset);
+  int next = (offset & 0x1F) + 1;
+  uint16_t hi = (next < 0x10) ? ioread((offset & ~0x1F) | next) : 0x00;
+  return (uint16_t)(lo | (hi << 8));
 }
 
 //=============================================================================
@@ -406,7 +414,12 @@ void ne2000::receive(const uint8_t *data, int len) {
     uint16_t a = addr + idx;
     if (a >= stop_addr)
       a = start_addr + (a - stop_addr);
-    if (a < MEM_TOTAL)
+    // Same guard dma_write_byte uses, and for the same reason: 0x0000-0x001F is
+    // the read-only MAC PROM, not buffer RAM.  With only the upper bound here, a
+    // card that was started before its driver programmed CURR wrote the incoming
+    // frame straight over its own MAC - and CURR comes up 0 from reset(), so
+    // that is the state a driver is in between STA and the first page-1 write.
+    if (a >= BUF_START && a < MEM_TOTAL)
       mem[a] = v;
   };
 

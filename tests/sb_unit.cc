@@ -1,7 +1,7 @@
 // Standalone unit test for emu88's SoundBlaster module. Drives the public API
 // directly (no dos_machine, no port dispatch) and asserts DSP/DMA/render
 // behavior. Build & run:
-//   clang++ -std=c++20 -I emu88 tests/sb_unit.cc emu88/sound_blaster.cc \
+//   clang++ -std=c++20 -I emu88 tests/sb_unit.cc emu88/sound_blaster.cc
 //       -o /tmp/sb_unit && /tmp/sb_unit
 #include "sound_blaster.h"
 #include <cstdio>

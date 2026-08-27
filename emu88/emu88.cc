@@ -186,10 +186,7 @@ void emu88::reset(void) {
   in_double_fault = false;
   exception_pending = false;
   dpmi_exc_dispatched = false;
-  exc_dispatch_trace = false;
   unreal_mode = false;
-  rm_trace_count = 0;
-  dpmi_trace_func = 0;
   cycles = 0;
   op_size_32 = false;
   addr_size_32 = false;
@@ -3423,13 +3420,6 @@ void emu88::execute(void) {
   case 0xCB: {
     // Save ESP for fault rollback (x86 RETF is restartable)
     uint32_t saved_esp_retf = get_esp();
-    // Debug: trace RETF at the DOS4GW common handler exit
-    if (insn_ip == 0x6B2B && sregs[seg_CS] == 0x000C) {
-      static int retf_trace = 0;
-      if (retf_trace < 3) {
-        retf_trace++;
-      }
-    }
     // Real/V86 mode: read EIP and CS without committing ESP, validate the
     // target against the CS limit, then commit (see RET imm16 case for rules).
     if (!protected_mode() || v86_mode()) {
@@ -3528,13 +3518,6 @@ void emu88::execute(void) {
     emu88_uint8 vec = fetch_ip_byte();
     // In V86 mode with IOPL < 3, #GP(0) for monitor to handle
     if (v86_mode() && get_iopl() < 3) {
-      // Trace V86 INT 21h calls (file I/O during DOS4GW init)
-      if (vec == 0x21) {
-        static int v86_int21_count = 0;
-        if (v86_int21_count < 50) {
-          v86_int21_count++;
-        }
-      }
       raise_exception(13, 0);
       break;
     }
@@ -3630,13 +3613,6 @@ void emu88::execute(void) {
             // Outer privilege: pop ESP and SS
             emu88_uint32 new_esp = pop_dword();
             emu88_uint16 new_ss = pop_dword() & 0xFFFF;
-            // Trace IRET from ring 0 to ring 3 (GP handler return)
-            {
-              static int iret_trace = 0;
-              if (cpl == 0 && ret_cpl == 3 && iret_trace < 5) {
-                iret_trace++;
-              }
-            }
             // Use cpl_override to check with target privilege level
             load_segment(seg_CS, new_cs, ret_cpl);
             if (exception_pending) break;
@@ -3676,8 +3652,7 @@ void emu88::execute(void) {
           load_segment(seg_SS, new_ss, ret_cpl);
           if (exception_pending) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; break; }
           // All checks passed — commit
-          { uint8_t oi = (flags >> 12) & 3; flags = (new_flags & 0x7FD7) | 0x0002; uint8_t ni = (flags >> 12) & 3;
-            if (ni != oi) { static int il = 0; if (il < 10) { il++; ; } } }
+          flags = (new_flags & 0x7FD7) | 0x0002;
           cpl = ret_cpl;
           ip = new_ip;
           regs[reg_SP] = new_sp;

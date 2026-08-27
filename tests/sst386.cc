@@ -17,7 +17,15 @@
 #ifndef MOO_USE_ZLIB
 #define MOO_USE_ZLIB
 #endif
+// Vendored verbatim from the SingleStepTests project (MIT, tests/vendor/).  Its
+// Read<DATA>() compares an `int` loop counter against `sizeof(DATA)`, which is
+// three -Wsign-compare warnings at the three instantiations.  Suppressed around
+// the include rather than patched, so tests/vendor/mooreader.h stays a byte-for-
+// byte copy of upstream and re-vendoring it needs no re-patching.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
 #include "mooreader.h"
+#pragma GCC diagnostic pop
 
 #include <cstdio>
 #include <cstring>

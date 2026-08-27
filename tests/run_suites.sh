@@ -36,14 +36,17 @@ for t in opl_unit sb_unit uart_unit vesa_test hardware_test; do
   if "$BUILD/$t" >/dev/null 2>&1; then ok "$t"; else bad "$t (exit $?)"; fi
 done
 
-note "x87 FPU and DPMI host"
-# These two differ from the harnesses above: each holds a count of KNOWN,
+note "baseline-held harnesses (x87 FPU, DPMI host, NE2000, PC BIOS)"
+# These four differ from the harnesses above: each holds a count of KNOWN,
 # REAL defects to a baseline, the same way SingleStepTests is held to
 # SST_BASELINE.  Their bug() assertions state the architecturally correct
 # behaviour and are red on purpose.  FIXING one FAILS the harness, on purpose -
 # a silent improvement means the baseline is stale and must be lowered by hand.
-# tests/README.md sections 4 and 5 list what is still red and why.
-for t in fpu_test dpmi_test; do
+# All four baselines are 0 today: the thirteen defects the FPU and DPMI
+# harnesses were written to record, the two the NE2000 harness found and the six
+# the BIOS harness found are all fixed, and every assertion that caught one is
+# an ordinary check() now.  The machinery stays for the next defect.
+for t in fpu_test dpmi_test ne2000_test bios_test; do
   if [ ! -x "$BUILD/$t" ]; then bad "$t not built - run tests/build.sh"; continue; fi
   out=$("$BUILD/$t" 2>&1); rc=$?
   if [ "$rc" -eq 0 ]; then

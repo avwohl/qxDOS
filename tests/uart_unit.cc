@@ -1,7 +1,7 @@
 // Standalone unit test for the 16550 UART module (emu88/uart16550.{h,cc}).
 //
 // Build & run:
-//   clang++ -std=c++20 -I emu88 tests/uart_unit.cc emu88/uart16550.cc \
+//   clang++ -std=c++20 -I emu88 tests/uart_unit.cc emu88/uart16550.cc
 //       -o /tmp/uart_unit && /tmp/uart_unit
 //
 // Drives the UART directly via write_port/read_port/poll() and the tx()/rx()

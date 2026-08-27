@@ -1,6 +1,5 @@
 #include "emu88_mem.h"
 #include <cstring>
-#include <cstdio>
 
 emu88_mem::emu88_mem(emu88_uint32 size)
     : dat(nullptr), mem_size(size), a20_enabled(false) {

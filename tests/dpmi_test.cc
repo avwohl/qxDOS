@@ -23,23 +23,23 @@
 //              (in either direction) and the pin has to be re-decided.  Same
 //              idea as the SST_BASELINE gate in tests/run_suites.sh.
 //   bug()    - asserts the CORRECT behaviour for a defect that is present in
-//              dos_dpmi.cc today.  These FAIL, on purpose, and are listed
-//              again in the summary.  They retire themselves: fixing the
-//              defect turns them green.
+//              dos_dpmi.cc today.  Such an assertion FAILS, on purpose, and is
+//              listed again in the summary; it retires itself when the defect
+//              is fixed.  There are none right now - the machinery is kept in
+//              place for the next one.
 //
 // A 16MB emu88_mem is required.  dpmi_mode_switch() puts the GDT/IDT/LDT/TSS
 // at (mem_size - 0x20000) & ~0xFFF, and dpmi.next_mem_base starts at 2MB.
 //
 // EXIT CODE: 0 while exactly KNOWN_BUGS_EXPECTED bug() assertions are red, the
 // way tests/run_suites.sh holds SingleStepTests to a baseline rather than to
-// zero.  Four are red against dos_dpmi.cc as it stands -- 0002h's dead seg_map
-// cache, 0400h's virtual-memory flag, 0303h/0304h's leaked callback slots, and
-// the real-mode reflection stack landing 64KB outside its reserved window.  The
-// tail of the output explains each one.  FIXING one of them FAILS this harness
-// on purpose: it prints FIXED and says to lower the baseline, because a silent
-// improvement means the number is stale.  With those four fixed the harness is
-// green at 378 checks; that was verified by applying the fixes to a scratch
-// copy of dos_dpmi.cc.  Everything else here passes today.
+// zero.  The baseline is 0: the four defects this harness was written against
+// -- 0002h's dead seg_map cache, 0400h's virtual-memory flag, 0303h/0304h's
+// leaked callback slots, and the real-mode reflection stack landing 64KB
+// outside its reserved window -- are all fixed, and the assertions that caught
+// them are ordinary check()s now.  Everything here passes, at 420 checks.
+// FIXING a future bug() FAILS this harness on purpose: it prints FIXED and says
+// to lower the baseline, because a silent improvement means the number is stale.
 //
 // The checks were also shown to be able to fail before they were trusted:
 // twenty single-line mutations of dos_dpmi.cc (wrong version byte, wrong
@@ -67,7 +67,7 @@
 // the bug() call) when one is.  A bug that starts passing FAILS this harness
 // on purpose, the same way tests/run_suites.sh fails on a SingleStepTests
 // score ABOVE its baseline: a silent improvement means this number is stale.
-static const int KNOWN_BUGS_EXPECTED = 4;
+static const int KNOWN_BUGS_EXPECTED = 0;
 
 static int g_checks = 0;
 static int g_failures = 0;      // real failures - a regression
@@ -82,7 +82,8 @@ static void check(bool cond, const char *what) {
 }
 
 // Asserts the DPMI-0.9-correct behaviour for a known dos_dpmi.cc defect.
-static void bug(bool cond, const char *what) {
+// Unused while the ledger is empty; kept in place for the next defect.
+[[maybe_unused]] static void bug(bool cond, const char *what) {
   g_checks++;
   if (!cond) { g_bugs++; std::printf("  BUG:  %s\n", what); }
   else { g_bugs_fixed++;
@@ -97,7 +98,7 @@ static void check_eq(uint32_t got, uint32_t want, const char *what) {
   }
 }
 
-static void bug_eq(uint32_t got, uint32_t want, const char *what) {
+[[maybe_unused]] static void bug_eq(uint32_t got, uint32_t want, const char *what) {
   g_checks++;
   if (got != want) {
     g_bugs++;
@@ -478,13 +479,19 @@ int main() {
   check_eq(m.get_reg8(E::reg_CL), 3, "0400h: CL=3 (80386)");
   check_eq(m.get_reg8(E::reg_DH), 0x08, "0400h: DH=08h (master PIC base)");
   check_eq(m.get_reg8(E::reg_DL), 0x70, "0400h: DL=70h (slave PIC base)");
-  // BUG: BX bit 2 is "virtual memory supported".  This host has no paging at
-  // all -- dpmi_mode_switch never touches CR0.PG or CR3, 0600h/0601h page
-  // locking are no-ops, and 0500h reports a swap file size of FFFFFFFFh
-  // (none).  The source comment on this line even says "no virtual memory".
-  bug((BX() & 0x0004) == 0,
-      "0400h: BX must not advertise virtual memory (bit 2) - this host has no paging");
-  check_eq(BX() & 0x0001, 0x0001, "0400h: BX bit 0 set");
+  // BX bit 2 is "virtual memory supported".  This host has no paging at all --
+  // dpmi_mode_switch never touches CR0.PG or CR3, 0600h/0601h page locking are
+  // no-ops, and 0500h reports a swap file size of FFFFFFFFh (none).
+  check((BX() & 0x0004) == 0,
+        "0400h: BX must not advertise virtual memory (bit 2) - this host has no paging");
+  check_eq(BX() & 0x0001, 0x0001, "0400h: BX bit 0 set (32-bit programs supported)");
+  // Bit 1 is "the processor returns to REAL mode for reflected interrupts", as
+  // opposed to V86.  It is set because that is what this host does: both
+  // dpmi_reflect_to_rm and dpmi_exec_rm clear CR0.PE and run the handler in
+  // real mode.  A client that reads this bit and prepares a V86 monitor for the
+  // other answer would be wrong about the host.
+  check_eq(BX() & 0x0002, 0x0002, "0400h: BX bit 1 set (real-mode, not V86, reflection)");
+  check_eq(BX(), 0x0003, "0400h: BX=0003h exactly - no other capability claimed");
 
   int31(0x0003);
   check(!CF(), "0003h: CF clear");
@@ -567,14 +574,14 @@ int main() {
 
   int31(0x0002, 0x1234);
   const uint16_t s2 = AX();
-  // BUG: the cache-hit path does `break`, which leaves the *for* loop, not the
-  // switch case, so the allocate-a-new-descriptor code below it runs anyway.
-  // The cached selector is overwritten and a fresh LDT entry is burned on
-  // every call.  A client that maps the same segment in a loop (DJGPP's
-  // __dpmi_segment_to_descriptor, DOS4GW's video/PSP mapping) exhausts the
-  // 2047-entry LDT.  dos_dpmi.cc case 0x0002.
-  bug_eq(s2, s1, "0002h: asking twice for the same real-mode segment must "
-                 "return the cached selector, not a new one");
+  // The cache-hit path must leave the switch case, not just the *for* loop:
+  // otherwise the allocate-a-new-descriptor code below it runs anyway, the
+  // cached selector is overwritten, and a fresh LDT entry is burned on every
+  // call.  A client that maps the same segment in a loop (DJGPP's
+  // __dpmi_segment_to_descriptor, DOS4GW's video/PSP mapping) would exhaust
+  // the 2047-entry LDT.  dos_dpmi.cc case 0x0002.
+  check_eq(s2, s1, "0002h: asking twice for the same real-mode segment must "
+                   "return the cached selector, not a new one");
 
   int31(0x0002, 0x5678);
   const uint16_t s3 = AX();
@@ -679,14 +686,9 @@ int main() {
     for (uint32_t a = 0x7000;  a < 0x8000;  a++) if (rb(a) && !hit_window) hit_window = a;
     for (uint32_t a = 0x17000; a < 0x18000; a++) if (rb(a) && !hit_stray)  hit_stray  = a;
     g_checks++;
-    if (!hit_stray && hit_window) {
-      g_bugs_fixed++;
-      std::printf("  FIXED (lower KNOWN_BUGS_EXPECTED and drop this check): "
-                  "reflection frame now lands inside the reserved window\n");
-    }
     if (hit_stray || !hit_window) {
-      g_bugs++;
-      std::printf("  BUG:  reflection: the real-mode interrupt frame must be pushed inside "
+      g_failures++;
+      std::printf("  FAIL: reflection: the real-mode interrupt frame must be pushed inside "
                   "the reserved\n        7000h-8000h locked-stack window "
                   "(in-window write: %s%05X, stray write: %s%05X)\n",
                   hit_window ? "" : "none ", hit_window,
@@ -1043,16 +1045,107 @@ int main() {
   check_eq(AX(), 0x8015, "0303h: AX=8015h (callback unavailable)");
   check_eq(taken, 16, "0303h: the host provides exactly 16 real-mode callbacks");
 
+  // The error path, asserted as hard as the happy one: 0304h has to reject an
+  // address it never handed out rather than corrupting the allocation record.
+  int31(0x0304, 0, 0x1234, 0x6800);         // wrong segment
+  check(CF(), "0304h: CF set for a callback in the wrong segment");
+  check_eq(AX(), 0x8024, "0304h: AX=8024h (invalid callback address) for a bad segment");
+  int31(0x0304, 0, 0x0000, 0x6802);         // inside a thunk, not on its boundary
+  check(CF(), "0304h: CF set for an unaligned callback offset");
+  check_eq(AX(), 0x8024, "0304h: AX=8024h for an unaligned offset");
+  int31(0x0304, 0, 0x0000, 0x6700);         // below the thunk area
+  check(CF(), "0304h: CF set for an offset below the thunk area");
+  int31(0x0304, 0, 0x0000, 0x6800 + 16 * 4);  // one past the last slot
+  check(CF(), "0304h: CF set for an offset past the last slot");
+
   int31(0x0304, 0, 0x0000, 0x6800);         // hand the first one back
   check(!CF(), "0304h: CF clear");
-  // BUG: 0304h "just succeeds" and nothing is ever reclaimed -- the counter is
-  // a function-local `static int next_callback` in dpmi_int31h(), so it is not
-  // even per-session or per-machine.  A client that allocates and frees a
-  // callback in a loop (a mouse or timer handler being re-hooked) is dead
-  // after 16, and a second DPMI program in the same process starts with
-  // however many the first one used.  dos_dpmi.cc case 0x0303 / 0x0304.
+  int31(0x0304, 0, 0x0000, 0x6800);         // ... and it is not still allocated
+  check(CF(), "0304h: CF set on a double free");
+  check_eq(AX(), 0x8024, "0304h: AX=8024h on a double free");
+  // 0304h must actually reclaim the slot, and the allocation record must live
+  // in DpmiState -- per session and per machine.  A client that allocates and
+  // frees a callback in a loop (a mouse or timer handler being re-hooked)
+  // would otherwise die after 16, and a second DPMI program in the same
+  // process would start with however many the first one used.
   int31(0x0303);
-  bug(!CF(), "0303h: a callback freed by 0304h must become available again");
+  check(!CF(), "0303h: a callback freed by 0304h must become available again");
+
+  //==========================================================================
+  // 14b. The descriptor services validate the selector they are handed
+  //==========================================================================
+  // Until 2026-08-27 none of 0006h-000Ch looked at BX before indexing the LDT
+  // with it.  `sel >> 3' runs to 8191 where the table holds 2048 entries, so a
+  // GDT selector indexed the LDT anyway and an out-of-range index read or wrote
+  // up to 48KB past the end of the table - guest-controlled, and what sits there
+  // in this layout is the GDT, the IDT and the TSS.  tests/README.md recorded
+  // this as unassertable ("a test could only pin the out-of-bounds access").
+  // It is assertable now that the answer is an error code.
+  {
+    // A GDT selector: TI (bit 2) clear.  0x0008 is GDT entry 1, a real entry in
+    // this machine's GDT, so the old code would have read the LDT slot with the
+    // same index and returned a plausible-looking base.
+    static const struct { uint16_t sel; const char *what; } bad[] = {
+      { 0x0008, "a GDT selector (TI clear)" },
+      { 0x0000, "the null selector" },
+      { 0x0004, "LDT index 0" },
+      { 0x4004, "LDT index 2048, one past the end" },
+      { 0xFFFF, "LDT index 8191, the largest a 16-bit selector can express" },
+    };
+    for (const auto &b : bad) {
+      char msg[160];
+      // 0006h Get Segment Base: a read past the LDT.
+      int31(0x0006, b.sel);
+      std::snprintf(msg, sizeof msg, "0006h rejects %s with CF", b.what);
+      check(CF(), msg);
+      std::snprintf(msg, sizeof msg, "0006h returns 8022h for %s", b.what);
+      check_eq(AX(), 0x8022, msg);
+      // 0007h Set Segment Base: a WRITE past the LDT, which is the one that
+      // actually corrupts the machine.
+      int31(0x0007, b.sel, 0xDEAD, 0xBEEF);
+      std::snprintf(msg, sizeof msg, "0007h rejects %s with CF", b.what);
+      check(CF(), msg);
+      std::snprintf(msg, sizeof msg, "0007h returns 8022h for %s", b.what);
+      check_eq(AX(), 0x8022, msg);
+    }
+    // The remaining five, once each, against the worst of the five above.
+    int31(0x0008, 0xFFFF, 0, 0x1000);
+    check(CF() && AX() == 0x8022, "0008h rejects an out-of-range LDT index");
+    int31(0x0009, 0xFFFF, 0x00F2);
+    check(CF() && AX() == 0x8022, "0009h rejects an out-of-range LDT index");
+    int31(0x000A, 0xFFFF);
+    check(CF() && AX() == 0x8022, "000Ah rejects an out-of-range LDT index");
+    int31(0x000B, 0xFFFF, 0, 0, 0, 0x2000);
+    check(CF() && AX() == 0x8022, "000Bh rejects an out-of-range LDT index");
+    int31(0x000C, 0xFFFF, 0, 0, 0, 0x2000);
+    check(CF() && AX() == 0x8022, "000Ch rejects an out-of-range LDT index");
+
+    // 000Ah must not leak a selector on the rejection path: it allocates the
+    // alias only after the source selector is accepted.
+    int free_now = 0;
+    for (int i = 1; i < 2048; i++)
+      if (!(m.dpmi.ldt_alloc[i / 8] & (1 << (i % 8)))) free_now++;
+    int31(0x000A, 0xFFFF);
+    check(CF(), "000Ah still rejects on a second try");
+    int free_after = 0;
+    for (int i = 1; i < 2048; i++)
+      if (!(m.dpmi.ldt_alloc[i / 8] & (1 << (i % 8)))) free_after++;
+    check_eq((uint32_t)free_after, (uint32_t)free_now,
+             "000Ah leaks no LDT selector when it rejects the source");
+
+    // And a good selector still works, so the guard rejects only what it should.
+    int31(0x0000, 0, 1);
+    check(!CF(), "0000h still allocates after the rejections");
+    const uint16_t good = AX();
+    int31(0x0007, good, 0x0012, 0x3456);
+    check(!CF(), "0007h still accepts a freshly allocated LDT selector");
+    int31(0x0006, good);
+    check(!CF(), "0006h still accepts a freshly allocated LDT selector");
+    check_eq(((uint32_t)CX() << 16) | DX(), 0x00123456u,
+             "0006h reads back the base 0007h wrote");
+    int31(0x0001, good);
+    check(!CF(), "0001h frees it again");
+  }
 
   //==========================================================================
   // 15. LDT exhaustion
@@ -1151,21 +1244,7 @@ int main() {
       "  Every BUG line above asserts the DPMI 0.9 behaviour against a defect that is\n"
       "  in emu88/dos_dpmi.cc today.  They are meant to be red until the defect is\n"
       "  fixed, at which point this harness fails and tells you to lower the\n"
-      "  baseline:\n"
-      "    case 0x0002   the seg_map cache hit does `break\', which leaves the for\n"
-      "                  loop and not the switch case, so the allocate-a-new-\n"
-      "                  descriptor path below runs anyway.  Every repeat lookup of\n"
-      "                  the same real-mode segment burns another LDT entry.\n"
-      "    case 0x0400   BX bit 2 claims virtual-memory support.  There is no paging\n"
-      "                  here (CR0.PG is never set, 06xxh are no-ops, 0500h reports\n"
-      "                  no swap file) and the comment on the line says as much.\n"
-      "    case 0x0303   `static int next_callback\' is a function-local static: it is\n"
-      "                  not per-session or even per-dos_machine, and 0304h never\n"
-      "                  decrements it.  Allocate/free in a loop dies after 16.\n"
-      "    reflect_to_rm rm_sp = stack_top & 0x0F is 0 for every 512-byte-aligned\n"
-      "                  level, so the first push wraps SP to FFFEh and the frame\n"
-      "                  lands at (stack_top>>4)*16 + FFFEh -- 64KB above the\n"
-      "                  7000h-8000h window the host reserved for it.\n");
+      "  baseline.\n");
   }
   if (g_failures == 0 && baseline_ok) {
     std::printf("ALL DPMI TESTS PASS (%d checks, %d known bugs held at baseline)\n",

@@ -29,7 +29,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential nasm zlib1g-dev
 
-      # ~600 MB of test corpora, gitignored and fetched rather than vendored.
+      # 585 MB of test corpora, gitignored and fetched rather than vendored.
       # Keyed on the fetch script: it names the upstreams and the ROM build, so
       # a change there is the only thing that should invalidate this.
       - name: Cache the test corpora
@@ -42,14 +42,11 @@ jobs:
       - name: Fetch the test corpora
         if: steps.corpora.outputs.cache-hit != 'true'
         run: |
-          mkdir -p tests/data
+          # fetch_tests.sh creates tests/data and drops both clones' .git itself
+          # now.  Both used to be done here: the mkdir meant the script could
+          # not be run on a fresh checkout by hand at all, and the rm meant a
+          # local checkout carried 1.2 GB where CI carried 585 MB.
           bash tests/fetch_tests.sh
-          # Both upstreams are shallow clones whose objects ARE the payload -
-          # 567 MB of .git against 600 MB of working tree for SingleStepTests
-          # alone.  The suites read files, never git, and fetch_tests.sh guards
-          # on the directory existing, so dropping the histories halves what is
-          # cached without changing what is run.
-          rm -rf tests/data/80386/.git tests/data/test386/.git
           du -sh tests/data/* || true
 
       - name: Build the harnesses

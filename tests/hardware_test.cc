@@ -88,6 +88,21 @@ int main(){
     m.audio_render(buf,256,44100);
     bool allzero=true; for(int i=0;i<512;i++) if(buf[i]!=0){allzero=false;break;}
     ck("speaker: ungated is silent", allzero);
+
+    // A request longer than the 4096-frame mixing scratch buffer has to be
+    // filled in chunks, not truncated.  audio_render used to clamp at 4096 and
+    // leave the rest of `out' untouched: a host asking for more got its own
+    // stale buffer back for the tail, silently.  The CoreAudio bridge asks for
+    // at most 4096, which is why it was a latent trap and not a live bug.
+    m.port_out(0x61, 0x03);                      // gate again so there is a tone
+    static int16_t big[5000*2];
+    for (size_t i=0;i<sizeof(big)/sizeof(big[0]);i++) big[i]=0x5A5A;  // poison
+    ck("audio_render: a 5000-frame request succeeds", m.audio_render(big,5000,44100));
+    bool tail_written=true;
+    for(int i=4096*2;i<5000*2;i++) if(big[i]==0x5A5A){tail_written=false;break;}
+    ck("audio_render: the tail past 4096 frames is written, not left alone",
+       tail_written);
+    m.port_out(0x61, 0x00);
   }
 
   // ---- 4) LPT output (strobe) ----

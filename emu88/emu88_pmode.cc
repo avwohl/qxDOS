@@ -34,9 +34,6 @@ void emu88::init_seg_caches(void) {
   cr4 = 0;
   in_exception = false;
   unreal_mode = false;
-  rm_trace_count = 0;
-  dpmi_trace_func = 0;
-  int2f_1687_trace_pending = false;
 }
 
 //=============================================================================
@@ -341,11 +338,6 @@ emu88_uint32 emu88::translate_linear(emu88_uint32 linear, bool write) {
   if (!paging_enabled())
     return linear;
 
-#ifdef PAGING_DEBUG
-  if (linear == 0x0049F000 && cpl == 3) {
-  }
-#endif
-
   // Two-level page translation:
   // CR3 → Page Directory (1024 entries × 4 bytes)
   // PDE → Page Table (1024 entries × 4 bytes)
@@ -388,10 +380,6 @@ emu88_uint32 emu88::translate_linear(emu88_uint32 linear, bool write) {
 
   // Check PTE present
   if (!(pte & 1)) {
-    static int pf_pte_log = 0;
-    if (pf_pte_log < 10) {
-      pf_pte_log++;
-    }
     cr2 = linear;
     emu88_uint32 error = 0x00 | (write ? 0x02 : 0x00) | (cpl == 3 ? 0x04 : 0x00);
     raise_exception(14, error);
@@ -478,18 +466,12 @@ void emu88::do_interrupt_pm(emu88_uint8 vector, bool has_error_code,
                             emu88_uint32 error_code, bool is_software_int) {
   // DPMI intercept — handle before IDT lookup
   if (intercept_pm_int(vector, is_software_int, has_error_code, error_code)) {
-    if (exc_dispatch_trace) {
-    }
     return;
   }
 
   // Read IDT entry (8 bytes per entry)
   emu88_uint32 idt_offset = (emu88_uint32)vector * 8;
   if (idt_offset + 7 > (emu88_uint32)idtr_limit) {
-    static int idt_gp_log = 0;
-    if (idt_gp_log < 5) {
-      idt_gp_log++;
-    }
     raise_exception(13, idt_offset + 2);  // #GP
     return;
   }
@@ -1254,16 +1236,7 @@ void emu88::raise_exception(emu88_uint8 vector, emu88_uint32 error_code) {
                     vector == 17);
 
   if (protected_mode()) {
-    uint32_t esp_before = get_esp();
     do_interrupt_pm(vector, has_error, has_error ? error_code : 0);
-    if (get_esp() != esp_before) {
-      // do_interrupt_pm modified ESP (maybe through DPMI dispatch)
-      // Check if it's still what DPMI set or was modified by IDT push
-      static int esp_change_log = 0;
-      if (esp_change_log < 10) {
-        esp_change_log++;
-      }
-    }
   } else {
     do_interrupt(vector);
   }

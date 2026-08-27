@@ -74,14 +74,10 @@ int main(int argc, char **argv) {
   cpu.reset();   // CS=0xFFFF (base 0xFFFF0), IP=0, real mode, cpu_type=386
 
   long n = 0;
-  uint8_t prev_post = 0xFE;
-  long stall = 0;
   while (!cpu.halted && n < max_insns) {
     cpu.execute();
     n++;
     if (cpu.got_done) break;
-    // crude liveness: if POST advanced, reset stall budget
-    if (cpu.last_post != prev_post) { prev_post = cpu.last_post; stall = 0; }
   }
 
   printf("\n==== test386 finished: insns=%ld halted=%d last_POST=0x%02X (%d writes) done=%d ====\n",

@@ -79,15 +79,24 @@ bool dos_machine::audio_render(int16_t *out, int frames, int rate) {
     pcspk->set_tone(hz, (port_b & 0x03) == 0x03);
   }
   // Mix all attached sources into a 32-bit accumulator, then clamp to int16.
+  // The accumulator is a fixed 4096-frame scratch buffer, so a request larger
+  // than that is filled in CHUNKS.  It used to clamp at 4096 and leave the rest
+  // of `out' untouched - which was a latent trap rather than a live bug only
+  // because the CoreAudio bridge never asks for more, and a host that did would
+  // have got whatever was already in its buffer.  Chunking is seamless: each
+  // device's render() carries its own phase, so the joins are continuous.
   static thread_local int32_t mix[4096 * 2];
-  int n = frames > 4096 ? 4096 : frames;
-  for (int i = 0; i < n * 2; i++) mix[i] = 0;
-  for (int d = 0; d < n_audio_dev; d++)
-    if (audio_dev[d]) audio_dev[d]->render(mix, n, rate);
-  for (int i = 0; i < n * 2; i++) {
-    int32_t s = mix[i];
-    if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
-    out[i] = (int16_t)s;
+  for (int done = 0; done < frames; ) {
+    int n = (frames - done > 4096) ? 4096 : (frames - done);
+    for (int i = 0; i < n * 2; i++) mix[i] = 0;
+    for (int d = 0; d < n_audio_dev; d++)
+      if (audio_dev[d]) audio_dev[d]->render(mix, n, rate);
+    for (int i = 0; i < n * 2; i++) {
+      int32_t s = mix[i];
+      if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
+      out[done * 2 + i] = (int16_t)s;
+    }
+    done += n;
   }
   return true;
 }
@@ -663,22 +672,6 @@ void dos_machine::dispatch_bios(uint8_t vector) {
 }
 
 void dos_machine::do_interrupt(emu88_uint8 vector) {
-  // Trace DPMI and program termination
-  if (vector == 0x2F && !protected_mode()) {
-    uint16_t ax = regs[reg_AX];
-    if (ax == 0x1687) {
-      // Set up post-return trace to log what the handler returns
-      int2f_1687_trace_pending = true;
-      int2f_trace_ret_cs = sregs[seg_CS];
-      int2f_trace_ret_ip = ip;  // ip already points past INT 2Fh (CD 2F = 2 bytes)
-      // Enable real-mode trace after DPMI detection (reduced)
-      rm_trace_count = 200;
-    }
-  }
-  // Log divide-by-zero exceptions with full context for debugging
-  if (vector == 0) {
-  }
-
   // DPMI detection — intercept INT 2Fh AX=1687h before any chain
   if (vector == 0x2F && !protected_mode() && regs[reg_AX] == 0x1687) {
     bios_int2fh();
@@ -1262,10 +1255,6 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
       if (adlib_timer1_running && (cycles - adlib_timer1_start_cycle) > 320) {
         adlib_status |= 0xC0;  // Timer 1 expired + IRQ flag
         adlib_timer1_running = false;
-      }
-      static int adlib_read_log = 0;
-      if (adlib_read_log < 30) {
-        adlib_read_log++;
       }
       return adlib_status;
     }

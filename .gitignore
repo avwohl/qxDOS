@@ -23,5 +23,6 @@ dos/*.com
 # emu88 CPU test data (SingleStepTests, large) and build artifacts
 tests/data/
 tests/build/
+tests/build-asan/
 tests/*.bin
 tests/baseline_*.txt
