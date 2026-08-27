@@ -1,0 +1,55 @@
+# Dependabot, for GitHub Actions only.
+#
+# WHY IT IS HERE
+#
+# The two workflows reference their actions by MOVING MAJOR TAG -
+# actions/checkout@v7, actions/cache@v6 - which is not a pin: those tags follow
+# v7.x and v6.x as they ship, and GitHub Actions has no @latest to ask for
+# instead.  That is a deliberate choice (SHA-pinning first-party plumbing that
+# cannot silently produce a wrong answer buys reproducibility this repository
+# does not need, at the cost of rotting the moment nobody bumps it).
+#
+# What floating tags do NOT do is tell anyone when a MAJOR moves.  That is how
+# actions/checkout@v4 sat in tests.yml until a Node 20 deprecation annotation
+# appeared on every run - discovered by annotation rather than decided.  This is
+# the piece that closes that: a PR when a new major lands, which somebody reads.
+#
+# WHAT IS DELIBERATELY NOT COVERED
+#
+#   git submodules.  `dosbox-staging' is pinned at 019bbfd and bumping it is a
+#   large, untestable change: nothing on a Linux checkout can build the DOSBox
+#   backend, and the submodule is not even initialised here.  An automated PR
+#   would be an unreviewable diff against code no gate in this repository
+#   covers.  Bump it deliberately, on a Mac.
+#
+#   Swift packages.  ZIPFoundation is declared in project.yml, which is
+#   XcodeGen's input, not something Dependabot's `swift' ecosystem parses - it
+#   wants a Package.swift or a committed .xcodeproj, and this repository has
+#   neither (the xcodeproj is gitignored and generated).  There is nothing here
+#   for it to read.
+#
+#   emu88 itself is not a dependency of this repository - it is written here.
+#   The relationship runs the other way: dosiz compiles six emu88 files out of
+#   this tree and pins US, by full SHA, in its own workflow.  See CLAUDE.md.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    # "/" means .github/workflows/, not the repository root, and it covers
+    # every workflow in there - tests.yml and release.yml both.
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # One PR for all of them rather than one each.  There are three action
+    # references across two workflows and they move rarely; separate PRs for
+    # checkout and cache in the same week is noise, not signal.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    # No `labels:' block on purpose.  Dependabot does not create labels it is
+    # told to apply, and this repository has only the nine GitHub defaults - a
+    # custom one here would warn on every run.  Dependabot applies its own
+    # (`dependencies', `github_actions'), which is enough to filter on.
