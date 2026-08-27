@@ -211,8 +211,14 @@ psp_to_canonical_map never cleared, and soundblaster.cpp's asp_init_in_progress
 not reset in SBLASTER_Destroy().  each is argued harmless in place and each
 only bites on the DOSBox backend, which is no longer the default - so the
 priority is genuinely low.  they are open, not closed, and the doc does not
-claim otherwise.  needs the DOSBox submodule initialized and a Mac to
-reproduce.
+claim otherwise.  all four statics were confirmed still present at v0.83.0 on
+2026-08-27, so the bump did not close any of them by accident.  the "needs the
+submodule initialized" half of this is no longer a blocker - it initializes
+again since e4ade9d - but reproducing or fixing still needs a Mac.  note also
+that the SAME document's other section, "FIXED (patched in our fork)", turned out
+to be the only surviving record of the six patches the vanished pin carried; they
+are patch files under dosbox-ios/patches/ now.  that section is load-bearing
+documentation, not history - do not prune it.
 
 - the Main Thread Checker violation is a recorded decision to defer, not a
 fixed bug, and is listed here so it is not rediscovered as one.
