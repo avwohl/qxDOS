@@ -219,9 +219,19 @@ are the half that is portable.
 
 The DOSBox submodule is still required for an app build even though emu88 is the
 default backend: the app links `dosbox-core`, and `Emu88SlirpNet.mm` uses the
-libslirp symbols that library exports rather than linking libslirp itself.
+libslirp symbols that library exports rather than linking libslirp itself. Which
+makes the pin below a hard blocker on an app build, not a cosmetic problem —
+see the warning under Steps.
 
 #### Steps
+
+> **`--recursive` does not work right now.** The `dosbox-staging` submodule is
+> pinned at a commit that no longer exists upstream, so the submodule checkout
+> fails - and it fails *quietly*, leaving you on upstream's default branch tip
+> rather than stopping. Broken since 2026-03-23, measured 2026-08-27; the
+> evidence and the three ways out are the first entry in [todo.txt](todo.txt).
+> Everything in this section needs a Mac and none of it has been run on the
+> machine that found this.
 
 ```bash
 # Clone with submodules

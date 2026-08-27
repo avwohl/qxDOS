@@ -117,6 +117,17 @@ that can be exercised on a Linux machine.
 
 ### The app - requires a Mac
 
+> **Step 2 is broken and has been since ebc7465 (2026-03-23).** The
+> `dosbox-staging` submodule is pinned at `019bbfd5`, which does **not exist**
+> in the upstream repository - `git fetch` of it returns
+> `upload-pack: not our ref`. Worse, it does not fail cleanly: the clone of
+> upstream succeeds and only the checkout of the pin fails, leaving you on
+> upstream's default branch tip (~4276 commits past `v0.82.0-alpha`) with
+> `git submodule status` showing a leading `+`. Read the error, or you will
+> build a DOSBox you did not choose. Measured 2026-08-27; the evidence and the
+> three ways out are the first entry in [`todo.txt`](todo.txt). Nothing below
+> this line has been run on this machine either - see the note under Build.
+
 1. Prerequisites: Xcode 15+, CMake, XcodeGen
 2. `git submodule update --init` to fetch dosbox-staging. Still required even
    though emu88 is the default: the app links `dosbox-core`, and
@@ -139,8 +150,8 @@ Sizes measured with `git ls-files <dir> | wc -l` and `| xargs wc -l`.
 - `qxDOS/` - SwiftUI app (Views, Bridge, Assets). `Bridge/Emu88Emulator.mm` and
   `Bridge/Emu88SlirpNet.mm` are the emu88 side; `Bridge/DOSEmulator.mm` is the
   DOSBox side
-- `dosbox-staging/` - DOSBox source (git submodule; empty until
-  `git submodule update --init`)
+- `dosbox-staging/` - DOSBox source (git submodule; empty, and **cannot
+  currently be populated** - the pin does not exist upstream, see `todo.txt`)
 - `dosbox-ios/` - iOS-specific DOSBox integration layer
 - `scripts/` - disk image builders and catalog tooling (10 tracked files)
 - `disk-content/` - files staged onto the built images (`freedos/`, `msdos/`,
