@@ -17,8 +17,15 @@ jobs:
   emu88:
     runs-on: ubuntu-latest
     steps:
+      # v5, not v4: v4 targets Node 20, which the runners now force onto Node 24
+      # and annotate every run about.  v5 is the first major of both checkout and
+      # cache that declares node24 itself.  Newer majors exist (checkout v7,
+      # cache v6) and are ESM rewrites with behaviour changes - checkout v6 moved
+      # credential persistence to a separate file, v7 blocks checking out a fork
+      # PR under pull_request_target and workflow_run.  Nothing here needs any of
+      # that, so this is the smallest bump that clears the deprecation.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # g++ and zlib for the harnesses (the MOO reader is zlib-backed); nasm to
       # assemble the test386 diagnostic ROM.  No clang: tests/build.sh falls
@@ -34,7 +41,7 @@ jobs:
       # a change there is the only thing that should invalidate this.
       - name: Cache the test corpora
         id: corpora
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tests/data
           key: emu88-testdata-${{ hashFiles('tests/fetch_tests.sh') }}
