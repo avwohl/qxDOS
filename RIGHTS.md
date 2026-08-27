@@ -100,12 +100,13 @@ affiliated with, endorsed by, or sponsored by Microsoft or IBM;
 the use of these names is descriptive and refers solely to the
 MIT-licensed source release at github.com/microsoft/MS-DOS .
 
-## emu88 (alternate hardware backend)
+## emu88 (default hardware backend)
 
-Custom 8088/286/386 interpreter written for the qxDOS project as an
-alternative hardware backend to DOSBox Staging. Lives in `emu88/`
-in the qxDOS source tree and ships as part of the qxDOS app, not
-on any disk image.
+Custom 8088/286/386 interpreter written for the qxDOS project. It
+has been the default hardware backend since commit 932af28; DOSBox
+Staging remains bundled and selectable per machine profile. Lives
+in `emu88/` in the qxDOS source tree and ships as part of the qxDOS
+app, not on any disk image.
 
 - **License:** GNU General Public License (GPL) v3 or later
   (inherited from the qxDOS project)

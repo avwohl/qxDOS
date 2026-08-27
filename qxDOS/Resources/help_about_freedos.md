@@ -93,7 +93,7 @@ This app includes software from many independent open-source projects. Complete 
 
 - **qxDOS** (GPL v3+) — [github.com/avwohl/qxDOS](https://github.com/avwohl/qxDOS)
 - **DOSBox Staging** (GPL v2+) — [github.com/dosbox-staging/dosbox-staging](https://github.com/dosbox-staging/dosbox-staging)
-- **emu88** alternate hardware backend (GPL v3+, qxDOS-internal)
+- **emu88** default hardware backend (GPL v3+, qxDOS-internal)
 - **FreeDOS kernel** (GPL v2+) — [github.com/FDOS/kernel](https://github.com/FDOS/kernel)
 - **FreeCom (COMMAND.COM)** (GPL v2+) — [github.com/FDOS/freecom](https://github.com/FDOS/freecom)
 - **FreeDOS utilities** (GPL v2+ / BSD) — [github.com/FDOS](https://github.com/FDOS)

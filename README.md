@@ -1,36 +1,99 @@
 # qxDOS — DOS for iOS and Mac
 
-A DOS emulator for iOS and Mac using
-[DOSBox Staging](https://dosbox-staging.github.io/) as the emulation engine.
+A DOS emulator for iOS and Mac. The default hardware backend is **emu88**, a
+from-scratch 8088/286/386 interpreter written for this project and living in
+[`emu88/`](emu88/). [DOSBox Staging](https://dosbox-staging.github.io/) is still
+bundled and still selectable per machine profile.
 Boots [FreeDOS](https://www.freedos.org/), [MS-DOS](https://github.com/microsoft/MS-DOS), or [DOSBox](https://dosbox-staging.github.io/)'s built-in DOS.
 
 ## What is this?
 
-qxDOS is a SwiftUI front-end that lets you run DOS on iPad and Mac.
-The qxDOS project provides only the iOS/Mac app shell — the user
-interface, touch controls, disk management, and the infrastructure to
-boot different DOS operating systems. All PC emulation is provided by
-[DOSBox Staging](https://dosbox-staging.github.io/), an independent
-open-source project. The operating systems themselves —
-[FreeDOS](https://www.freedos.org/),
-[MS-DOS](https://github.com/microsoft/MS-DOS), etc. — are independent
-projects with their own developers and licenses. qxDOS did not write
-or contribute code to any of them.
+qxDOS is a SwiftUI front-end that lets you run DOS on iPad and Mac. It provides
+the user interface, touch controls, disk management, the infrastructure to boot
+different DOS operating systems, and — since commit `932af28`, "Make emu88 the
+default hardware backend" — the PC emulation itself.
+
+That last clause is a correction, recorded rather than edited away. This file
+said "The qxDOS project provides only the iOS/Mac app shell" and "All PC
+emulation is provided by DOSBox Staging". Both were false by the time you read
+them. PC emulation now comes from `emu88/`: CPU, protected mode, x87, memory,
+BIOS, VGA/VESA, DPMI host, NE2000, AdLib/OPL and Sound Blaster, 24 tracked files
+and 17,244 lines. `qxDOS/Views/MachineConfig.swift` declares
+`var backend: EmulatorBackend = .emu88` and decodes a missing key to `.emu88`,
+so both a new profile and an old saved one land on emu88. DOSBox Staging is
+still a git submodule at `dosbox-staging/` and still selectable; it is no longer
+what runs unless you pick it.
+
+The operating systems themselves — [FreeDOS](https://www.freedos.org/),
+[MS-DOS](https://github.com/microsoft/MS-DOS), etc. — are independent projects
+with their own developers and licenses, as is DOSBox Staging. qxDOS did not
+write or contribute code to any of them.
 
 Choose which DOS to run:
 
 - **FreeDOS** — free, open-source DOS by the [FreeDOS Project](https://www.freedos.org/) (GPL v2+)
 - **MS-DOS** — [Microsoft](https://github.com/microsoft/MS-DOS)'s original DOS; bring your own media, or use MS-DOS 4.0 (MIT license)
-- **DOSBox DOS** — [DOSBox Staging](https://dosbox-staging.github.io/)'s built-in kernel and shell, no OS on disk needed
+- **DOSBox DOS** — [DOSBox Staging](https://dosbox-staging.github.io/)'s built-in kernel and shell, no OS on disk needed. This one requires the DOSBox backend; emu88 has no built-in shell and boots a DOS from a disk image.
+
+Use it to run classic DOS games, utilities, learn DOS programming, or
+explore period software archives like Simtel and Walnut Creek.
+
+## Emulation backends
+
+One is chosen per machine profile.
+
+**emu88 — the default.** A from-scratch interpreter for the 8088, 286 and 386,
+plus the PC around it: an x87 FPU, a DPMI host, VGA and VESA VBE 2.0 (S3-class,
+8 MB linear framebuffer), an NE2000 adapter, AdLib/OPL3, a Sound Blaster DSP
+with 8237 DMA, a 16550 UART and a PC speaker. Written for qxDOS, GPL v3+, source
+in `emu88/`. Its validation harnesses live in `tests/` and are described in
+[tests/README.md](tests/README.md).
+
+**DOSBox Staging — selectable.** Still a submodule at `dosbox-staging/`, and
+still the only way to get the DOSBox built-in kernel and shell, custom cycle
+counts, or a 486/Pentium CPU. It is no longer the default.
+
+### What emu88 does not do
+
+Named here rather than left to be discovered.
+
+- **The x87 is not a bit-exact 387.** `emu88.h` declares `double regs[8]`, so
+  the register stack carries 53 mantissa bits instead of the 387's 64-bit
+  extended significand. A class of real-hardware results is not reproducible
+  without a rewrite: no denormal class, precision control ignored, `F2XM1` and
+  `FYL2XP1` losing the precision they exist to preserve.
+  [tests/README.md](tests/README.md) section 4 pins each divergence in the
+  harness, with a comment naming the gap, so none of them can drift silently.
+- **Defects are recorded before they are fixed, and held at a baseline rather
+  than hidden.** A harness that finds one asserts the architecturally correct
+  answer and fails on purpose until somebody fixes it; fixing it then fails the
+  harness the other way and says to lower the count, so a silent improvement
+  cannot leave the number stale. Twenty-one were found this way in August 2026
+  and all twenty-one are fixed, so every ledger currently reads zero.
+  [tests/README.md](tests/README.md) sections 4 to 7 carry the account of each
+  one, which is the point of the mechanism - the record, not the count.
+- **No built-in DOS.** Boot FreeDOS or MS-DOS from a disk image.
+- **No 486 or Pentium, and no custom cycle counts.** 8088, 286 and 386 only.
+- **The validation has a scope.** SingleStepTests/80386 is run in real mode
+  only and its corpus injects a `HALT` at the exception ISRs, so its pass rate
+  says nothing about 32-bit protected-mode instruction execution or about
+  whether a fault dispatched the right vector. Those are covered only by the
+  one full-system ROM, `test386.asm`.
 
 Use it to run classic DOS games, utilities, learn DOS programming, or
 explore period software archives like Simtel and Walnut Creek.
 
 ## Features
 
-- Full 386 CPU with FPU and DPMI support
-- VGA/SVGA graphics (S3 Trio64)
-- Sound Blaster 16 audio
+- Two hardware backends: emu88 (default) and DOSBox Staging
+- 386 CPU with an x87 FPU and a DPMI host. Under emu88 the FPU is not a
+  bit-exact 387 — the register stack is host `double`, 53 mantissa bits rather
+  than 80-bit extended — so some real-hardware results differ. See
+  [tests/README.md](tests/README.md) section 4, which names each divergence.
+- VGA/SVGA graphics (S3 Trio64 under DOSBox; VESA VBE 2.0 with an 8 MB linear
+  framebuffer under emu88)
+- Sound Blaster 16 audio under DOSBox; Sound Blaster DSP with 8237 DMA plus
+  OPL3 FM under emu88
 - Mouse and keyboard input
 - Configurable virtual touch controls (D-Pad, analog stick, buttons)
 - NE2000 Ethernet networking with SLIRP (FTP, Telnet, HTTP downloads)
@@ -111,14 +174,54 @@ github.com/microsoft/MS-DOS) plus `C:\LICENSE.TXT`.
 
 ## Building
 
-### Prerequisites
+### emu88 alone — no Xcode, no Mac
+
+The core and its harnesses build on any machine with a C++20 compiler. This is
+the whole development loop for `emu88/`, and it is what CI runs.
+
+```bash
+bash tests/fetch_tests.sh   # clones the two corpora into tests/data/ (gitignored, large)
+bash tests/build.sh         # builds eleven harnesses into tests/build/
+bash tests/run_suites.sh    # runs them and holds them to their recorded scores
+```
+
+`build.sh` uses `clang++` when it is present and `g++` otherwise. It needs no
+SDL, no glib and no DOSBox submodule; only the SingleStepTests harness has an
+external dependency, zlib. `run_suites.sh` is what
+`.github/workflows/tests.yml` runs, so a green tick and a clean local run mean
+the same thing.
+
+Two more commands, neither in CI and both deliberately so:
+
+```bash
+ASAN=1 bash tests/build.sh   # everything again under -fsanitize=address,undefined
+bash tests/check_dosiz.sh    # build the downstream consumer against this tree
+```
+
+The sanitized build lands in `tests/build-asan/` and is the thing to run by hand
+after touching memory routing or a frame buffer; a sanitized SingleStepTests run
+costs minutes rather than seconds, which is why CI does not. `check_dosiz.sh` is
+described under *emu88 is compiled by a second project* below.
+
+### The app — Mac and iOS
+
+Requires a Mac. Nothing below this line can be built or checked on a Linux
+checkout: the SwiftUI app, the Objective-C++ bridges, the CoreAudio path, the
+joystick path and the DOSBox backend are all Xcode-only. `emu88/` and `tests/`
+are the half that is portable.
+
+#### Prerequisites
 
 - Xcode 15+
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 - CMake (`brew install cmake`)
 - SDL2 and dependencies (`brew install sdl2 sdl2_image libpng speexdsp iir1 opusfile`)
 
-### Steps
+The DOSBox submodule is still required for an app build even though emu88 is the
+default backend: the app links `dosbox-core`, and `Emu88SlirpNet.mm` uses the
+libslirp symbols that library exports rather than linking libslirp itself.
+
+#### Steps
 
 ```bash
 # Clone with submodules
@@ -149,16 +252,62 @@ incrementally rebuild the DOSBox static libraries when sources change.
 
 ```
 SwiftUI App (qxDOS/)
-  └─ DOSEmulator.h/.mm (Objective-C++ bridge)
+  ├─ Emu88Emulator.h/.mm — Objective-C++ bridge, DEFAULT backend
+  │    ├─ emu88/ — the 386 core and the PC around it
+  │    │    ├─ emu88.cc, emu88_pmode.cc, emu88_mem.cc — CPU, protected mode, memory
+  │    │    ├─ emu88_fpu.cc — x87 (host double register stack, not 80-bit)
+  │    │    ├─ dos_machine.cc, dos_bios.cc — machine, BIOS, VGA/VESA, INT 10h/13h/16h
+  │    │    ├─ dos_dpmi.cc — DPMI host (INT 2Fh AX=1687h, INT 31h)
+  │    │    └─ ne2000.cc, opl.cc, sound_blaster.cc, uart16550.cc — hardware
+  │    └─ Emu88SlirpNet.h/.mm — libslirp NAT behind the NE2000, using the
+  │         libslirp symbols the dosbox-core static library already exports
+  └─ DOSEmulator.h/.mm — Objective-C++ bridge, selectable backend
        └─ dosbox-ios/ (C bridge layer)
             ├─ dosbox_bridge.cpp — config, lifecycle, input
             ├─ int_e0_hostio.cpp — INT E0h host file transfer
             └─ DOSBox-staging (git submodule)
-                 ├─ CPU: 386/486 with FPU, dynamic recompiler
+                 ├─ CPU: 386/486/Pentium with FPU, dynamic recompiler
                  ├─ DOS: kernel, DPMI, drives, shell
                  ├─ Hardware: VGA, Sound Blaster, NE2000, keyboard, mouse
                  └─ SDL2: video output, audio, input events
 ```
+
+Both bridges deliver frames through the same
+`emulatorFrameReady:width:height:` selector, so the SwiftUI view model has one
+render path rather than two.
+
+## emu88 is compiled by a second project
+
+`dosiz`, a separate DOS emulator, does not vendor emu88.
+`dosiz/src/CMakeLists.txt` sets `EMU88_DIR` to
+`${CMAKE_SOURCE_DIR}/../../qxDOS/emu88`
+and compiles six files straight out of this working tree — `emu88.cc`,
+`emu88_pmode.cc`, `emu88_fpu.cc`, `emu88_mem.cc`, `opl.cc` and
+`sound_blaster.cc`, 9,102 lines as measured here. There is no submodule, no
+copy, no version constant and no checksum, so a local build there picks up
+whatever is in this checkout at that moment; their CI is pinned separately, to a
+full 40-character qxDOS SHA in `QXDOS_REF`, bumped by hand on their side.
+
+A change under `emu88/` therefore changes a second product. [CLAUDE.md](CLAUDE.md)
+states the rule that follows from that, including the command to run first.
+
+There is a gate for it, and it is worth knowing which direction the coverage
+runs. This repository owns emu88's validation suites and they are real-mode
+per-instruction plus one full-system ROM; dosiz owns roughly thirty
+**protected-mode** DPMI fixtures in its own CI. So the only automated check on
+emu88's protected-mode behaviour lived in the repository that is forbidden to
+fix emu88. `tests/check_dosiz.sh` runs those fixtures from here: it builds dosiz
+from a sibling checkout against this tree, fails on any warning out of `emu88/`,
+and runs every fixture its `ci.yml` asserts.
+
+```sh
+bash tests/check_dosiz.sh            # expects ../dosiz
+DOSIZ_DIR=/path/to/dosiz bash tests/check_dosiz.sh
+```
+
+It exits 2, not 1, when there is no dosiz checkout — that is "not checked",
+which is a different thing from a failure. It is deliberately not in CI here:
+it needs a checkout this repository does not carry and must not depend on.
 
 ## License
 
@@ -173,7 +322,7 @@ sources listed below:
 
 - **qxDOS** (GPL v3+) — https://github.com/avwohl/qxDOS
 - **DOSBox Staging** (GPL v2+) — https://github.com/dosbox-staging/dosbox-staging
-- **emu88** alternate hardware backend (GPL v3+, qxDOS-internal)
+- **emu88** default hardware backend, written for qxDOS (GPL v3+) — `emu88/` in this repository
 - **FreeDOS kernel** (GPL v2+) — https://github.com/FDOS/kernel
 - **FreeCom (COMMAND.COM)** (GPL v2+) — https://github.com/FDOS/freecom
 - **FreeDOS utilities** (GPL v2+ / BSD) — https://github.com/FDOS
@@ -184,10 +333,11 @@ sources listed below:
 - **ZIPFoundation** (MIT) — https://github.com/weichsel/ZIPFoundation
 - **MS-DOS** (MIT, © IBM and Microsoft) — https://github.com/microsoft/MS-DOS
 
-qxDOS did not write any of the operating systems or emulator cores
-listed above. All credit for FreeDOS, MS-DOS, DOSBox Staging, mTCP,
-libslirp, and the rest belongs to their respective authors. qxDOS
-only repackages their work into a SwiftUI app shell.
+qxDOS did not write any of the operating systems listed above, or
+DOSBox Staging. All credit for FreeDOS, MS-DOS, DOSBox Staging, mTCP,
+libslirp, and the rest belongs to their respective authors. emu88 is
+the one entry in that list that is this project's own work; everything
+else is repackaged into a SwiftUI app shell.
 
 You may also request source code by opening an issue at
 https://github.com/avwohl/qxDOS/issues. This offer is valid for at

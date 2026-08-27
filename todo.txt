@@ -4,33 +4,48 @@ which used to open this file, are in docs/brief.md; neither is closed and the
 emu88 one still sets the goal ("get it working 100% for 386 all modes").  There
 is no issue tracker.
 
-Everything below was measured on 2026-08-26 against HEAD 7352fc5 on a linux
-x86_64 box with g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0, no clang, no Xcode, and
-the dosbox-staging submodule uninitialized.  Four entries name 2026-08-27
-instead: three of them - the `{ }` husks, the write-only members and the
--Wextra gate - were measured that day on the same box against f265310 plus the
-uncommitted dead-code removal described in CHANGELOG.md, and the fourth
-records dosiz's CI being fixed that day.  Where something was read off a file
-rather than run, the entry says so.
+Everything below was measured on 2026-08-27 on a linux x86_64 box with g++
+(Ubuntu 15.2.0-16ubuntu1) 15.2.0, no clang, no Xcode, and the dosbox-staging
+submodule uninitialized, against HEAD 91963f6 plus the uncommitted work
+described under Unreleased in CHANGELOG.md.  Where something was read off a
+file rather than run, the entry says so.
+
+This file listed seventeen items on 2026-08-26.  Nine of them closed outright
+on 2026-08-27 and are in CHANGELOG.md: the zero-coverage halves of dos_bios.cc
+and ne2000.cc, the thirteen recorded emu88 defects, the two gaps the harnesses
+had called unassertable, the `{ }`-bodied husks, the write-only trace members,
+the -Wextra gate, the dosiz dependency going unrecorded and ungated, the
+README/CLAUDE.md/hardware-roadmap.md drift, and the three tests/README.md
+inaccuracies.  Two more were narrowed rather than closed - the x87 entry lost
+its nine defects and kept its register format, and the dosiz entry gained a gate
+and kept its pin - and both are below with what is left of them.
+
+Ten items, then.  Two are standing statements of scope rather than work; they
+are here so that a pass rate is never quoted without them.  Four need a machine
+this one is not - a Mac, a real device, the DOSBox submodule - or a decision
+that is the owner's, which is the release tagging scheme.  Two are real work
+nobody has started: an 80-bit x87 register file, and the half of the dosiz
+dependency that lives on their side.  The last two were found on
+2026-08-27 while measuring the rest and are left open for the same kind of
+reason: closing either is a decision about what the product does, not a
+cleanup.
 
 - the two validation runs are worth quoting, and worth quoting with their scope
-attached, because the scope is what went wrong last time.  re-measured today,
-both from tests/build/:
+attached, because the scope is what went wrong last time.  re-measured
+2026-08-27, both from tests/build/:
     sst386 --summary --revoke tests/data/80386/revocation_list.txt
     tests/data/80386/v1_ex_real_mode
       TOTAL 1758402/1758699 passed (99.9831%), 1 skipped, 11/941 files with
-      failures, 43s.  the 11: 0FAF 2416/2500, 660FAF 2424/2500, 670FAF
-      2433/2500, 67660FAF 2441/2500, 6769 2499/2500 (287 cases, IMUL's
-      undefined SF/PF/AF); 66E5 495/500, E5 499/500 (6 cases, IN from a
-      peripheral port); 6766A5, 6766AB, 67A5, 67AB, one each (4 cases,
-      self-modifying REP inside the prefetch window).  287+6+4 = 297 =
-      1758699-1758402, so the decomposition in tests/README.md accounts for
-      every failing case.
+      failures.  the 11: 0FAF 2416/2500, 660FAF 2424/2500, 670FAF 2433/2500,
+      67660FAF 2441/2500, 6769 2499/2500 (287 cases, IMUL's undefined SF/PF/AF);
+      66E5 495/500, E5 499/500 (6 cases, IN from a peripheral port); 6766A5,
+      6766AB, 67A5, 67AB, one each (4 cases, self-modifying REP inside the
+      prefetch window).  287+6+4 = 297 = 1758699-1758402, so the decomposition
+      in tests/README.md accounts for every failing case.
     test386
-      insns=79670374 halted=0 last_POST=0xFF (33 POST writes) done=1, exit 0,
-      and the 0xEE ASCII block compared line for line against
-      tests/data/test386/test386-EE-reference.txt: 44926 lines each, zero
-      differing lines.  7352fc5's claim holds.
+      last_POST=0xFF, done=1, exit 0, and the 0xEE ASCII block compared line for
+      line against tests/data/test386/test386-EE-reference.txt: 44926 lines
+      each, zero differing lines.
   the scope: SingleStepTests as run here is REAL MODE ONLY.  sst386.cc loads
   every segment register through cpu.load_segment_real for all 1.76M cases -
   grep load_segment_real in tests/sst386.cc, the comment there is "base =
@@ -45,238 +60,82 @@ both from tests/build/:
   full-system pass, which is a check of the machinery rather than per-
   instruction coverage.  the IDIV bug 7352fc5 fixed lived in exactly that gap
   and was invisible for as long as both suites existed.
+  the four harnesses added since - fpu, dpmi, ne2000, bios - narrow the gap and
+  do not close it.  three of the four drive a real-mode machine; dpmi_test is
+  the only one that runs protected-mode code, and it runs the DPMI host's own,
+  not a corpus.
 
-- CI runs the suites now, and what it does NOT cover is the thing to keep in
-view.  .github/workflows/tests.yml builds all seven harnesses and runs
-tests/run_suites.sh on every push and pull request, with the ~600MB corpora
-cached; run_suites.sh holds SingleStepTests to 1758402/1758699 and diffs
-test386's arithmetic output against the reference, which is the check that was
-missing.  It was shown to fail before it was trusted: against a core built from
-before 7352fc5 it still reports "ok reached POST 0xFF" and then fails the diff,
-which is exactly how the IDIV bug hid.
-  What that does not buy: SingleStepTests as run is real mode only, and the
-corpus injects a HALT at the exception ISRs, so 32-bit protected-mode
-instruction execution and exception delivery are still covered only by
-test386's full-system pass - a check of the machinery, not of every
-instruction.  Automating a suite does not widen it.  The release workflow is
-still the only other thing in .github/workflows/ and still touches neither
-emu88/ nor tests/.
+- CI runs the suites, and what it does NOT cover is the thing to keep in view.
+.github/workflows/tests.yml builds all eleven harnesses and runs
+tests/run_suites.sh on every push and pull request, with the corpora cached;
+run_suites.sh holds SingleStepTests to 1758402/1758699 and diffs test386's
+arithmetic output against the reference, which is the check that was missing.
+It was shown to fail before it was trusted: against a core built from before
+7352fc5 it still reports "ok reached POST 0xFF" and then fails the diff, which
+is exactly how the IDIV bug hid.
+  What that does not buy: the scope above.  Automating a suite does not widen
+it, and neither does adding harnesses beside it.  The release workflow is still
+the only other thing in .github/workflows/ and still touches neither emu88/ nor
+tests/.
+  What is NOT in CI and could be: tests/check_dosiz.sh, which builds the
+downstream consumer against this tree and runs the 37 fixtures its own ci.yml
+asserts - 27 of them protected-mode DPMI, the other 10 ordinary real-mode DOS
+programs.  It is a local gate on purpose - it needs a dosiz
+checkout this repo does not carry and must not depend on - but a CI job here
+that clones dosiz at a pinned SHA would put the only automated check on emu88's
+protected-mode behaviour in the repo that owns emu88, rather than in the one
+forbidden to fix it.  Not attempted.  Also not in CI, deliberately: the ASAN=1
+build, because the sanitized SingleStepTests run costs minutes rather than
+seconds.
 
-- dos_bios.cc and ne2000.cc are still compiled into every harness and executed
-by almost none of it.  the DPMI third of this entry closed on 2026-08-27:
-tests/dpmi_test.cc puts 378 assertions through dos_dpmi.cc, entering the way a
-client does and finding four defects.  what is left is 2196 lines of
-dos_bios.cc, reached only by whatever the INT 10h VESA path in vesa_test.cc and
-the hand-assembled INT 21h handler in dpmi_test.cc happen to touch, and 425
-lines of ne2000.cc, which nothing executes at all - grep -lni ne2000 over
-tests/*.cc still returns nothing.
-
-- emu88's x87 register stack is host double, not 80-bit extended, and nothing
-the product says admits it.  emu88.h:184 declares `double regs[8]' - 53
-mantissa bits against a 387's 64 - so a whole class of results is not
-reproducible here and will not be without a rewrite.  tests/fpu_test.cc pins 31
-of those divergences exactly rather than leaving them implicit, measured
-2026-08-27: FLD m80real of 1+2^-53 collapses to 1.0, there is no denormal
-class, no stack-overflow detection, precision control is ignored entirely,
+- emu88's x87 register stack is host double, not 80-bit extended, and that is a
+rewrite rather than a defect.  emu88.h declares `double regs[8]' - 53 mantissa
+bits against a 387's 64 - so a whole class of results is not reproducible here.
+tests/fpu_test.cc pins 31 of those divergences exactly rather than leaving them
+implicit: FLD m80real of 1+2^-53 collapses to 1.0, there is no denormal class,
+no stack-overflow detection, precision control is ignored entirely,
 FLDENV/FNSTENV are control-word-and-status-word stubs, and F2XM1 is pow(2,x)-1
 and FYL2XP1 is log2(x+1), so both lose exactly the precision those instructions
-exist to preserve.  against that, README.md advertises "Full 386 CPU with FPU
-and DPMI support" and docs/hardware-roadmap.md marks FPU done.
-  the zero-coverage half of this entry closed the same day - 437 assertions
-over ~74 mnemonics, driven as real opcode bytes through the decoder - but
-coverage does not widen the format.  neither suite could have found this:
-none of the 941 opcode files in tests/data/80386/v1_ex_real_mode begins D8..DF,
-because the capture bench was an Intel 80386EX with no FPU per
-tests/data/80386/README.md, and the mnemonic column of
-test386-EE-reference.txt is 96 distinct entries with no x87 mnemonic among
-them.  the FPU is not idle in practice - FUCOMPP was one of the four fixes
+exist to preserve.
+  the nine conformance defects that were NOT explained by the double design are
+fixed as of 2026-08-27 and are in CHANGELOG.md.  the format is not.  fixing it
+means an 80-bit soft-float register file and every arithmetic path rewritten
+against it.  the harness that would grade the result exists now, which it did
+not before, but neither validation suite can help: none of the 941 opcode files
+in tests/data/80386/v1_ex_real_mode begins D8..DF, because the capture bench was
+an Intel 80386EX with no FPU per tests/data/80386/README.md, and the mnemonic
+column of test386-EE-reference.txt is 96 distinct entries with no x87 mnemonic
+among them.  the FPU is not idle in practice - FUCOMPP was one of the four fixes
 adopted from dosiz in e89af9c, found because GCC emits it for long-double
 comparisons.
-
-- thirteen emu88 defects are recorded by the two new harnesses and none of them
-is fixed.  tests/fpu_test.cc holds nine and tests/dpmi_test.cc four, each as a
-bug() assertion stating the architecturally correct answer, held to a
-KNOWN_BUGS_EXPECTED baseline the way run_suites.sh holds SingleStepTests to
-SST_BASELINE - so fixing one turns the harness red and says to lower the
-number, rather than going quietly green.  tests/README.md sections 4 and 5
-describe each one.  measured 2026-08-27 against f265310.
-  two of them are worth doing first, both in the DPMI host and both reachable
-by any ordinary client.  emu88/dos_dpmi.cc case 0x0002 checks its seg_map
-cache and then runs `break', which leaves the enclosing for loop rather than
-the switch case, so the allocate-a-new-descriptor path below runs anyway: every
-repeat lookup of one real-mode segment burns another LDT entry, and DJGPP's
-__dpmi_segment_to_descriptor called in a loop walks through all 2047.  the fix
-is `return' and the harness goes green on it with no other edit.  and
-dpmi_reflect_to_rm computes rm_sp = stack_top & 0x0F, which is 0 for every
-512-byte-aligned level, so the first push wraps SP to FFFEh and every reflected
-real-mode interrupt lands its frame at physical 171FAh - 64KB above the
-7000h-8000h locked stack the comment says is reserved for it, which in a real
-session is the DOS kernel, a driver, or the client's own image.
-  the remaining eleven are smaller: a process-global callback counter that
-0304h never reclaims, 0400h advertising virtual memory this host has no paging
-for, and nine x87 conformance defects of which FCOMI leaving OF/SF/AF untouched
-is the one a compiled program is most likely to notice - guest code that does
-FCOMI and branches JL/JLE/JG/JGE reads whatever the last integer instruction
-left behind.
-  fixing any of them is a change to a file dosiz compiles out of this tree, so
-it reaches them on their next pin bump.  that is the argument for doing it
-deliberately rather than as a drive-by, and it is why nothing here is fixed
-yet.
-
-- neither new harness reaches everything, and tests/README.md says where.
-FIST/FISTP of an out-of-range value is deliberately untested because the code
-casts a double straight to int32_t, which is UB rather than the 387's #IA, so a
-test there tests the compiler.  DD C8-CF and DE D8+i for i != 1 are undefined
-or do nothing.  FWAIT is in emu88.cc, not emu88_fpu.cc.  and the DPMI
-descriptor services 0006h-000Ch accept a GDT selector or an out-of-range LDT
-index and read or write past the end of the LDT rather than returning 8022h -
-recorded rather than asserted, because a test could only pin the out-of-bounds
-access.
-
-- nothing in this repo records that dosiz compiles six of these emu88 files
-straight out of this working tree, and nothing gates a change to them.
-dosiz/src/CMakeLists.txt sets EMU88_DIR to
-${CMAKE_SOURCE_DIR}/../../qxDOS/emu88 and lists emu88.cc, emu88_pmode.cc,
-emu88_fpu.cc, emu88_mem.cc, opl.cc and sound_blaster.cc.  not a submodule, not
-a vendored copy, not a pinned SHA - a relative path into a sibling checkout,
-with no version constant, no checksum and no build stamp.  dosiz/CLAUDE.md says
-which way the obligation runs: "emu88 belongs to qxDOS.  Do not fix emu88 bugs
-from this repo", and points at qxDOS/tests/ as the gate.  grepping this repo
-for the word dosiz finds three incidental code comments (emu88/audio_device.h,
-emu88/dos_machine.h, docs/hardware-roadmap.md) and, in CHANGELOG.md, two
-entries recording fixes that came the other way (:146, :162).  nothing in
-README.md, CLAUDE.md or tests/README.md names the dependency at all, and
-nothing anywhere states the obligation as a rule.  so a commit here lands in
-dosiz's
-next `make` silently. the coverage runs the wrong way round, too: this repo
-owns the suites and they are real-mode-per-instruction plus one ROM, while
-dosiz owns roughly thirty protected-mode DPMI fixtures in its ci.yml
-(DPMI_STAGE4/5/5_32/6, DPMI_RMCB, DPMI_DESCMGMT, DPMI_PMIDT, EMS/VCPI probes, a
-djgpp set) as committed .COM/.EXE binaries - so the only automated check on
-emu88's protected-mode behaviour lives in the repo that is forbidden to fix
-emu88. 7352fc5's own message asserts dosiz "builds clean and behaves
-identically before and after"; that was checked by hand and nothing in either
-repo can reproduce it. writing the obligation down here is the cheap half; a
-gate is the real work.
-
-- dosiz's CI could not configure, was confirmed and fixed on 2026-08-27, and
-what is left is the asymmetry.  It is not "probably" any more: a fresh clone
-plus `make` reproduced the FATAL_ERROR exactly as predicted, and dosiz eeefe79
-now checks this repository out into its workspace and passes EMU88_DIR
-explicitly, pinned at a full 40-character SHA (a short one is taken for a branch
-name by actions/checkout, which failed the first dispatched run).  That job is
-green.
-  So a commit here can no longer break dosiz's BUILD without someone seeing a
-red tick - but nothing tells dosiz that emu88's BEHAVIOUR moved, and nothing
-here knows dosiz pins us.  The pin lives in dosiz's workflow only; this repo
-carries no record of which of its own commits a downstream is on, and no CI job
-here builds dosiz.  Bumping that pin stays a deliberate act on their side, which
-is the intent, but it means a fix made here reaches them only when they ask for
-it.
-
-- eight `{ }`-bodied husks are what the 2026-08-26 husk count missed, and none
-of them warns.  that count was `grep -c '^[[:space:]]*;[[:space:]]*$'`, which
-finds a deleted trace only where the leftover was a bare semicolon; the same
-edit also leaves `if (...) { }` and `else { }`, and g++'s -Wempty-body fires on
-the semicolon form and not on the brace form.  eight remain, measured
-2026-08-27 on the working tree.  five are `if (...) { }`: emu88/dos_dpmi.cc:609
-and :1669, both `if (safety >= N) { }` guarding a runaway real-mode loop, so a
-runaway now exits with no report at all; emu88/dos_machine.cc:679 `if (vector
-== 0) { }`, where the comment above it still says "Log divide-by-zero
-exceptions with full context"; emu88/emu88_pmode.cc:345 `if (linear ==
-0x0049F000 && cpl == 3) { }`, inside an `#ifdef PAGING_DEBUG` that nothing in
-the tree defines; and emu88/emu88_pmode.cc:481 `if (exc_dispatch_trace) { }`,
-which is the only read of exc_dispatch_trace anywhere, so the flag set at
-dos_dpmi.cc:752 feeds an empty block.  the other three are `else { }` closing
-an opcode chain in emu88/emu88_fpu.cc, at :551, :697 and :861; `git show
-073605d:emu88/emu88_fpu.cc` shows each of them held an fprintf naming the
-unhandled op, so an unhandled FPU opcode is now silently ignored.  the two
-safety guards and the three FPU branches are the ones with an argument for
-restoring rather than deleting.
-
-- four emu88 members are written and never read, and one whole block exists to
-set them.  grep each across emu88/: rm_trace_count (set to 200 at
-emu88/dos_machine.cc:675), int2f_1687_trace_pending, int2f_trace_ret_cs and
-int2f_trace_ret_ip (set at :671-673), plus dpmi_trace_func which is only ever
-zeroed.  they are all set inside `if (ax == 0x1687)` at dos_machine.cc:669,
-whose comment reads "Set up post-return trace to log what the handler returns"
-- the post-return trace was deleted and the setup was not, so the block
-computes state nothing consumes.  gp_trace_count was a fifth and was removed on
-2026-08-27 because the dead block deleted that day was its only non-zero write;
-these four were already write-only before that and are left alone, because
-deleting int2f_1687_trace_pending means deleting code that still reads like a
-feature and that is a decision, not a cleanup.  emu88/emu88_mem.cc's
-`#include <cstdio>` is unused as well, and was before that day too.
-
-- tests/build.sh passes -Wall only, so nothing stops the -Wextra warnings
-coming back.  as of 2026-08-27 the 11 emu88/*.cc files compile with zero
-warnings under `g++ -std=c++20 -O2 -Wall -Wextra -I emu88 -c` - the 10 that
-ad01cd0's headline did not cover are fixed - but that command is neither what
-tests/build.sh runs nor what .github/workflows/tests.yml runs, so the clean
-result is a measurement and not a gate.  adding -Wextra to tests/build.sh would
-make it one.  it is not a one-line change: the harness side already emits six
-warnings under the plain -Wall build.sh passes today, measured 2026-08-27 by
-compiling each harness .cc on its own - three -Wsign-compare out of
-tests/vendor/mooreader.h as included by tests/sst386.cc, one -Wcomment each
-from tests/sb_unit.cc and tests/uart_unit.cc, and one
--Wunused-but-set-variable from tests/test386_run.cc - so that has to be dealt
-with first.  not attempted.
+  README.md and docs/hardware-roadmap.md both say this now, in those words,
+rather than advertising "Full 386 CPU with FPU".
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808
 dosbox-staging` with the directory empty.  everything measured in this file is
 the emu88 core and its harnesses, built standalone.  no statement anywhere in
 this file is evidence about the shipping app, the SwiftUI layer, the CoreAudio
-sink, the joystick path or the DOSBox backend.  those need a Mac.
+sink, the joystick path or the DOSBox backend.  those need a Mac.  the changes
+made to Swift and to a bundled help file on 2026-08-27 - emu88 described as the
+default backend rather than the alternate one, three user-visible strings - are
+string edits that were not compiled.
 
-- README.md, CLAUDE.md and docs/hardware-roadmap.md describe a product that no
-longer exists, and the two a new contributor reads first are the worst of
-them.  README.md says "using DOSBox
-Staging as the emulation engine" and "All PC emulation is provided by DOSBox
-Staging, an independent open-source project"; CLAUDE.md's first line reads
-"qxDOS - DOSBox-based DOS emulator for iOS/Mac" and its overview says
-"powered by DOSBox Staging".  against that, MachineConfig.swift has
-`var backend: EmulatorBackend = .emu88` and decodes a missing key as
-`?? .emu88`, and 932af28
-is titled "Make emu88 the default hardware backend".  README.md's Architecture
-block draws only the DOSBox tree with no emu88 branch, though
-qxDOS/Bridge/Emu88Emulator.mm and Emu88SlirpNet.mm are tracked files, and both
-README.md's licence list and ContentView.swift call emu88 "the alternate
-hardware backend", which is the reverse of the truth.  CLAUDE.md's Key
-Directories omits emu88/, tests/, scripts/ and disk-content/ entirely - the
-17226-line core and its seven harnesses are absent from the file that tells a
-newcomer where things are. separately, docs/hardware-roadmap.md says "Status
-reflects the current tree" and then contradicts itself: its own "Status update
-(core implemented)" paragraph correctly lists AdLib/OPL2+OPL3, Sound Blaster,
-PC speaker, joystick, 16550 UART, LPT and Hercules as done, while every table
-below still heads audio "the largest gap (nothing currently produces sound)",
-says "There is no host audio sink for emu88 yet", marks AdLib detect-only, SB
-DSP-detect-only, PC speaker "plumbed, silent", and OPL3, joystick, Hercules,
-UART, LPT and the 8237 DMA all not started.  all false as of 992c7fc, ea990a9
-and ac72ee6, and today's hardware_test run prints 26 ok lines covering exactly
-those devices. this is a writing job of some size and was deliberately not
-started in this pass, which was a measurement.
-
-- three smaller inaccuracies in tests/README.md, which is otherwise the one
-document in the repo that was written honestly and is the model the rest should
-follow.  its "Not covered, and not automated" section states five real gaps and
-all five check out against the source; its section 2 correction is left in
-place directly below the sentence it retracts rather than editing the false
-sentence away. what is wrong with it: (a) the pass rate in section 1 still reads
-"99.983% (1,758,403 / 1,758,700)", one case off in both numerator and
-denominator - the correct 1758402/1758699 is already in 7352fc5's commit
-message, and after this rewrite tests/README.md is the only place in the tree
-still carrying the stale pair; (b) the VESA pan clamp is described as "checked
-under AddressSanitizer" while `fsanitize` appears nowhere in the repo and the
-only hit for `sanitize` is that sentence itself, so whatever was done was a
-one-off
-that nothing committed can reproduce and no regression would be caught; (c) the
-test data is described as "~600MB" in the README and "~576MB" in
-tests/fetch_tests.sh, and tests/data measures 1.2G here - the 579M working tree
-matches those figures, but fetch_tests.sh clones with `git clone --depth 1` and
-the 567M tests/data/80386/.git it leaves behind is never reclaimed.  (a) is a
-one-line edit and is deliberately not made here for the same reason as the
-rest.
+- dosiz pins us and we do not know it, which is the half of that dependency a
+script cannot close.  tests/check_dosiz.sh builds dosiz against this tree and
+runs its fixtures (37/37 on 2026-08-27, 27 of them protected-mode DPMI, with
+zero warnings out of emu88/),
+CLAUDE.md carries the rule, and README.md names the dependency - so a change
+here can no longer reach dosiz unvalidated by accident.  what is still true:
+the pin lives in dosiz's workflow only (QXDOS_REF, a full 40-character SHA in
+.github/workflows/ci.yml), this repo carries no record of which of its own
+commits a downstream is on, and no CI job here builds dosiz.  bumping that pin
+stays a deliberate act on their side, which is the intent, but it means a fix
+made here reaches them only when they ask for it.  everything changed in
+emu88_fpu.cc on 2026-08-27 - the nine x87 conformance fixes, the FIST/FISTP
+range check that replaced an undefined-behaviour cast, and the restored
+unhandled-opcode report - is in that position now.  the other twelve fixes are
+in dos_bios.cc, dos_dpmi.cc and ne2000.cc, which dosiz does not compile.
 
 - there are no version tags, so CHANGELOG.md cannot be sliced into releases and
 is written as one Unreleased block.  `git tag -l` returns exactly one tag,
@@ -290,6 +149,8 @@ the file has also been renumbered once already: a461494 created it saying
 25) entry while setting CURRENT_PROJECT_VERSION to 27 in the same commit.
 whoever cuts the next release has to decide the scheme and tag it; until then
 "since v1.0.0" means "since the initial release, whichever commit that was".
+this is the owner's call and is why it is still open: the work is one `git tag',
+the decision is not.
 
 - docs/restart-static-state.md lists three DOSBox statics audited on
 2026-03-26, marked WRONG (minor), and never fixed: dos_windows.cpp's
@@ -298,7 +159,8 @@ psp_to_canonical_map never cleared, and soundblaster.cpp's asp_init_in_progress
 not reset in SBLASTER_Destroy().  each is argued harmless in place and each
 only bites on the DOSBox backend, which is no longer the default - so the
 priority is genuinely low.  they are open, not closed, and the doc does not
-claim otherwise. needs the DOSBox submodule initialized and a Mac to reproduce.
+claim otherwise.  needs the DOSBox submodule initialized and a Mac to
+reproduce.
 
 - the Main Thread Checker violation is a recorded decision to defer, not a
 fixed bug, and is listed here so it is not rediscovered as one.
@@ -308,3 +170,28 @@ Revisit if real-device crashes are observed."  the path documented is
 dosbox_run() on a background queue calling SDL_RenderPresent, which reads
 UIView bounds off the main thread.  DOSBox-backend only.  revisiting it needs a
 real device.
+
+- emu88's trace and debug hooks are a whole unused extension point, and this is
+the one piece of dead scaffolding the 2026-08-27 sweep deliberately did NOT
+delete.  emu88/emu88_trace.h declares a 27-line abstract class with four virtual
+hooks (comment, asm_op, flush, fetch); emu88.h holds an `emu88_trace *trace' and
+a public virtual set_trace(); emu88.cc defines a `static emu88_trace
+dummy_trace' and initialises the member to it.  `grep -rn 'trace->\|set_trace'
+over emu88/, tests/, qxDOS/ and dosiz/src/ returns one hit, the declaration of
+set_trace itself: nothing calls a hook and nothing installs a tracer.  The
+`bool debug' beside it is the same - set false in the constructor, exposed
+through set_debug(), never read.  Unlike the counters and the empty bodies that
+were deleted that day, this is a coherent designed seam rather than a leftover:
+somebody meant a disassembler to plug in here.  It is dead either way, and
+removing a public virtual from a class a second product compiles is a decision
+somebody should make on purpose.
+
+- the pre-992c7fc detect-only AdLib timer and Sound Blaster DSP stubs are still
+in dos_machine.cc's port switch, reachable when config.sound_card == 0.  a guest
+configured with no sound card therefore "detects" an AdLib at 0x388 and a DSP at
+0x220 that produce nothing, which is worse than not detecting at all - a game
+that finds an AdLib configures itself for FM music and then plays none.  no
+harness covers that configuration.  docs/hardware-roadmap.md records it on both
+the AdLib and the Sound Blaster row.  deleting the stubs is the obvious fix and
+was NOT done here: it changes what a shipping configuration reports to a guest,
+and nothing on this machine can run the shipping configuration.

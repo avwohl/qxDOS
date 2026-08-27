@@ -959,7 +959,7 @@ struct AboutView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                Text("emu88, the alternate hardware backend bundled inside qxDOS, is licensed under GPL v3 and ships in the qxDOS source tree under emu88/.")
+                Text("emu88, the default hardware backend bundled inside qxDOS, is licensed under GPL v3 and ships in the qxDOS source tree under emu88/.")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
