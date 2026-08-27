@@ -142,7 +142,6 @@ public:
   bool dpmi_exc_dispatched; // Set by DPMI dispatch — inhibits ESP rollback in insn handlers
   bool exc_dispatch_trace; // Debug: trace ESP after DPMI exception dispatch
   bool unreal_mode;        // Set when CR0.PE transitions 1→0; cleared on far JMP/segment reload
-  int gp_trace_count;      // Instructions to trace after #GP dispatch (debug)
   int rm_trace_count;      // Instructions to trace in real mode (debug)
 
   // DPMI post-call trace

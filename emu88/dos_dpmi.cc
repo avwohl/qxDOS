@@ -156,9 +156,17 @@ void dos_machine::dpmi_mode_switch() {
   memset(dpmi.ldt_alloc, 0, sizeof(dpmi.ldt_alloc));
   memset(dpmi.pm_int_installed, 0, sizeof(dpmi.pm_int_installed));
   memset(dpmi.exc_installed, 0, sizeof(dpmi.exc_installed));
-  memset(dpmi.mem_blocks, 0, sizeof(dpmi.mem_blocks));
-  memset(dpmi.dos_blocks, 0, sizeof(dpmi.dos_blocks));
-  memset(dpmi.seg_map, 0, sizeof(dpmi.seg_map));
+  // Value-initialize rather than memset: the default member initializers on
+  // MemBlock, DosBlock and SegMap make them non-trivial types, and clearing a
+  // non-trivial type with memset is -Wclass-memaccess.  (They are trivially
+  // copyable; it is default-construction that is not trivial.)  Every member
+  // is a scalar initialized to zero, so this leaves the member values memset
+  // left.  It does not rewrite the 3, 1 and 1 bytes of tail padding - nothing
+  // reads those, and the arrays' own `= {}` zeroed them at construction.
+  // Assignment stays correct if a member ever stops being a scalar.
+  for (auto &b : dpmi.mem_blocks) b = {};
+  for (auto &b : dpmi.dos_blocks) b = {};
+  for (auto &m : dpmi.seg_map)    m = {};
 
   // === GDT Setup ===
   // All at ring 0 — DOS4GW expects ring 0 operation (like CWSDPMI raw mode)
@@ -451,16 +459,6 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
 
   // CPU exceptions (vectors 0-31, confirmed not hardware IRQ)
   if (dpmi.exc_installed[vector]) {
-    // Dump LDT entries to see what's been written
-    if (vector == 0x0B) {
-      for (int e = 0; e < 80; e++) {
-        uint32_t a = ldtr_cache.base + e * 8;
-        uint8_t d[8];
-        for (int b = 0; b < 8; b++) d[b] = mem->fetch_mem(a + b);
-        if (d[0]||d[1]||d[2]||d[3]||d[4]||d[5]||d[6]||d[7])
-;
-      }
-    }
     // Build DPMI exception frame and dispatch to handler
     dpmi_dispatch_exception(vector, error_code, has_error_code);
     return true;
@@ -750,8 +748,6 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
 
   set_esp(stack_off);
 
-  // Debug: verify set_esp actually took effect
-;
   dpmi_exc_dispatched = true;  // Inhibit ESP rollback in instruction handlers
   exc_dispatch_trace = true;   // Debug: verify at next instruction
 
@@ -768,16 +764,6 @@ void dos_machine::dpmi_dispatch_exception(uint8_t vector, uint32_t error_code,
     parse_descriptor(desc, seg_cache[seg_CS]);
   }
   ip = handler_off;
-
-  // Dump the stack frame for debugging
-  {
-    static int frame_dump = 0;
-    if (frame_dump < 5) {
-      frame_dump++;
-      for (int i = 0; i < 8; i++)
-;
-    }
-  }
 
   // DPMI spec: exception handlers run with interrupts disabled (IF=0)
   // This prevents pending hardware interrupts from being delivered between
@@ -1450,19 +1436,16 @@ void dos_machine::dpmi_int31h() {
       //   This avoids corrupting high 16 bits of EDI for 16-bit DOS4GW code
       regs[reg_SI] = dpmi.bios_rom_cs;
       set_reg32(reg_DI, dpmi.raw_pm_to_rm_off);  // Just 0xEFE4
-;
       break;
     }
 
     case 0x0A00: {  // Get Vendor-Specific API Entry Point
-      // DS:ESI = vendor name string
-      uint32_t str_addr = seg_cache[seg_DS].base + get_reg32(reg_SI);
-      char vendor[32] = {};
-      for (int i = 0; i < 31; i++) {
-        char c = (char)mem->fetch_mem(str_addr + i);
-        if (!c) break;
-        vendor[i] = c;
-      }
+      // DS:ESI points at the vendor name string.  No vendor API is
+      // implemented, so the name is not read: the 31-byte copy that used to
+      // stand here filled a buffer nothing compared against (-Wunused-but-
+      // set-variable).  Implementing a vendor API means reading it here and
+      // returning ES:EDI for a match; until then the answer is the same for
+      // every name.
       // Not supported — return CF
       set_flag(FLAG_CF);
       regs[reg_AX] = 0x8001;

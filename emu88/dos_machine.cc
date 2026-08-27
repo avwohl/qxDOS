@@ -471,8 +471,6 @@ bool dos_machine::boot(int drive) {
   if (n < 512) {
     return false;
   }
-  if (sector[510] != 0x55 || sector[511] != 0xAA)
-;
 
   for (int i = 0; i < 512; i++)
     mem->store_mem(BOOT_LOAD_ADDR + i, sector[i]);
@@ -566,18 +564,6 @@ bool dos_machine::run_batch(int count) {
       cycles = tick_cycle_mark + CYCLES_PER_TICK;
     } else {
       execute();
-      static long exec_count = 0;
-      exec_count++;
-      if (exec_count == 1 || exec_count == 100000 || exec_count == 1000000 ||
-          (exec_count % 10000000 == 0))
-;
-      // Dump boot sector at the stuck address
-      if (exec_count == 100000 && ip == 0x7C31) {
-        for (int a = 0x7C20; a < 0x7C50; a += 16) {
-          for (int b = 0; b < 16; b++)
-;
-        }
-      }
     }
 
     // Timer tick (cycle-based: 18.2 Hz at 4.77 MHz)
@@ -677,19 +663,10 @@ void dos_machine::dispatch_bios(uint8_t vector) {
 }
 
 void dos_machine::do_interrupt(emu88_uint8 vector) {
-  // Debug: count interrupts to verify do_interrupt is called
-  static long int_count = 0;
-  int_count++;
-  if (int_count == 1 || int_count == 100000 || int_count == 1000000)
-;
-
   // Trace DPMI and program termination
   if (vector == 0x2F && !protected_mode()) {
     uint16_t ax = regs[reg_AX];
     if (ax == 0x1687) {
-      static int dpmi_log = 0;
-      if (dpmi_log++ < 5)
-;
       // Set up post-return trace to log what the handler returns
       int2f_1687_trace_pending = true;
       int2f_trace_ret_cs = sregs[seg_CS];
@@ -932,14 +909,12 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
     case 0x21:
       if (pic_init_step == 1) {
         pic_vector_base = value; pic_init_step = 2;  // ICW2
-;
       } else if (pic_init_step == 2) {
         pic_init_step = pic_icw4_needed ? 3 : 0;  // ICW3, then ICW4 if needed
       } else if (pic_init_step == 3) {
         pic_init_step = 0;  // ICW4
       } else {
         pic_imr = value;     // OCW1
-;
       }
       break;
 
@@ -1241,8 +1216,6 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
 
     // --- CMOS RTC ---
     case 0x71:
-      if (cmos_index >= 0x15 && cmos_index <= 0x35)
-;
       return cmos_data[cmos_index];
 
     // --- CGA status ---

@@ -624,11 +624,6 @@ void dos_machine::bios_int13h() {
   uint8_t ah = get_reg8(reg_AH);
   uint8_t dl = get_reg8(reg_DL);  // Drive number
 
-#ifdef DISK_TRACE
-  if (dl >= 0xE0)
-;
-#endif
-
   switch (ah) {
     case 0x00: {  // Reset disk system
       set_reg8(reg_AH, 0);
@@ -662,10 +657,6 @@ void dos_machine::bios_int13h() {
       uint64_t offset = lba * g.sector_size;
 
       uint32_t buf_addr = EMU88_MK20(sregs[seg_ES], regs[reg_BX]);
-
-#ifdef DISK_TRACE
-;
-#endif
 
       uint8_t sectors_read = 0;
       for (int i = 0; i < count; i++) {
@@ -827,10 +818,6 @@ void dos_machine::bios_int13h() {
       uint64_t offset = (uint64_t)lba_lo * sec_size;
       uint32_t buf_addr = EMU88_MK20(buf_seg, buf_off);
 
-#ifdef DISK_TRACE
-      if (dl >= 0xE0)
-;
-#endif
       uint16_t sectors_read = 0;
       for (uint16_t i = 0; i < count; i++) {
         uint8_t buf[2048];
@@ -846,11 +833,6 @@ void dos_machine::bios_int13h() {
       // Update count in DAP
       mem->store_mem(dap_addr + 2, sectors_read & 0xFF);
       mem->store_mem(dap_addr + 3, (sectors_read >> 8) & 0xFF);
-
-#ifdef DISK_TRACE
-      if (dl >= 0xE0 && sectors_read != count)
-;
-#endif
 
       set_reg8(reg_AH, sectors_read == count ? 0 : 0x04);
       set_flag_val(FLAG_CF, sectors_read != count);

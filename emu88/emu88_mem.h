@@ -11,8 +11,6 @@ class emu88_mem {
   emu88_uint32 mem_size;
   bool a20_enabled;
 public:
-  emu88_uint32 watchpoint_addr = 0xFFFFFFFF;  // debug: physical addr to watch
-  bool ivt21_trap = false;  // temp: set by store_mem when IVT[21h] is modified
 
   // VGA plane state (set by dos_machine for Mode X support)
   bool vga_planar = false;        // true when unchained (Mode X), false for chain-4 (Mode 13h)

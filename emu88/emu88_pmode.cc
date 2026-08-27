@@ -34,7 +34,6 @@ void emu88::init_seg_caches(void) {
   cr4 = 0;
   in_exception = false;
   unreal_mode = false;
-  gp_trace_count = 0;
   rm_trace_count = 0;
   dpmi_trace_func = 0;
   int2f_1687_trace_pending = false;
@@ -362,14 +361,6 @@ emu88_uint32 emu88::translate_linear(emu88_uint32 linear, bool write) {
 
   // Check PDE present
   if (!(pde & 1)) {
-    static int pf_pde_log = 0;
-    if (pf_pde_log < 10) {
-      pf_pde_log++;
-      // Dump all 16 PDE entries for context
-;
-      for (int i = 0; i < 16; i++) {
-      }
-    }
     cr2 = linear;
     // Error code: bit 0 = not present, bit 1 = write, bit 2 = user
     emu88_uint32 error = (write ? 0x02 : 0x00) | (cpl == 3 ? 0x04 : 0x00);
@@ -726,28 +717,6 @@ void emu88::do_interrupt_pm(emu88_uint8 vector, bool has_error_code,
   seg_cache[seg_CS] = new_cs_cache;
   cpl = new_cpl;
   ip = is_32bit ? new_eip : (new_eip & 0xFFFF);
-
-  // Trace #GP/#PF handler dispatch
-  if (vector == 0x0D || vector == 0x0E) {
-    static int gp_trace = 0;
-    if (gp_trace < 0) {  // disabled — using post-call trace instead
-      gp_trace++;
-      gp_trace_count = 300;  // trace handler flow
-;
-      // Dump handler code bytes
-;
-      for (int i = 0; i < 32; i++)
-;
-      // Dump the stack frame we just built
-;
-      for (int i = 0; i < 28; i += 4) {
-      }
-      // Dump DS, ES, FS, GS state
-;
-      // Dump LDT info
-;
-    }
-  }
 }
 
 //=============================================================================
@@ -1267,7 +1236,6 @@ void emu88::raise_exception(emu88_uint8 vector, emu88_uint32 error_code) {
       return;
     }
     // First exception during exception dispatch → double fault (#DF)
-;
     in_double_fault = true;
     if (protected_mode()) {
       do_interrupt_pm(8, true, 0);  // #DF with error code 0

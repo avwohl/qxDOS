@@ -188,7 +188,6 @@ void emu88::reset(void) {
   dpmi_exc_dispatched = false;
   exc_dispatch_trace = false;
   unreal_mode = false;
-  gp_trace_count = 0;
   rm_trace_count = 0;
   dpmi_trace_func = 0;
   cycles = 0;
@@ -4553,7 +4552,6 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       switch (mr.reg_field) {
       case 0: // SLDT: store LDT selector
-;
         set_rm16(mr, ldtr);
         break;
       case 1: // STR: store Task Register selector
@@ -4664,7 +4662,6 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       switch (mr.reg_field) {
       case 0: // SGDT: store 6 bytes (limit:base) to memory
-;
         store_word(mr.seg, mr.offset, gdtr_limit);
         store_word(mr.seg, ea_add(mr.offset, 2), gdtr_base & 0xFFFF);
         store_byte(mr.seg, ea_add(mr.offset, 4), (gdtr_base >> 16) & 0xFF);

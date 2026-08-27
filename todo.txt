@@ -6,8 +6,12 @@ is no issue tracker.
 
 Everything below was measured on 2026-08-26 against HEAD 7352fc5 on a linux
 x86_64 box with g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0, no clang, no Xcode, and
-the dosbox-staging submodule uninitialized.  Where something was read off a
-file rather than run, the entry says so.
+the dosbox-staging submodule uninitialized.  Four entries name 2026-08-27
+instead: three of them - the `{ }` husks, the write-only members and the
+-Wextra gate - were measured that day on the same box against f265310 plus the
+uncommitted dead-code removal described in CHANGELOG.md, and the fourth
+records dosiz's CI being fixed that day.  Where something was read off a file
+rather than run, the entry says so.
 
 - the two validation runs are worth quoting, and worth quoting with their scope
 attached, because the scope is what went wrong last time.  re-measured today,
@@ -121,48 +125,53 @@ here builds dosiz.  Bumping that pin stays a deliberate act on their side, which
 is the intent, but it means a fix made here reaches them only when they ask for
 it.
 
-- emu88_mem::store_mem carries four dead debug blocks on the path taken by
-every guest byte write, and that path is shared with dosiz.  grep
-watchpoint_addr in emu88/emu88_mem.cc: a three-way range compare whose body is
-`{ }`. below it, an IVT[21h] block commented "temp debug" that reads
-dat[masked], sets ivt21_trap = true and then executes a bare `;`.  grep
-ivt21_trap across emu88/ returns exactly two hits - that write and its
-declaration in emu88_mem.h - so nothing anywhere reads the flag.  below that,
-two blocks marked "temporary debug" over the DPMI LDT range
-0x00FE2860..0x00FE6800 and the GDT range 0x00FE0000..0x00FE2000, whose bodies
-now only increment a static counter that fed a print that was deleted. every
-store pays the compares. the cost was not measured, and that is the argument
-for deleting them rather than a reason to keep them.
+- eight `{ }`-bodied husks are what the 2026-08-26 husk count missed, and none
+of them warns.  that count was `grep -c '^[[:space:]]*;[[:space:]]*$'`, which
+finds a deleted trace only where the leftover was a bare semicolon; the same
+edit also leaves `if (...) { }` and `else { }`, and g++'s -Wempty-body fires on
+the semicolon form and not on the brace form.  eight remain, measured
+2026-08-27 on the working tree.  five are `if (...) { }`: emu88/dos_dpmi.cc:609
+and :1669, both `if (safety >= N) { }` guarding a runaway real-mode loop, so a
+runaway now exits with no report at all; emu88/dos_machine.cc:679 `if (vector
+== 0) { }`, where the comment above it still says "Log divide-by-zero
+exceptions with full context"; emu88/emu88_pmode.cc:345 `if (linear ==
+0x0049F000 && cpl == 3) { }`, inside an `#ifdef PAGING_DEBUG` that nothing in
+the tree defines; and emu88/emu88_pmode.cc:481 `if (exc_dispatch_trace) { }`,
+which is the only read of exc_dispatch_trace anywhere, so the flag set at
+dos_dpmi.cc:752 feeds an empty block.  the other three are `else { }` closing
+an opcode chain in emu88/emu88_fpu.cc, at :551, :697 and :861; `git show
+073605d:emu88/emu88_fpu.cc` shows each of them held an fprintf naming the
+unhandled op, so an unhandled FPU opcode is now silently ignored.  the two
+safety guards and the three FPU branches are the ones with an argument for
+restoring rather than deleting.
 
-- an 80-entry LDT dump runs on every intercepted #NP and feeds a print that no
-longer exists: 640 fetch_mem calls to decide whether to execute a bare `;`.  in
-emu88/dos_dpmi.cc, inside the `if (dpmi.exc_installed[vector])` block, `if
-(vector == 0x0B)` loops e from 0 to 79 reading eight bytes each through
-mem->fetch_mem, ORs all eight together and runs an empty statement.  ad01cd0's
-own closing paragraph flagged it - "One is not free: an LDT dump on every
-intercepted #NP still costs 640 memory reads.  Worth a separate sweep." - and
-no commit since has touched it.  #NP is the segment-not-present path a DPMI
-client takes routinely.
+- four emu88 members are written and never read, and one whole block exists to
+set them.  grep each across emu88/: rm_trace_count (set to 200 at
+emu88/dos_machine.cc:675), int2f_1687_trace_pending, int2f_trace_ret_cs and
+int2f_trace_ret_ip (set at :671-673), plus dpmi_trace_func which is only ever
+zeroed.  they are all set inside `if (ax == 0x1687)` at dos_machine.cc:669,
+whose comment reads "Set up post-return trace to log what the handler returns"
+- the post-return trace was deleted and the setup was not, so the block
+computes state nothing consumes.  gp_trace_count was a fifth and was removed on
+2026-08-27 because the dead block deleted that day was its only non-zero write;
+these four were already write-only before that and are left alone, because
+deleting int2f_1687_trace_pending means deleting code that still reads like a
+feature and that is a decision, not a cleanup.  emu88/emu88_mem.cc's
+`#include <cstdio>` is unused as well, and was before that day too.
 
-- 27 removed-trace husks remain across six emu88 files, and emu88 does not
-build warning-free under g++.  counting bare-semicolon lines with grep -c
-'^[[:space:]]*;[[:space:]]*$': dos_machine.cc 8, emu88_pmode.cc 8, dos_dpmi.cc
-4, dos_bios.cc 4, emu88.cc 2, emu88_mem.cc 1.  ad01cd0 named only
-dos_machine.cc, dos_dpmi.cc and emu88_mem.cc, so dos_bios.cc, emu88_pmode.cc
-and emu88.cc were missed.  they are inert rather than a dropped statement -
-`git show 073605d:emu88/dos_machine.cc` shows the first of them was a plain
-fprintf with no control flow - but six of them are visible warnings: compiling
-the 11 emu88 .cc files with `g++ -std=c++20 -O2 -Wall -Wextra -I emu88 -c`
-gives 10 warnings, six -Wempty-body (dos_machine.cc x5, dos_dpmi.cc x1), three
--Wclass-memaccess (three consecutive memsets over the non-trivial MemBlock,
-DosBlock and SegMap members of DpmiState, in the dpmi init path) and one
--Wunused-but-set-variable (the `char vendor[32]` read but never used in DPMI
-0x0A00, Get Vendor-Specific API Entry Point - which is a real unimplemented
-service, not just a dead variable).  ad01cd0's headline is "emu88 built with 20
-warnings under -Wall -Wextra and now builds with none"; that was true of clang
-and carries no compiler qualifier.  note also that tests/build.sh passes -Wall
-only, so the flag set the claim was measured under is not the one the build
-script uses.
+- tests/build.sh passes -Wall only, so nothing stops the -Wextra warnings
+coming back.  as of 2026-08-27 the 11 emu88/*.cc files compile with zero
+warnings under `g++ -std=c++20 -O2 -Wall -Wextra -I emu88 -c` - the 10 that
+ad01cd0's headline did not cover are fixed - but that command is neither what
+tests/build.sh runs nor what .github/workflows/tests.yml runs, so the clean
+result is a measurement and not a gate.  adding -Wextra to tests/build.sh would
+make it one.  it is not a one-line change: the harness side already emits six
+warnings under the plain -Wall build.sh passes today, measured 2026-08-27 by
+compiling each harness .cc on its own - three -Wsign-compare out of
+tests/vendor/mooreader.h as included by tests/sst386.cc, one -Wcomment each
+from tests/sb_unit.cc and tests/uart_unit.cc, and one
+-Wunused-but-set-variable from tests/test386_run.cc - so that has to be dealt
+with first.  not attempted.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808

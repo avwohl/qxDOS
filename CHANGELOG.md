@@ -213,12 +213,48 @@ and not for what comes after it.
   073605d rather than guessed. One genuine correction came out of it: a bitwise
   OR between `FlagBits` and `EFlagBits` in the DPMI code, deprecated in C++20
   and slated to become an error, replaced with a named `uint16_t` constant after
-  checking both forms over the full input space. **The headline carries no
-  compiler qualifier and needs one.** Compiling the 11 `emu88/*.cc` files today
-  with `g++ -std=c++20 -O2 -Wall -Wextra -I emu88 -c` gives **10** warnings: six
-  `-Wempty-body`, three `-Wclass-memaccess` and one
-  `-Wunused-but-set-variable`. 27 removed-trace husks remain across six files,
-  three of which that commit did not name. In `todo.txt`.
+  checking both forms over the full input space. **The headline carried no
+  compiler qualifier**: it was true of clang, and under
+  `g++ -std=c++20 -O2 -Wall -Wextra -I emu88 -c` the 11 `emu88/*.cc` files still
+  gave **10** warnings, with 27 removed-trace husks across six files, three of
+  which that commit did not name. Both are closed by the sweep below.
+- **The dead-code sweep** that closes both: 152 deletions against 17
+  insertions across eight `emu88` files, again with nothing suppressed. Three
+  pieces of it were not free, and all three sit on paths dosiz compiles out of
+  this tree. Four debug blocks in `emu88_mem::store_mem`, which every guest
+  byte write paid for, one of them setting `ivt21_trap` on any write that
+  changed `IVT[21h]` - `git grep ivt21_trap` across `emu88/` at f265310
+  returns exactly two hits, that write and its declaration, so nothing had
+  ever read the flag. An 80-entry LDT dump on every intercepted `#NP`: 640
+  `fetch_mem` calls to decide whether to execute a bare `;`, on the
+  segment-not-present path a DPMI client takes routinely, which ad01cd0's own
+  closing paragraph had flagged and no commit since had touched. And the `char
+  vendor[32]` filled but never compared in DPMI `0x0A00`, Get Vendor-Specific
+  API Entry Point - a real unimplemented service rather than a dead variable,
+  so what stands in its place is a comment saying what implementing it would
+  need. The three `-Wclass-memaccess` `memset`s over `MemBlock`, `DosBlock`
+  and `SegMap` became per-element `= {}`. All eleven members are scalars
+  initialized to zero, so the values are the ones `memset` left; the 3, 1 and
+  1 bytes of tail padding it also cleared are already zero from the arrays'
+  own `= {}` and are read by nothing. The three are non-trivial types, which
+  is what the warning is about - they are trivially copyable.
+  `gp_trace_count`, `watchpoint_addr` and `ivt21_trap` went with the code that
+  wrote them. The 11 `emu88/*.cc` files now give **zero** warnings under `g++
+  -std=c++20 -O2 -Wall -Wextra -I emu88 -c`, and 27 bare-semicolon husks
+  across six files became none.
+- **What that sweep deliberately left**, because deleting it is a decision
+  rather than a cleanup, is in [`todo.txt`](todo.txt): eight `{ }`-bodied
+  husks that no warning finds, since `-Wempty-body` fires on the semicolon
+  form and not the brace form - two of them guard a runaway real-mode loop
+  that now exits with no report at all, and three are `else { }` branches in
+  `emu88_fpu.cc` that each once named an unhandled FPU opcode, so one is now
+  silently ignored; four members still written and never read, whose names
+  still read like a feature; and `-Wextra` still absent from `tests/build.sh`,
+  so the zero above is a measurement and not a gate. Held to
+  `tests/run_suites.sh` throughout: SingleStepTests 1,758,402 of 1,758,699,
+  matching the recorded baseline exactly, and `test386.asm` reaching POST 0xFF
+  with its arithmetic output identical to the reference across all 44,926
+  lines.
 - **The DOSBox backend quits by ending the process** (5d200dd), rather than
   attempting an in-process restart. DOSBox's static and global state makes
   reliable restart impractical; an `atexit` handler calling `_exit(0)` keeps

@@ -78,41 +78,6 @@ void emu88_mem::store_mem(emu88_uint32 addr, emu88_uint8 abyte) {
     }
     return;
   }
-  if (watchpoint_addr != 0xFFFFFFFF) {
-    emu88_uint32 base = watchpoint_addr - 0x2E;
-    // Watch [002E], [0098]-[009F], [099E]-[099F]
-    if (masked == watchpoint_addr ||
-        (masked >= base + 0x98 && masked <= base + 0x9F) ||
-        (masked >= base + 0x99E && masked <= base + 0x99F)) {
-    }
-  }
-  // IVT[21h] watchpoint: catch whatever zeroes it (temp debug)
-  if (masked >= 0x84 && masked <= 0x87) {
-    if (dat[masked] != abyte) {
-      ivt21_trap = true;  // Signal CPU to log CS:IP
-;
-    }
-  }
-  // Trace writes to DPMI LDT area (entries 12+) - temporary debug
-  if (masked >= 0x00FE2860 && masked < 0x00FE6800) {
-    static int ldt_write_log = 0;
-    if (ldt_write_log < 500) {
-      // Only log non-zero writes after the first 100 (skip init zeroing)
-      if (ldt_write_log < 100 || abyte != 0x00) {
-        ldt_write_log++;
-      }
-    }
-  }
-  // Trace writes to DPMI GDT area (all entries) - temporary debug
-  if (masked >= 0x00FE0000 && masked < 0x00FE2000) {
-    static int gdt_write_log = 0;
-    if (gdt_write_log < 200) {
-      // Only log non-zero writes after the first 50 (skip init zeroing)
-      if (gdt_write_log < 50 || abyte != 0x00) {
-        gdt_write_log++;
-      }
-    }
-  }
   dat[masked] = abyte;
 }
 
