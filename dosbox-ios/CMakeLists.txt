@@ -255,7 +255,6 @@ add_library(dosbox-core STATIC
     ${DB}/dos/programs/help.cpp
     ${DB}/dos/programs/makeimg.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgmount_fix.cpp
-    ${DB}/dos/programs/intro.cpp
     ${DB}/dos/programs/keyb.cpp
     ${DB}/dos/programs/loadfix.cpp
     ${DB}/dos/programs/loadrom.cpp
@@ -278,11 +277,11 @@ add_library(dosbox-core STATIC
     ${DB}/dos/programs/tree.cpp
 
     # GUI
-    ${DB}/gui/auto_image_adjustments.cpp
+    ${DB}/gui/render/auto_image_adjustments.cpp
     ${DB}/gui/clipboard.cpp
     ${DB}/gui/mapper.cpp
     ${DB}/gui/sdl_gui.cpp
-    ${DB}/gui/shader_manager.cpp
+    ${DB}/gui/render/shader_manager.cpp
     ${DB}/gui/titlebar.cpp
     ${DB}/gui/render/deinterlacer.cpp
     ${DB}/gui/render/render.cpp

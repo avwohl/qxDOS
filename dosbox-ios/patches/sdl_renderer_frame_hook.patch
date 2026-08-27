@@ -1,44 +1,31 @@
 --- a/src/gui/render/sdl_renderer.cpp
 +++ b/src/gui/render/sdl_renderer.cpp
 @@ -13,6 +13,11 @@
-
+ 
  CHECK_NARROWING();
-
+ 
 +// External frame hook — implemented in dosbox_bridge.cpp when embedded in iOS/macOS app.
 +// Called after each frame is presented.  Weak linkage so it's optional.
 +extern "C" void __attribute__((weak)) dosbox_on_frame_presented(
 +    const uint8_t *pixels, int width, int height, int pitch, uint32_t format);
 +
  static constexpr uint32_t SdlPixelFormat = SDL_PIXELFORMAT_ARGB8888;
-
+ 
  SdlRenderer::SdlRenderer(const int x, const int y, const int width,
-@@ -306,12 +311,6 @@ void SdlRenderer::EndFrame()
- 		SDL_LockSurface(last_framebuf);
+@@ -355,6 +360,16 @@
  	}
-
--	// We need to copy the buffers. We can't just swap them because the VGA
--	// emulation only writes the changed pixels to the framebuffer in each
--	// frame.
--
--	// TODO Couldn't get SDL_BlitSurface to work... If you can, feel free to
--	// use that here, but this works perfectly fine.
- 	std::memcpy(last_framebuf->pixels,
- 	            curr_framebuf->pixels,
- 	            (curr_framebuf->h * curr_framebuf->pitch));
-@@ -355,6 +354,16 @@ void SdlRenderer::PresentFrame()
- 	}
-
+ 
  	SDL_RenderPresent(renderer);
 +
 +	// Notify bridge of new frame (for iOS/macOS frame capture)
-+	if (dosbox_on_frame_presented && last_framebuf) {
++	if (dosbox_on_frame_presented && last_framebuf.surface) {
 +		dosbox_on_frame_presented(
-+			static_cast<const uint8_t*>(last_framebuf->pixels),
-+			last_framebuf->w,
-+			last_framebuf->h,
-+			last_framebuf->pitch,
++			static_cast<const uint8_t*>(last_framebuf.surface->pixels),
++			last_framebuf.surface->w,
++			last_framebuf.surface->h,
++			last_framebuf.surface->pitch,
 +			SdlPixelFormat);
 +	}
  }
-
+ 
  void SdlRenderer::SetVsync(const bool is_enabled)
