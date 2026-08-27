@@ -1,0 +1,12 @@
+--- a/src/cpu/cpu.cpp
++++ b/src/cpu/cpu.cpp
+@@ -3746,6 +3746,9 @@
+ #endif
+ 
+ 	cpu_instance.reset();
++
++	// qxDOS: one-shot guard, so a second CPU_Init() would skip all of it.
++	Cpu::initialised = false;
+ }
+ 
+ static void notify_cpu_setting_updated([[maybe_unused]] SectionProp& section,

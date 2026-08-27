@@ -1,0 +1,20 @@
+--- a/src/shell/autoexec.cpp
++++ b/src/shell/autoexec.cpp
+@@ -869,6 +869,17 @@
+ 
+ void AUTOEXEC_Init()
+ {
++	// qxDOS: these six file-scope statics survive teardown, and
++	// create_autoexec_bat_utf8() asserts autoexec_bat_utf8 is empty, so a
++	// second init crashes in a debug build and accumulates stale state in a
++	// release one.
++	autoexec_bat_utf8     = {};
++	autoexec_bat_bin      = {};
++	vfile_code_page       = {};
++	autoexec_has_echo_off = false;
++	autoexec_variables    = {};
++	autoexec_lines        = {};
++
+ 	auto section = get_autoexec_section("autoexec");
+ 	assert(section);
+ 

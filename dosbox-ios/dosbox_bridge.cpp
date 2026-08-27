@@ -46,6 +46,12 @@ CHECK_NARROWING();
 // Global config pointer (declared extern in DOSBox)
 extern std::unique_ptr<Config> control;
 
+// Added to dosbox.cpp by patches/restart_clear_shutdown_request.patch, which
+// cannot also touch dosbox.h without the patched header having to win the
+// include path.  Declared here instead: upstream only ever SETS the shutdown
+// flag, so an in-process restart needs a way to clear it.
+void DOSBOX_ClearShutdownRequest();
+
 static std::atomic<bool> s_running{false};
 static std::atomic<bool> s_atexit_registered{false};
 static dosbox_frame_callback_t s_frame_cb = nullptr;

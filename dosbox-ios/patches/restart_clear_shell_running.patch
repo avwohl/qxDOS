@@ -1,0 +1,13 @@
+--- a/src/shell/shell.cpp
++++ b/src/shell/shell.cpp
+@@ -492,6 +492,10 @@
+ 			ParseLine(input_line);
+ 		}
+ 	}
++
++	// qxDOS: upstream never clears this, so SHELL_IsRunning() stays true forever
++	// once the shell has run - wrong for a host that restarts in-process.
++	is_shell_running = false;
+ }
+ 
+ bool SHELL_IsRunning()

@@ -11,6 +11,11 @@
 // Version
 #define DOSBOX_VERSION "0.83.0-ios"
 #define BUILD_GIT_HASH "ios"
+// Added to DOSBox's generated config in v0.83.0 and consumed by the new GUIDE
+// and MANUAL programs (dos/programs/guide.cpp:31,39 and manual.cpp:31,39) as a
+// %s in a docs path and a dosbox-staging.org URL, so it is the major.minor pair
+// only - "0.83", not the full DOSBOX_VERSION above.
+#define DOSBOX_VERSION_SHORT "0.83"
 
 // Operating System — iOS is Darwin-based like macOS
 // We don't define MACOSX because some code paths assume desktop macOS

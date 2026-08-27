@@ -11,20 +11,27 @@ void WEBSERVER_Init() {}
 void WEBSERVER_Destroy() {}
 void WEBSERVER_AddConfigSection([[maybe_unused]] const ConfigPtr& conf) {}
 
-// DebugBridge and DebugCommand stubs
+// Added upstream in v0.83.0 and called from dosbox.cpp's main loop before it
+// dispatches to the bridge, so it has to exist here or the link fails.  Saying
+// "not enabled" also makes the Bridge::Instance() call in normal_loop()
+// unreachable, which is the point of stubbing this out at all.
+bool WEBSERVER_IsEnabled() { return false; }
+
+// Webserver::DebugCommand and Webserver::DebugBridge were renamed to Command
+// and Bridge upstream during the v0.83.0 bump.
 namespace Webserver {
 
-void DebugCommand::WaitForCompletion([[maybe_unused]] const uint32_t timeout_ms) {}
+void Command::WaitForCompletion([[maybe_unused]] const uint32_t timeout_ms) {}
 
-DebugBridge& DebugBridge::Instance()
+Bridge& Bridge::Instance()
 {
-    static DebugBridge instance;
+    static Bridge instance;
     return instance;
 }
 
-void DebugBridge::ExecuteCommand([[maybe_unused]] DebugCommand& cmd,
-                                  [[maybe_unused]] const uint32_t timeout_ms) {}
+void Bridge::ExecuteCommand([[maybe_unused]] Command& cmd,
+                            [[maybe_unused]] const uint32_t timeout_ms) {}
 
-void DebugBridge::ProcessRequests() {}
+void Bridge::ProcessRequests() {}
 
 } // namespace Webserver

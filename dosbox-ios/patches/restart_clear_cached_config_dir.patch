@@ -1,0 +1,12 @@
+--- a/src/misc/cross.cpp
++++ b/src/misc/cross.cpp
+@@ -176,6 +176,9 @@
+ 
+ void init_config_dir()
+ {
++	// qxDOS: one-time cache, so a restart would keep the first run's path.
++	cached_config_dir.clear();
++
+ 	if (cached_config_dir.empty()) {
+ 		// Check if a portable layout exists
+ 		const auto portable_conf_path = get_executable_path() /

@@ -1,0 +1,16 @@
+--- a/src/dosbox.cpp
++++ b/src/dosbox.cpp
+@@ -425,6 +425,13 @@
+ 		;
+ }
+ 
++// qxDOS: the host restarts the emulator in-process, so the shutdown flag has to
++// be clearable.  Upstream only ever sets it.
++void DOSBOX_ClearShutdownRequest()
++{
++	is_shutdown_requested = false;
++}
++
+ void DOSBOX_RequestShutdown()
+ {
+ 	is_shutdown_requested = true;

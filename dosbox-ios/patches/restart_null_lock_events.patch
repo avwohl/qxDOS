@@ -1,0 +1,14 @@
+--- a/src/gui/mapper.cpp
++++ b/src/gui/mapper.cpp
+@@ -3170,6 +3170,11 @@
+ 	// Stop any ongoing typing as soon as possible (because it access events)
+ 	stop_auto_typing();
+ 
++	// qxDOS: these are raw pointers into `events' and are dereferenced by the
++	// next init, so they must not outlive it.
++	caps_lock_event = nullptr;
++	num_lock_event  = nullptr;
++
+ 	// Release all the accumulated allocations by the mapper
+ 	events.clear();
+ 

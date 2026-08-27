@@ -149,24 +149,58 @@ target_link_libraries(zmbv PRIVATE ZLIB::ZLIB)
 # ============================================================================
 # Patched DOSBox sources
 # ============================================================================
-# We patch sdl_renderer.cpp to add a frame-capture hook for iOS/macOS.
-# The patch lives in our tree; the submodule stays clean.
-# If upstream changes the file, the patch will fail loudly at build time.
+# Every change we need in DOSBox lives as a patch here and is applied to a COPY
+# under ${CMAKE_CURRENT_BINARY_DIR}/patched.  The submodule stays pristine, and
+# `git status' in it stays clean.
+#
+# This matters more than it looks.  Until 2026-08-27 six of these changes were
+# not patches at all - they were commits made directly in a local checkout of
+# the submodule and never pushed anywhere.  The gitlink therefore pointed at a
+# SHA no upstream had, `git submodule update --init' failed for everyone from
+# 2026-03-23 onward, and the changes themselves were unrecoverable: 019bbfd5
+# cannot be fetched to see what it contained.  They were reconstructed from
+# docs/restart-static-state.md, which is the only surviving record of them.
+# Do not commit into the submodule.  Add a patch here.
+#
+# If upstream moves a patched file the patch fails loudly at build time, which
+# is the intent - but note that "applies" is not "compiles": the frame-hook
+# patch survived the v0.83.0 bump textually while referencing a member that had
+# been refactored away.  Re-check the result, not just the exit code.
 
 set(PATCHED_DIR ${CMAKE_CURRENT_BINARY_DIR}/patched)
-file(MAKE_DIRECTORY ${PATCHED_DIR}/gui/render)
 
-set(SDL_RENDERER_ORIG ${DB}/gui/render/sdl_renderer.cpp)
-set(SDL_RENDERER_PATCHED ${PATCHED_DIR}/gui/render/sdl_renderer.cpp)
-set(SDL_RENDERER_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/patches/sdl_renderer_frame_hook.patch)
-
-add_custom_command(
-    OUTPUT ${SDL_RENDERER_PATCHED}
-    COMMAND ${CMAKE_COMMAND} -E copy ${SDL_RENDERER_ORIG} ${SDL_RENDERER_PATCHED}
-    COMMAND patch -p2 ${SDL_RENDERER_PATCHED} ${SDL_RENDERER_PATCH}
-    DEPENDS ${SDL_RENDERER_ORIG} ${SDL_RENDERER_PATCH}
-    COMMENT "Applying frame-hook patch to sdl_renderer.cpp"
+# relative-path;patch-file  -- one entry per patched translation unit
+set(DOSBOX_PATCHES
+    "gui/render/sdl_renderer.cpp;sdl_renderer_frame_hook.patch"
+    "dosbox.cpp;restart_clear_shutdown_request.patch"
+    "cpu/cpu.cpp;restart_reset_cpu_initialised.patch"
+    "shell/shell.cpp;restart_clear_shell_running.patch"
+    "shell/autoexec.cpp;restart_reset_autoexec_statics.patch"
+    "misc/cross.cpp;restart_clear_cached_config_dir.patch"
+    "gui/mapper.cpp;restart_null_lock_events.patch"
 )
+
+set(PATCHED_SOURCES "")
+foreach(entry IN LISTS DOSBOX_PATCHES)
+    list(GET entry 0 rel)
+    list(GET entry 1 patchfile)
+    get_filename_component(reldir ${rel} DIRECTORY)
+    if(reldir)
+        file(MAKE_DIRECTORY ${PATCHED_DIR}/${reldir})
+    endif()
+    add_custom_command(
+        OUTPUT ${PATCHED_DIR}/${rel}
+        COMMAND ${CMAKE_COMMAND} -E copy ${DB}/${rel} ${PATCHED_DIR}/${rel}
+        COMMAND patch -p2 ${PATCHED_DIR}/${rel}
+                ${CMAKE_CURRENT_SOURCE_DIR}/patches/${patchfile}
+        DEPENDS ${DB}/${rel} ${CMAKE_CURRENT_SOURCE_DIR}/patches/${patchfile}
+        COMMENT "Patching ${rel} with ${patchfile}"
+    )
+    list(APPEND PATCHED_SOURCES ${PATCHED_DIR}/${rel})
+endforeach()
+
+# Backwards-compatible alias: the source list below still names this one.
+set(SDL_RENDERER_PATCHED ${PATCHED_DIR}/gui/render/sdl_renderer.cpp)
 
 # ============================================================================
 # DOSBox core static library
@@ -174,7 +208,7 @@ add_custom_command(
 
 add_library(dosbox-core STATIC
     # Top-level
-    ${DB}/dosbox.cpp
+    ${PATCHED_DIR}/dosbox.cpp
 
     # Audio
     ${DB}/audio/clap/event_list.cpp
@@ -210,7 +244,7 @@ add_library(dosbox-core STATIC
     ${DB}/cpu/core_normal.cpp
     ${DB}/cpu/core_prefetch.cpp
     ${DB}/cpu/core_simple.cpp
-    ${DB}/cpu/cpu.cpp
+    ${PATCHED_DIR}/cpu/cpu.cpp
     ${DB}/cpu/flags.cpp
     ${DB}/cpu/mmx.cpp
     ${DB}/cpu/modrm.cpp
@@ -252,8 +286,10 @@ add_library(dosbox-core STATIC
     ${DB}/dos/programs/boot.cpp
     ${DB}/dos/programs/choice.cpp
     ${DB}/dos/programs/clip.cpp
+    ${DB}/dos/programs/guide.cpp
     ${DB}/dos/programs/help.cpp
     ${DB}/dos/programs/makeimg.cpp
+    ${DB}/dos/programs/manual.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgmount_fix.cpp
     ${DB}/dos/programs/keyb.cpp
     ${DB}/dos/programs/loadfix.cpp
@@ -279,7 +315,7 @@ add_library(dosbox-core STATIC
     # GUI
     ${DB}/gui/render/auto_image_adjustments.cpp
     ${DB}/gui/clipboard.cpp
-    ${DB}/gui/mapper.cpp
+    ${PATCHED_DIR}/gui/mapper.cpp
     ${DB}/gui/sdl_gui.cpp
     ${DB}/gui/render/shader_manager.cpp
     ${DB}/gui/titlebar.cpp
@@ -385,6 +421,7 @@ add_library(dosbox-core STATIC
     # MIDI (FluidSynth stubbed, CoreAudio/ALSA/Win32 disabled via config)
     ${CONFIG_DIR}/stubs/fluidsynth_stub.cpp
     ${DB}/midi/midi.cpp
+    ${DB}/midi/midi_synth.cpp
     ${DB}/midi/mt32.cpp
     ${DB}/midi/mt32_lasynth_model.cpp
     ${DB}/midi/soundcanvas.cpp
@@ -392,7 +429,7 @@ add_library(dosbox-core STATIC
     # Misc
     ${DB}/misc/ansi_code_markup.cpp
     ${DB}/misc/console.cpp
-    ${DB}/misc/cross.cpp
+    ${PATCHED_DIR}/misc/cross.cpp
     ${DB}/misc/dos_rwops.cpp
     ${DB}/misc/fs_utils.cpp
     ${DB}/misc/fs_utils_posix.cpp
@@ -417,10 +454,10 @@ add_library(dosbox-core STATIC
     ${CONFIG_DIR}/stubs/webserver_stub.cpp
 
     # Shell
-    ${DB}/shell/autoexec.cpp
+    ${PATCHED_DIR}/shell/autoexec.cpp
     ${DB}/shell/command_line.cpp
     ${DB}/shell/file_reader.cpp
-    ${DB}/shell/shell.cpp
+    ${PATCHED_DIR}/shell/shell.cpp
     ${DB}/shell/shell_batch.cpp
     ${DB}/shell/shell_cmds.cpp
     ${DB}/shell/shell_history.cpp
