@@ -38,6 +38,19 @@ $CXX $CXXFLAGS tests/opl_unit.cc  emu88/opl.cc            -o "$OUT/opl_unit"  &&
 $CXX $CXXFLAGS tests/sb_unit.cc   emu88/sound_blaster.cc  -o "$OUT/sb_unit"   && echo "built $OUT/sb_unit"
 $CXX $CXXFLAGS tests/uart_unit.cc emu88/uart16550.cc      -o "$OUT/uart_unit" && echo "built $OUT/uart_unit"
 
+# The x87 FPU. emu88_fpu.cc is 870 lines and had no coverage of any kind - it
+# is CPU core, so every harness above already compiled it and none executed a
+# single x87 opcode. This one runs real opcode bytes through the decoder.
+$CXX $CXXFLAGS tests/fpu_test.cc $CORE -o "$OUT/fpu_test"
+echo "built $OUT/fpu_test"
+
+# The DPMI host. dos_dpmi.cc is 1710 lines, is linked into every harness that
+# pulls in $DOS, and was executed by none of them. This drives a client in
+# through the real INT 2Fh/1687h detection and the mode switch, then exercises
+# the INT 31h services.
+$CXX $CXXFLAGS tests/dpmi_test.cc $CORE $DOS -o "$OUT/dpmi_test"
+echo "built $OUT/dpmi_test"
+
 # test386.asm's full-system harness - real mode -> protected -> paging -> V86.
 # It used to be a command in tests/README.md and nothing built it, which is why
 # it was also the suite nobody ran: the automated half of the validation was the

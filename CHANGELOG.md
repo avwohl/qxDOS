@@ -39,6 +39,53 @@ and not for what comes after it.
 
 ### Added
 
+- **The x87 FPU and the DPMI host have harnesses**, covering 2580 lines that
+  every existing harness compiled and none of them ever executed. 437
+  assertions in `tests/fpu_test.cc` and 378 in `tests/dpmi_test.cc`, both wired
+  into `tests/build.sh` and `tests/run_suites.sh` so CI runs them: seven
+  harnesses became nine.
+
+  `fpu_test` drives real opcode bytes through `emu88::execute()` rather than
+  calling `execute_fpu()` behind the decoder, so the `D8`-`DF` escape dispatch
+  and the modrm path are exercised too. Because `emu88.h` declares
+  `double regs[8]` - 53 mantissa bits, not the 387's 64 - it separates three
+  things instead of asserting whatever the code happens to do: `check()` for
+  behaviour that is correct, `diverge()` (31 sites) pinning a value that
+  provably differs from real hardware with a comment naming the gap, and
+  `bug()` (9 sites) asserting the correct 387 answer against a defect the
+  double design does not explain. `dpmi_test` arrives the way a client does -
+  `INT 2Fh AX=1687h`, a `FAR CALL` to the returned entry, then `INT 31h` from a
+  stub inside the client's own protected-mode code segment - and asserts the
+  descriptor bytes that land in the LDT rather than "`CF` clear", with the
+  error paths held as hard as the happy ones.
+
+  **Both were shown to fail before they were trusted**, which is the standard
+  `f265310` set after POST `0xFF` turned out to be a gate that could not fail.
+  56 single-point mutations of `emu88_fpu.cc` killed 45; of the eleven
+  survivors two were provably equivalent mutants in unreachable clamps and nine
+  were real coverage holes, closed with 48 more assertions, after which all 21
+  re-applied mutations died. One assertion was thrown out during that work
+  because it expected a condition code of all-bits-clear - exactly what a
+  decode that ignored the opcode leaves behind - and it had passed against a
+  mutant. 20 mutations of `dos_dpmi.cc` each turned at least one check red.
+
+  **13 defects came out of it**, none of them fixed here. They are held to a
+  baseline the way SingleStepTests is held to `SST_BASELINE`, so fixing one
+  fails the harness and says to lower the number rather than quietly going
+  green; `tests/README.md` sections 4 and 5 describe each. The two that reach
+  an ordinary client are both in the DPMI host. `0002h`'s descriptor cache is
+  dead code: the cache-hit path runs `break`, which leaves the enclosing `for`
+  loop rather than the `switch` case, so every repeat lookup of one real-mode
+  segment allocates a fresh selector and DJGPP's
+  `__dpmi_segment_to_descriptor` in a loop walks through all 2047 LDT entries.
+  And every reflected real-mode interrupt pushes its frame at physical
+  `171FAh`, 64 KB above the `7000h`-`8000h` locked stack reserved for it,
+  because `rm_sp = stack_top & 0x0F` is 0 at every 512-byte-aligned level and
+  the first push wraps `SP` to `FFFEh`. Of the nine x87 defects the one a
+  compiled program is likeliest to notice is `FCOMI` leaving `OF`, `SF` and
+  `AF` untouched, so a following `JL`/`JLE`/`JG`/`JGE` reads whatever the last
+  integer instruction left behind.
+
 - **The suites run themselves now.**
   Nothing ran emu88's validation suites automatically. Both existed, both were
   green, and neither was wired to anything - the only workflow in the repository

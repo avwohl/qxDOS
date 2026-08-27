@@ -36,6 +36,24 @@ for t in opl_unit sb_unit uart_unit vesa_test hardware_test; do
   if "$BUILD/$t" >/dev/null 2>&1; then ok "$t"; else bad "$t (exit $?)"; fi
 done
 
+note "x87 FPU and DPMI host"
+# These two differ from the harnesses above: each holds a count of KNOWN,
+# REAL defects to a baseline, the same way SingleStepTests is held to
+# SST_BASELINE.  Their bug() assertions state the architecturally correct
+# behaviour and are red on purpose.  FIXING one FAILS the harness, on purpose -
+# a silent improvement means the baseline is stale and must be lowered by hand.
+# tests/README.md sections 4 and 5 list what is still red and why.
+for t in fpu_test dpmi_test; do
+  if [ ! -x "$BUILD/$t" ]; then bad "$t not built - run tests/build.sh"; continue; fi
+  out=$("$BUILD/$t" 2>&1); rc=$?
+  if [ "$rc" -eq 0 ]; then
+    ok "$t - $(printf '%s' "$out" | grep -E '^ALL ' | tail -1)"
+  else
+    bad "$t (exit $rc)"
+    printf '%s\n' "$out" | grep -E 'FAIL|FIXED' | head -12 | sed 's/^/        /'
+  fi
+done
+
 note "SingleStepTests/80386 (per-instruction, real mode)"
 sst_out=$("$BUILD/sst386" --summary --revoke "$DATA/80386/revocation_list.txt" \
                           "$DATA/80386/v1_ex_real_mode" 2>&1 | tail -1)

@@ -62,27 +62,76 @@ instruction.  Automating a suite does not widen it.  The release workflow is
 still the only other thing in .github/workflows/ and still touches neither
 emu88/ nor tests/.
 
-- the DPMI host and NE2000 are compiled into every harness and executed by none
-of them.  grep -lniE 'dpmi|ne2000|int ?21|dos_bios' over tests/*.cc returns
-nothing at all, yet build.sh's DOS variable links emu88/dos_dpmi.cc,
-emu88/dos_bios.cc and emu88/ne2000.cc into vesa_test and hardware_test - so
-1727 lines of dos_dpmi.cc, 2196 of dos_bios.cc and 425 of ne2000.cc are
-compile-checked and never run past whatever the INT 10h VESA path in
-vesa_test.cc happens to reach.  DPMI protected-mode execution is the same gap
-the IDIV bug lived in, and it is the mode the product's users are in.
+- dos_bios.cc and ne2000.cc are still compiled into every harness and executed
+by almost none of it.  the DPMI third of this entry closed on 2026-08-27:
+tests/dpmi_test.cc puts 378 assertions through dos_dpmi.cc, entering the way a
+client does and finding four defects.  what is left is 2196 lines of
+dos_bios.cc, reached only by whatever the INT 10h VESA path in vesa_test.cc and
+the hand-assembled INT 21h handler in dpmi_test.cc happen to touch, and 425
+lines of ne2000.cc, which nothing executes at all - grep -lni ne2000 over
+tests/*.cc still returns nothing.
 
-- emu88's x87 FPU has zero automated coverage: 870 lines in emu88_fpu.cc that
-neither suite touches a single instruction of.  none of the 941 opcode files in
-tests/data/80386/v1_ex_real_mode begins D8..DF - the capture bench was an Intel
-80386EX, which has no FPU, per tests/data/80386/README.md - and test386.asm
-does not exercise it either, since the mnemonic column of
+- emu88's x87 register stack is host double, not 80-bit extended, and nothing
+the product says admits it.  emu88.h:184 declares `double regs[8]' - 53
+mantissa bits against a 387's 64 - so a whole class of results is not
+reproducible here and will not be without a rewrite.  tests/fpu_test.cc pins 31
+of those divergences exactly rather than leaving them implicit, measured
+2026-08-27: FLD m80real of 1+2^-53 collapses to 1.0, there is no denormal
+class, no stack-overflow detection, precision control is ignored entirely,
+FLDENV/FNSTENV are control-word-and-status-word stubs, and F2XM1 is pow(2,x)-1
+and FYL2XP1 is log2(x+1), so both lose exactly the precision those instructions
+exist to preserve.  against that, README.md advertises "Full 386 CPU with FPU
+and DPMI support" and docs/hardware-roadmap.md marks FPU done.
+  the zero-coverage half of this entry closed the same day - 437 assertions
+over ~74 mnemonics, driven as real opcode bytes through the decoder - but
+coverage does not widen the format.  neither suite could have found this:
+none of the 941 opcode files in tests/data/80386/v1_ex_real_mode begins D8..DF,
+because the capture bench was an Intel 80386EX with no FPU per
+tests/data/80386/README.md, and the mnemonic column of
 test386-EE-reference.txt is 96 distinct entries with no x87 mnemonic among
-them. emu88_fpu.cc itself carries acknowledged shortcuts: grep "stub" in it for
-FLDENV and FNSTENV. against that, README.md advertises "Full 386 CPU with FPU
-and DPMI support" and docs/hardware-roadmap.md marks FPU done.  both rest on
-nothing measured. note that the FPU is not idle in practice - FUCOMPP was one
-of the four fixes adopted from dosiz in e89af9c, found because GCC emits it for
-long-double comparisons.
+them.  the FPU is not idle in practice - FUCOMPP was one of the four fixes
+adopted from dosiz in e89af9c, found because GCC emits it for long-double
+comparisons.
+
+- thirteen emu88 defects are recorded by the two new harnesses and none of them
+is fixed.  tests/fpu_test.cc holds nine and tests/dpmi_test.cc four, each as a
+bug() assertion stating the architecturally correct answer, held to a
+KNOWN_BUGS_EXPECTED baseline the way run_suites.sh holds SingleStepTests to
+SST_BASELINE - so fixing one turns the harness red and says to lower the
+number, rather than going quietly green.  tests/README.md sections 4 and 5
+describe each one.  measured 2026-08-27 against f265310.
+  two of them are worth doing first, both in the DPMI host and both reachable
+by any ordinary client.  emu88/dos_dpmi.cc case 0x0002 checks its seg_map
+cache and then runs `break', which leaves the enclosing for loop rather than
+the switch case, so the allocate-a-new-descriptor path below runs anyway: every
+repeat lookup of one real-mode segment burns another LDT entry, and DJGPP's
+__dpmi_segment_to_descriptor called in a loop walks through all 2047.  the fix
+is `return' and the harness goes green on it with no other edit.  and
+dpmi_reflect_to_rm computes rm_sp = stack_top & 0x0F, which is 0 for every
+512-byte-aligned level, so the first push wraps SP to FFFEh and every reflected
+real-mode interrupt lands its frame at physical 171FAh - 64KB above the
+7000h-8000h locked stack the comment says is reserved for it, which in a real
+session is the DOS kernel, a driver, or the client's own image.
+  the remaining eleven are smaller: a process-global callback counter that
+0304h never reclaims, 0400h advertising virtual memory this host has no paging
+for, and nine x87 conformance defects of which FCOMI leaving OF/SF/AF untouched
+is the one a compiled program is most likely to notice - guest code that does
+FCOMI and branches JL/JLE/JG/JGE reads whatever the last integer instruction
+left behind.
+  fixing any of them is a change to a file dosiz compiles out of this tree, so
+it reaches them on their next pin bump.  that is the argument for doing it
+deliberately rather than as a drive-by, and it is why nothing here is fixed
+yet.
+
+- neither new harness reaches everything, and tests/README.md says where.
+FIST/FISTP of an out-of-range value is deliberately untested because the code
+casts a double straight to int32_t, which is UB rather than the 387's #IA, so a
+test there tests the compiler.  DD C8-CF and DE D8+i for i != 1 are undefined
+or do nothing.  FWAIT is in emu88.cc, not emu88_fpu.cc.  and the DPMI
+descriptor services 0006h-000Ch accept a GDT selector or an out-of-range LDT
+index and read or write past the end of the LDT rather than returning 8022h -
+recorded rather than asserted, because a test could only pin the out-of-bounds
+access.
 
 - nothing in this repo records that dosiz compiles six of these emu88 files
 straight out of this working tree, and nothing gates a change to them.
