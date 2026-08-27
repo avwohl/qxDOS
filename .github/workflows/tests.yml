@@ -17,15 +17,16 @@ jobs:
   emu88:
     runs-on: ubuntu-latest
     steps:
-      # v5, not v4: v4 targets Node 20, which the runners now force onto Node 24
-      # and annotate every run about.  v5 is the first major of both checkout and
-      # cache that declares node24 itself.  Newer majors exist (checkout v7,
-      # cache v6) and are ESM rewrites with behaviour changes - checkout v6 moved
-      # credential persistence to a separate file, v7 blocks checking out a fork
-      # PR under pull_request_target and workflow_run.  Nothing here needs any of
-      # that, so this is the smallest bump that clears the deprecation.
+      # Newest major of each, not the oldest one that clears the Node 20
+      # deprecation.  These are MOVING MAJOR TAGS, not pins: actions/checkout@v7
+      # follows v7.x as it ships, and there is no @latest to ask for instead.
+      # That is a deliberate trade - CI picks up fixes without a PR, and in
+      # exchange the code that runs here can change between two runs of the same
+      # commit.  Nothing in this repository records which SHA ran.  SHA-pinning
+      # is the alternative and is what GitHub's own hardening guide recommends;
+      # it needs Dependabot behind it or it rots exactly the way @v4 did here.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # g++ and zlib for the harnesses (the MOO reader is zlib-backed); nasm to
       # assemble the test386 diagnostic ROM.  No clang: tests/build.sh falls
@@ -41,7 +42,7 @@ jobs:
       # a change there is the only thing that should invalidate this.
       - name: Cache the test corpora
         id: corpora
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: tests/data
           key: emu88-testdata-${{ hashFiles('tests/fetch_tests.sh') }}
