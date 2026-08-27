@@ -20,15 +20,70 @@ inaccuracies.  Two more were narrowed rather than closed - the x87 entry lost
 its nine defects and kept its register format, and the dosiz entry gained a gate
 and kept its pin - and both are below with what is left of them.
 
-Ten items, then.  Two are standing statements of scope rather than work; they
-are here so that a pass rate is never quoted without them.  Four need a machine
-this one is not - a Mac, a real device, the DOSBox submodule - or a decision
-that is the owner's, which is the release tagging scheme.  Two are real work
+Eleven items, then.  One of them is a live defect that breaks a documented build
+step and it is first below, because it is the only entry here that stops somebody
+who has just cloned this repository.  Two are standing statements of scope rather
+than work; they are here so that a pass rate is never quoted without them.  Four
+need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
+a decision that is the owner's, which is the release tagging scheme.  Two are real work
 nobody has started: an 80-bit x87 register file, and the half of the dosiz
 dependency that lives on their side.  The last two were found on
 2026-08-27 while measuring the rest and are left open for the same kind of
 reason: closing either is a decision about what the product does, not a
 cleanup.
+
+- THE dosbox-staging SUBMODULE POINTS AT A COMMIT THAT NO LONGER EXISTS, so
+`git submodule update --init' and `git clone --recursive' - the documented first
+build step in both README.md and CLAUDE.md - cannot work for anybody.  measured
+2026-08-27, four ways:
+    gh api repos/dosbox-staging/dosbox-staging/commits/019bbfd5...
+      422 "No commit found for SHA"
+    git ls-remote https://github.com/dosbox-staging/dosbox-staging.git
+      no ref points at it
+    git fetch origin 019bbfd5...   (against a fresh upstream clone)
+      fatal: remote error: upload-pack: not our ref 019bbfd5...
+    git clone file:///.../qxDOS fresh && cd fresh && git submodule update --init
+      fatal: Fetched in submodule path 'dosbox-staging', but it did not contain
+      019bbfd5...  Direct fetching of that commit failed.       exit 128
+  it does not fail cleanly, which is the worse half.  the clone of upstream
+succeeds and only the checkout of the pinned commit fails, so the working tree is
+left on whatever upstream's default branch tip is - `git submodule status' in
+that fresh clone printed
+`+8becfce8cfac2a3cce4376bcb8296078deb624c0 dosbox-staging (v0.82.0-alpha-4276-g8becfce8c)',
+and the leading + means the checked-out commit is not the recorded one.  a
+developer who does not read the error builds against an arbitrary DOSBox tip,
+roughly 4276 commits past v0.82.0-alpha, believing they are on the pin.  silent
+wrong version rather than a stopped build.
+  it has been broken since ebc7465 (2026-03-23), and the pattern says what
+happened.  walking the gitlink back: a461494 pinned e8461f4, which STILL EXISTS
+upstream (2026-02-14, "Update Italian (it_IT) translation"); ebc7465 pinned
+822e1aa, 9fc3427 pinned 0267ba2 and 5d200dd pinned 019bbfd, and none of those
+three resolves.  the first pin is the only one that was ever a real upstream
+commit.  avwohl has no dosbox-staging fork (`gh api users/avwohl/repos' finds
+none), so the three later SHAs were never pushed anywhere reachable.
+  nothing caught it: a working copy that already has the objects never notices,
+tests.yml never touches the submodule, and release.yml would but only runs on a
+release tag.  what surfaced it was Dependabot, which clones with submodules
+unconditionally and so failed on 2026-08-27 with job_repo_not_found before it
+could read .github/dependabot.yml at all.  that config is correct and is not the
+problem; it will keep failing until this is.
+  three ways out and none of them is testable here, because nothing on a linux
+checkout builds the DOSBox backend:
+    re-pin to a current upstream commit.  a real DOSBox version bump of 4000+
+      commits.  dosbox-ios/patches/sdl_renderer_frame_hook.patch is applied with
+      `patch -p2' against gui/render/sdl_renderer.cpp and CMakeLists.txt says it
+      "will fail loudly at build time" if upstream moved the file - which over
+      that distance it may well have.
+    re-pin to e8461f4, the last SHA that resolves.  restores cloneability with
+      the smallest behavioural change, but it is still a bump away from whatever
+      019bbfd actually was, and what 019bbfd was is now unknowable.
+    drop the submodule.  emu88 is the default backend and DOSBox is only
+      selectable - but the app still links dosbox-core for the libslirp symbols
+      Emu88SlirpNet.mm uses rather than linking libslirp itself, so this is not
+      free.
+  whichever, it needs a Mac to validate, and until then README.md's and
+CLAUDE.md's build instructions are wrong in a way a new contributor hits on
+their first command.
 
 - the two validation runs are worth quoting, and worth quoting with their scope
 attached, because the scope is what went wrong last time.  re-measured
