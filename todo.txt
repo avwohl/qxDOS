@@ -67,23 +67,37 @@ release tag.  what surfaced it was Dependabot, which clones with submodules
 unconditionally and so failed on 2026-08-27 with job_repo_not_found before it
 could read .github/dependabot.yml at all.  that config is correct and is not the
 problem; it will keep failing until this is.
-  three ways out and none of them is testable here, because nothing on a linux
-checkout builds the DOSBox backend:
-    re-pin to a current upstream commit.  a real DOSBox version bump of 4000+
-      commits.  dosbox-ios/patches/sdl_renderer_frame_hook.patch is applied with
-      `patch -p2' against gui/render/sdl_renderer.cpp and CMakeLists.txt says it
-      "will fail loudly at build time" if upstream moved the file - which over
-      that distance it may well have.
-    re-pin to e8461f4, the last SHA that resolves.  restores cloneability with
-      the smallest behavioural change, but it is still a bump away from whatever
-      019bbfd actually was, and what 019bbfd was is now unknowable.
-    drop the submodule.  emu88 is the default backend and DOSBox is only
-      selectable - but the app still links dosbox-core for the libslirp symbols
-      Emu88SlirpNet.mm uses rather than linking libslirp itself, so this is not
-      free.
-  whichever, it needs a Mac to validate, and until then README.md's and
-CLAUDE.md's build instructions are wrong in a way a new contributor hits on
-their first command.
+  DO THIS: bump the pin to a current upstream commit, build it once on a Mac,
+and see whether dosbox-ios/patches/sdl_renderer_frame_hook.patch still applies.
+That patch is the only thing that can fail - it is applied with `patch -p2'
+against gui/render/sdl_renderer.cpp and dosbox-ios/CMakeLists.txt says it "will
+fail loudly at build time" if upstream moved the file, which across ~4276
+commits it may have.  Nothing else is at risk, because there is no state being
+preserved: this has been broken for five months and nobody noticed, which means
+nobody has built the DOSBox backend in that time.  019bbfd is unknowable now
+anyway - it does not exist to inspect - so "which DOSBox commit" is a question
+with no wrong answer left in it.  Take upstream's.
+  The owner's direction as of 2026-08-27 is DO NOT PIN ANYTHING.  Applied here
+it does not give a third option, and it is worth writing down why rather than
+rediscovering it: a git submodule IS a SHA pin by construction.  `git ls-tree
+HEAD dosbox-staging' prints `160000 commit 019bbfd5...'; mode 160000 stores a
+commit and that is the git object model, not a setting.  There is no floating
+mode.  `git submodule set-branch --branch main' was checked on a fresh clone on
+2026-08-27 and adds one line to .gitmodules while leaving the gitlink byte for
+byte identical, so every consumer still gets the recorded SHA; `--remote' is a
+command the maintainer runs to move it, and it would not have prevented this bug
+either, because the failure was recording a SHA that was never pushed.  So the
+policy and the submodule cannot both stand.  Honouring the policy literally means
+DROPPING the submodule and getting DOSBox another way - a release tarball fetched
+at build time, or vendoring the subset dosbox-ios/ actually compiles - and that
+is real work on the app, not a re-pin: the app links dosbox-core for the libslirp
+symbols Emu88SlirpNet.mm uses rather than linking libslirp itself, so the
+submodule cannot simply go away.  That is the choice.  The bump above is the
+cheap one and unblocks a clone today; dropping it is the one that matches the
+policy.
+  Either needs a Mac.  Until one happens, README.md's and CLAUDE.md's build
+instructions are wrong in a way a new contributor hits on their first command,
+and both now carry a warning saying so.
 
 - the two validation runs are worth quoting, and worth quoting with their scope
 attached, because the scope is what went wrong last time.  re-measured
