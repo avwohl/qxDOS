@@ -1,0 +1,62 @@
+name: Tests
+
+# The emu88 386 core is compiled by two products - this app and dosiz, which
+# reads it straight out of this tree - and until 2026-08-27 nothing ran its
+# suites automatically.  Both existed, both were green, and neither was wired
+# to anything: the IDIV overflow bug fixed in 7352fc5 had been failing
+# test386.asm for as long as both suites had, and read as a pass because the
+# harness reports POST 0xFF and nobody compared the output to the reference.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  emu88:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # g++ and zlib for the harnesses (the MOO reader is zlib-backed); nasm to
+      # assemble the test386 diagnostic ROM.  No clang: tests/build.sh falls
+      # back to g++ when clang++ is absent.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential nasm zlib1g-dev
+
+      # ~600 MB of test corpora, gitignored and fetched rather than vendored.
+      # Keyed on the fetch script: it names the upstreams and the ROM build, so
+      # a change there is the only thing that should invalidate this.
+      - name: Cache the test corpora
+        id: corpora
+        uses: actions/cache@v4
+        with:
+          path: tests/data
+          key: emu88-testdata-${{ hashFiles('tests/fetch_tests.sh') }}
+
+      - name: Fetch the test corpora
+        if: steps.corpora.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p tests/data
+          bash tests/fetch_tests.sh
+          # Both upstreams are shallow clones whose objects ARE the payload -
+          # 567 MB of .git against 600 MB of working tree for SingleStepTests
+          # alone.  The suites read files, never git, and fetch_tests.sh guards
+          # on the directory existing, so dropping the histories halves what is
+          # cached without changing what is run.
+          rm -rf tests/data/80386/.git tests/data/test386/.git
+          du -sh tests/data/* || true
+
+      - name: Build the harnesses
+        run: bash tests/build.sh
+
+      # Holds both suites to their recorded scores, and does the comparison the
+      # test386 harness does not: its arithmetic output against the reference
+      # the upstream diagnostic ships.  That check is the point of this job.
+      - name: Run the suites
+        run: bash tests/run_suites.sh

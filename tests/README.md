@@ -7,8 +7,13 @@ app) against two industry-standard suites.
 
 ```sh
 bash tests/fetch_tests.sh   # downloads test data into tests/data/ (gitignored, ~600MB)
-bash tests/build.sh         # builds tests/build/sst386
+bash tests/build.sh         # builds all seven harnesses into tests/build/
+bash tests/run_suites.sh    # runs them and holds them to their recorded scores
 ```
+
+`run_suites.sh` is what `.github/workflows/tests.yml` runs, so a green tick and
+a clean local run mean the same thing. `build.sh` uses `clang++` when it is
+present and `g++` otherwise.
 
 ## 1. SingleStepTests/80386 — per-instruction (real mode)
 
@@ -66,9 +71,8 @@ PCjs/barotto diagnostic ROM exercising real mode → protected mode → **paging
 POST port `0x190`; ASCII arithmetic results to port `0xE9`.
 
 ```sh
-clang++ -std=c++20 -O2 -I emu88 tests/test386_run.cc emu88/emu88.cc \
-    emu88/emu88_pmode.cc emu88/emu88_fpu.cc emu88/emu88_mem.cc -o tests/build/test386
-tests/build/test386 2>/dev/null
+bash tests/build.sh          # builds tests/build/test386 among the rest
+tests/build/test386 tests/data/test386/test386.bin
 ```
 
 **Result: PASS** — reaches POST `0xFF` and the `0xEE` arithmetic output matches
@@ -119,12 +123,25 @@ for as long as they have both existed.
 - **It also never exercises exception delivery.** The corpus injects a `HALT`
   at the exception ISRs, so a fault is scored by the register and RAM state it
   leaves, not by whether the right vector was dispatched with the right frame.
-- **`build.sh` does not build `test386`.** The one suite that enters protected
-  mode, paging and V86 is the only one you have to compile by hand out of the
-  command in section 2. The automated half of the validation is the real-mode
-  half.
-- **Nothing compares test386's output to the reference.** The harness reports
-  POST `0xFF` and stops there, which is how four wrong `IDIV` lines were read as
-  a pass. The comparison is one `diff` and should be wired in.
-- **There is no CI for any of this.** The only workflow in the repo builds
-  release assets. Both suites are run by hand, on a core two products compile.
+
+Three of the five gaps this section opened with are closed as of 2026-08-27;
+they are kept here, struck, because what they were is the argument for the two
+that remain.
+
+- ~~**`build.sh` does not build `test386`.**~~ It does now, alongside the other
+  six harnesses.
+- ~~**Nothing compares test386's output to the reference.**~~
+  `tests/run_suites.sh` does, and that check is the reason it exists: the
+  harness reports POST `0xFF` and stops, which is how four wrong `IDIV` lines
+  read as a pass. The runner was shown to fail on exactly that regression before
+  it was trusted — against a core built from before `7352fc5` it still says
+  "ok reached POST 0xFF" and then fails the diff.
+- ~~**There is no CI for any of this.**~~ `.github/workflows/tests.yml` builds
+  the harnesses and runs `run_suites.sh` on every push and pull request, with
+  the ~600 MB corpora cached.
+
+What has NOT changed: the two gaps above these. Automating the suites does not
+widen them — CI runs exactly what a person ran by hand, so 32-bit
+protected-mode instruction execution and exception delivery are still covered
+only by test386's full-system pass, which checks the machinery rather than every
+instruction.

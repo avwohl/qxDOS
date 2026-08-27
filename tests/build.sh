@@ -6,7 +6,13 @@ cd "$(dirname "$0")/.."
 OUT=tests/build
 mkdir -p "$OUT"
 
-CXX=${CXX:-clang++}
+# clang++ where it exists, g++ otherwise.  Hardcoding clang++ meant this script
+# simply did not run on a machine without it, which is how the sibling cpmemu
+# had its release build broken on two architectures for two days - a Clang-only
+# flag nobody could have hit locally.
+if [ -z "${CXX:-}" ]; then
+  if command -v clang++ >/dev/null 2>&1; then CXX=clang++; else CXX=g++; fi
+fi
 CXXFLAGS="-std=c++20 -O2 -g -Wall -I emu88 -I tests/vendor -DMOO_USE_ZLIB"
 
 CORE="emu88/emu88.cc emu88/emu88_pmode.cc emu88/emu88_fpu.cc emu88/emu88_mem.cc"
@@ -31,3 +37,10 @@ echo "built $OUT/hardware_test"
 $CXX $CXXFLAGS tests/opl_unit.cc  emu88/opl.cc            -o "$OUT/opl_unit"  && echo "built $OUT/opl_unit"
 $CXX $CXXFLAGS tests/sb_unit.cc   emu88/sound_blaster.cc  -o "$OUT/sb_unit"   && echo "built $OUT/sb_unit"
 $CXX $CXXFLAGS tests/uart_unit.cc emu88/uart16550.cc      -o "$OUT/uart_unit" && echo "built $OUT/uart_unit"
+
+# test386.asm's full-system harness - real mode -> protected -> paging -> V86.
+# It used to be a command in tests/README.md and nothing built it, which is why
+# it was also the suite nobody ran: the automated half of the validation was the
+# real-mode half, and the IDIV bug fixed in 7352fc5 lived outside it.
+$CXX $CXXFLAGS tests/test386_run.cc $CORE -o "$OUT/test386"
+echo "built $OUT/test386"

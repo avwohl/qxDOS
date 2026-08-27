@@ -42,41 +42,21 @@ both from tests/build/:
   instruction coverage.  the IDIV bug 7352fc5 fixed lived in exactly that gap
   and was invisible for as long as both suites existed.
 
-- nothing in this repo has ever been compile-checked or test-checked by
-machine.  .github/workflows/release.yml is the only file in .github/workflows/,
-its trigger block is `on: workflow_dispatch:` with a tag and a create_release
-input - no push, no pull_request, no schedule - and its fourteen named steps
-install nasm and mtools, assemble the three dos/*.asm guest utilities with
-nasm, run five of the six scripts/build_*.sh disk builders, rewrite the SHA256s
-in disks.xml and cut a gh release.  nasm is the only assembler or compiler any
-step invokes; nothing touches emu88/ or tests/, and grepping the file for
-clang, g++, cmake, xcodebuild or tests/ returns nothing.  there is no `make
-test` and no script that runs all seven harnesses.  so every number in the
-entry above was produced by a person deciding to produce it.
-
-- `bash tests/build.sh`, which is the invocation tests/README.md documents,
-does not build anything on a machine without clang.  build.sh has
-`CXX=${CXX:-clang++}` and reproducing it here gives `tests/build.sh: line 16:
-clang++: command not found`, exit 127.  the README never mentions CXX.
-with `CXX=g++ bash tests/build.sh` the whole tree builds, exit 0, six binaries
-and 13 warning lines from 7 sites (re-run today; see the warnings entry
-below).  a fallback to g++ when clang++ is
-absent is a two-line change; it is written down rather than made because this
-pass was a measurement and not a sweep.
-
-- test386 is neither built by the build script nor scored against its
-reference, so the only suite that enters protected mode, paging and V86 is
-hand-run and graded on one byte.  build.sh builds exactly six targets - sst386,
-vesa_test, hardware_test, opl_unit, sb_unit, uart_unit - and test386 appears
-nowhere in it; the build command lives only in prose in tests/README.md section
-2 and hardcodes clang++, so on this machine following the README fails twice
-over. and tests/test386_run.cc ends `return cpu.got_done ? 0 : 1;`, where
-got_done is set only by the POST write of 0xFF.  the 0xEE ASCII is accumulated
-into cpu.ascii, printed, and dropped.  the reference file is committed
-(tests/data/test386/test386-EE-reference.txt) and is read by nothing.  that is
-precisely how four wrong IDIV lines read as a pass before 7352fc5.  the
-comparison I did by hand today was five lines of python against a sed range;
-wiring it into the harness is small, and adding test386 to build.sh is smaller.
+- CI runs the suites now, and what it does NOT cover is the thing to keep in
+view.  .github/workflows/tests.yml builds all seven harnesses and runs
+tests/run_suites.sh on every push and pull request, with the ~600MB corpora
+cached; run_suites.sh holds SingleStepTests to 1758402/1758699 and diffs
+test386's arithmetic output against the reference, which is the check that was
+missing.  It was shown to fail before it was trusted: against a core built from
+before 7352fc5 it still reports "ok reached POST 0xFF" and then fails the diff,
+which is exactly how the IDIV bug hid.
+  What that does not buy: SingleStepTests as run is real mode only, and the
+corpus injects a HALT at the exception ISRs, so 32-bit protected-mode
+instruction execution and exception delivery are still covered only by
+test386's full-system pass - a check of the machinery, not of every
+instruction.  Automating a suite does not widen it.  The release workflow is
+still the only other thing in .github/workflows/ and still touches neither
+emu88/ nor tests/.
 
 - the DPMI host and NE2000 are compiled into every harness and executed by none
 of them.  grep -lniE 'dpmi|ne2000|int ?21|dos_bios' over tests/*.cc returns
@@ -126,21 +106,20 @@ identically before and after"; that was checked by hand and nothing in either
 repo can reproduce it. writing the obligation down here is the cheap half; a
 gate is the real work.
 
-- dosiz's CI probably cannot configure at all any more, and someone has to run
-it to find out.  read off the two files rather than observed: dosiz's
-.github/workflows/ci.yml does actions/checkout@v4 on its own repo only - grep
-it for qxDOS or EMU88, no matches - and then runs `make`, which is `cmake -S
-src -B build`.  with -S src, CMAKE_SOURCE_DIR is the repo's src/, so
-../../qxDOS/emu88 resolves to /home/runner/work/dosiz/qxDOS on a runner, which
-does not exist, and src/CMakeLists.txt's `if(NOT EXISTS
-"${EMU88_DIR}/emu88.cc")` fires FATAL_ERROR. the dates line up: ci.yml's last
-commit is 90169f2 (2026-04-24, a rename) and the emu88 move out of dosiz's tree
-is 8e507aa (2026-08-09), so the workflow was never updated for the move.  it
-still caches and builds dosbox-staging via meson as well, which dosiz/CLAUDE.md
-says that project no longer depends on. I did not execute it: this pass was
-forbidden to write to siblings. whoever fixes it has to decide how a runner
-gets qxDOS - a second checkout step, or a submodule - and that decision is the
-same one the entry above wants a gate for.
+- dosiz's CI could not configure, was confirmed and fixed on 2026-08-27, and
+what is left is the asymmetry.  It is not "probably" any more: a fresh clone
+plus `make` reproduced the FATAL_ERROR exactly as predicted, and dosiz eeefe79
+now checks this repository out into its workspace and passes EMU88_DIR
+explicitly, pinned at a full 40-character SHA (a short one is taken for a branch
+name by actions/checkout, which failed the first dispatched run).  That job is
+green.
+  So a commit here can no longer break dosiz's BUILD without someone seeing a
+red tick - but nothing tells dosiz that emu88's BEHAVIOUR moved, and nothing
+here knows dosiz pins us.  The pin lives in dosiz's workflow only; this repo
+carries no record of which of its own commits a downstream is on, and no CI job
+here builds dosiz.  Bumping that pin stays a deliberate act on their side, which
+is the intent, but it means a fix made here reaches them only when they ask for
+it.
 
 - emu88_mem::store_mem carries four dead debug blocks on the path taken by
 every guest byte write, and that path is shared with dosiz.  grep

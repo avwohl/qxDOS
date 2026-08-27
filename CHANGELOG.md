@@ -26,14 +26,54 @@ repeated; the vendored libslirp and the mTCP DOS utilities it added are in
 neither list, and are described here only where the emu88 bullet touches
 them.
 
-**None of this was checked by machine.** `.github/workflows/release.yml` is the
-only workflow in the repo and it builds disk images; no commit here has ever
-been compile-checked or test-checked by CI. Every measurement quoted below was
-produced by somebody deciding to produce it. It is written up in `todo.txt`.
+**Almost none of this was checked by machine.** Until 2026-08-27
+`.github/workflows/release.yml` was the only workflow in the repo and it builds
+disk images; no commit before that had ever been compile-checked or
+test-checked by CI, and every measurement quoted below was produced by somebody
+deciding to produce it. `tests.yml` runs the emu88 suites from that date on -
+see the entry under Unreleased - so the statement holds for the history here
+and not for what comes after it.
+
 
 ## [Unreleased]
 
 ### Added
+
+- **The suites run themselves now.**
+  Nothing ran emu88's validation suites automatically. Both existed, both were
+  green, and neither was wired to anything - the only workflow in the repository
+  cuts releases and touches neither `emu88/` nor `tests/`. That is how the `IDIV`
+  overflow bug fixed in `7352fc5` failed `test386.asm` for as long as both suites
+  had existed and still read as a pass.
+
+  - **`.github/workflows/tests.yml`** builds all seven harnesses and runs the
+    suites on every push and pull request. The ~600 MB corpora are cached, keyed
+    on `fetch_tests.sh`; both upstreams are shallow clones whose objects *are* the
+    payload, so their histories are dropped after fetching - 1.2 GB down to
+    585 MB, with nothing the suites read removed.
+  - **`tests/run_suites.sh`** is the gate, and is what CI runs, so a green tick
+    and a clean local run mean the same thing. It holds SingleStepTests to
+    1,758,402 / 1,758,699 - no worse, and *no better* without raising the
+    baseline, because a silent improvement means the number is stale - and it
+    does the comparison the test386 harness never did: its arithmetic output
+    against the reference the upstream diagnostic ships.
+  - That comparison was shown to fail before it was trusted. Against a core built
+    from before `7352fc5` the runner still reports `ok reached POST 0xFF` and then
+    fails the diff on the four `IDIV` lines. A gate that cannot fail is worth
+    nothing, and POST `0xFF` alone was exactly such a gate.
+  - **`tests/build.sh`** builds `test386` now, alongside the other six. Its
+    command had lived only in prose in `tests/README.md`, which is a large part of
+    why that suite was the one nobody ran. The script also falls back to `g++`
+    when `clang++` is absent instead of failing with `command not found` - the
+    same Clang-only assumption that had the sibling `cpmemu`'s release build
+    broken on two architectures for two days.
+
+  What this does not buy, and `tests/README.md` now says so where the gaps were
+  listed: SingleStepTests as run is real mode only, and its corpus injects a
+  `HALT` at the exception ISRs. 32-bit protected-mode instruction execution and
+  exception delivery are still covered only by test386's full-system pass, which
+  checks the machinery rather than every instruction. Automating a suite does not
+  widen it.
 
 - **emu88 is the hardware backend now, and it is written here.** 073605d
   brought the custom 8088/286/386+FPU+DPMI interpreter in from the archived
