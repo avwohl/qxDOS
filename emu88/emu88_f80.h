@@ -1451,6 +1451,15 @@ static inline f80 f80_poly_even(const f80 *c, int n, f80 x2) {
   for (int i = n - 2; i >= 1; i--) r = f80x_add(f80x_mul(r, x2), c[i]);
   return f80x_add(c[0], f80x_mul(r, x2));
 }
+// The same Horner evaluation with its LAST add rounded under `fin' when one is
+// supplied.  Only the final step takes it; every step before stays nearest-even
+// at 64 bits, which is what keeps the intermediates from rounding twice.
+static inline f80 f80_poly_even_f(const f80 *c, int n, f80 x2, f80_ctx *fin) {
+  f80 r = c[n - 1];
+  for (int i = n - 2; i >= 1; i--) r = f80x_add(f80x_mul(r, x2), c[i]);
+  f80 last = f80x_mul(r, x2);
+  return fin ? f80_addsub_p(c[0], last, false, *fin, 64) : f80x_add(c[0], last);
+}
 // The same shape in x rather than x^2.
 static inline f80 f80_poly_odd(const f80 *c, int n, f80 x) {
   f80 r = c[n - 1];
@@ -1462,6 +1471,18 @@ static inline f80 f80_poly_odd(const f80 *c, int n, f80 x) {
 // F2XM1: 2^x - 1, for x in [-1, 1]
 //---------------------------------------------------------------------------
 //
+// The last rounding of a transcendental runs in its own context built from the
+// caller's control word, and only what a ROUNDING can legitimately raise is
+// merged back.  DE is deliberately dropped: the operands of that last step are
+// internal head/tail pieces, and one of them being denormal says nothing about
+// the instruction's actual operand - which the entry point has already reported
+// on.  Without this, F2XM1 of 2^-16382 reports DE, because x*ln2 is denormal
+// even though x is the smallest NORMAL.
+static inline void f80_merge_final(f80_ctx &c, const f80_ctx &t) {
+  c.flags |= (uint16_t)(t.flags & (F80_PE | F80_UE | F80_OE));
+  c.c1 = t.c1;
+}
+
 // 2^x - 1 = expm1(u) with u = x*ln2, and expm1(u) = u + u^2*Q(u) with
 // Q(u) = sum_{n>=2} u^(n-2)/n!.  Writing it that way keeps the leading term
 // exact: an error in Q is scaled by u^2 and cannot move the result by more
@@ -1488,9 +1509,16 @@ static inline f80 f80_2xm1(f80 x, f80_ctx &c) {
     f80_ctx inner = f80_ctx_make(0x037F);
     f80 e = f80_2xm1(f, inner);
     f80 p = f80x_add(F80_ONE, e);
-    f80 sc = f80_scale(p, n, c);
-    c.flags |= F80_PE;
-    return f80_sub(sc, F80_ONE, c);
+    // The scale is an INTERMEDIATE step, so it gets its own context: handing
+    // it the caller's leaked whatever it raised - a #U out of the scaling -
+    // into a status word the final subtraction had not earned yet.
+    f80_ctx sct = f80_ctx_make(0x037F);
+    f80 sc = f80_scale(p, n, sct);
+    f80_ctx fc = f80_ctx_make(c.cw);
+    f80 rr = f80_addsub_p(sc, F80_ONE, true, fc, 64);
+    f80_merge_final(c, fc);
+    c.flags |= F80_PE;                 // 2^x - 1 is not exact on this path
+    return rr;
   }
   // For |x| below 2^-66 the whole series past the first term is under half an
   // ulp of x*ln2, so the answer IS x*ln2 to the last bit.
@@ -1499,14 +1527,20 @@ static inline f80 f80_2xm1(f80 x, f80_ctx &c) {
   t2 = f80x_mul(x, F80_LN2_LO);
   ul = f80x_add(t1, t2);
   if (w.exp < -66) {
-    c.flags |= F80_PE;
-    return f80x_add(uh, ul);
+    f80_ctx fc = f80_ctx_make(c.cw);
+    f80 rr = f80_addsub_p(uh, ul, false, fc, 64);
+    f80_merge_final(c, fc);
+    c.flags |= F80_PE;                 // x*ln2 is irrational
+    return rr;
   }
   f80 u  = f80x_add(uh, ul);
   f80 q  = f80_poly_odd(F80_INV_FACT, 19, u);
   f80 corr = f80x_mul(f80x_mul(u, u), q);
+  f80_ctx fc = f80_ctx_make(c.cw);
+  f80 rr = f80_addsub_p(uh, f80x_add(ul, corr), false, fc, 64);
+  f80_merge_final(c, fc);
   c.flags |= F80_PE;
-  return f80x_add(uh, f80x_add(ul, corr));
+  return rr;
 }
 
 //---------------------------------------------------------------------------
@@ -1564,6 +1598,12 @@ static inline f80 f80_yl2x(f80 y, f80 x, f80_ctx &c) {
   m.sig = (uint64_t)(w.sig >> 64);
   m.se  = 0x3FFF;                                  // m in [1,2)
   // Move to [sqrt(1/2), sqrt(2)) so the series argument stays small.
+  // log2(x) is exact exactly when x is a power of two - the significand is
+  // 1.000... and the answer is the exponent.  That is the one case where this
+  // instruction must NOT report #P, and it is reachable: FYL2X(3.0, 1.0) is
+  // zero, and hardware raises nothing for it.  Everywhere else the logarithm
+  // is irrational and #P stands regardless of what the final rounding did.
+  bool exact_log = (m.sig == 0x8000000000000000ULL);
   if (m.sig > 0xB504F333F9DE6484ULL) { m.se = 0x3FFE; e += 1; }
   // m - 1 is exact by Sterbenz for every m in [1/2, 2); m + 1 is not, so it is
   // carried as a pair and the division with it.
@@ -1572,8 +1612,11 @@ static inline f80 f80_yl2x(f80 y, f80 x, f80_ctx &c) {
   f80_div2(f80x_sub(m, F80_ONE), dh, dl, &th, &tl);
   f80 l = f80_log2_atanh(th, tl);
   f80 total = f80x_add(f80_from_i32(e), l);
-  c.flags |= F80_PE;
-  return f80x_mul(y, total);
+  f80_ctx fc = f80_ctx_make(c.cw);
+  f80 rr = f80_mul_p(y, total, fc, 64);
+  f80_merge_final(c, fc);
+  if (!exact_log) c.flags |= F80_PE;
+  return rr;
 }
 
 static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
@@ -1612,8 +1655,11 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
   f80_add2(x, two, &dh, &dl);
   f80_div2(x, dh, dl, &th, &tl);
   f80 l = f80_log2_atanh(th, tl);
+  f80_ctx fc = f80_ctx_make(c.cw);
+  f80 rr = f80_mul_p(y, l, fc, 64);
+  f80_merge_final(c, fc);
   c.flags |= F80_PE;
-  return f80x_mul(y, l);
+  return rr;
 }
 
 //---------------------------------------------------------------------------
@@ -1622,7 +1668,11 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
 
 // atan(z) for z in [0,1], via a sixteenth table: with z0 = k/16 the residual
 // t = (z-z0)/(1+z*z0) has |t| <= 1/32, where nine odd terms are below 2^-70.
-static inline f80 f80_atan_unit(f80 z) {
+// `fin', when non-null, is the context the FINAL add rounds under - which is
+// how RC, #U, #O and C1 reach an FPATAN whose last step is this one.  The
+// intermediate steps stay at nearest-even in their own throwaway contexts, so
+// nothing here rounds twice.
+static inline f80 f80_atan_unit(f80 z, f80_ctx *fin) {
   f80 sixteen = f80_from_i32(16);
   f80 zs = f80x_mul(z, sixteen);
   f80_ctx rt = f80_ctx_make(0x037F);
@@ -1633,7 +1683,9 @@ static inline f80 f80_atan_unit(f80 z) {
   f80 t  = f80x_div(f80x_sub(z, z0), f80x_add(F80_ONE, f80x_mul(z, z0)));
   f80 t2 = f80x_mul(t, t);
   f80 s  = f80_poly_even(F80_ATAN_C, 9, t2);
-  return f80x_add(F80_ATAN_TBL[k], f80x_mul(t, s));
+  f80 last = f80x_mul(t, s);
+  return fin ? f80_addsub_p(F80_ATAN_TBL[k], last, false, *fin, 64)
+             : f80x_add(F80_ATAN_TBL[k], last);
 }
 
 static inline f80 f80_patan(f80 y, f80 x, f80_ctx &c) {
@@ -1676,14 +1728,26 @@ static inline f80 f80_patan(f80 y, f80 x, f80_ctx &c) {
     return f80_make_zero(sy);
   }
 
+  // Exactly ONE rounding happens under the caller's context, and it has to be
+  // the LAST arithmetic step - which branch that is depends on the operands.
+  // Rounding an earlier one under c as well would round twice.  The trailing
+  // sign flip is exact and does not count.
   f80 ay = f80_abs(y), ax = f80_abs(x);
   f80 a;
+  f80_ctx fc = f80_ctx_make(c.cw);
   if (f80_compare(ay, ax, true, c) != F80_CMP_GT) {
-    a = f80_atan_unit(f80x_div(ay, ax));
+    f80 u = f80_atan_unit(f80x_div(ay, ax), sx ? 0 : &fc);
+    a = sx ? f80_addsub_p(pi, u, true, fc, 64) : u;
   } else {
-    a = f80x_sub(pio2, f80_atan_unit(f80x_div(ax, ay)));
+    f80 u = f80_atan_unit(f80x_div(ax, ay), 0);
+    if (sx) {
+      // pi - (pi/2 - u); the outer subtraction is the one that rounds.
+      a = f80_addsub_p(pi, f80x_sub(pio2, u), true, fc, 64);
+    } else {
+      a = f80_addsub_p(pio2, u, true, fc, 64);
+    }
   }
-  if (sx) a = f80x_sub(pi, a);
+  f80_merge_final(c, fc);
   c.flags |= F80_PE;
   return sy ? f80_chs(a) : a;
 }
@@ -1816,16 +1880,16 @@ static inline void f80_trig_reduce(f80 x, f80_trig_r *out) {
   out->lo = corr;
 }
 
-static inline f80 f80_sin_red(f80 rh, f80 rl) {
+static inline f80 f80_sin_red(f80 rh, f80 rl, f80_ctx *fin) {
   f80 r  = f80x_add(rh, rl);
   f80 r2 = f80x_mul(r, r);
   f80 s  = f80_poly_even(F80_SIN_C, 11, r2);      // sin(r)/r
-  return f80x_mul(r, s);
+  return fin ? f80_mul_p(r, s, *fin, 64) : f80x_mul(r, s);
 }
-static inline f80 f80_cos_red(f80 rh, f80 rl) {
+static inline f80 f80_cos_red(f80 rh, f80 rl, f80_ctx *fin) {
   f80 r  = f80x_add(rh, rl);
   f80 r2 = f80x_mul(r, r);
-  return f80_poly_even(F80_COS_C, 12, r2);
+  return f80_poly_even_f(F80_COS_C, 12, r2, fin);
 }
 
 // True when the argument is out of range and the instruction must report C2
@@ -1861,8 +1925,20 @@ static inline bool f80_sincos(f80 x, f80 *sin_out, f80 *cos_out, f80_ctx &c) {
 
   f80_trig_r t;
   f80_trig_reduce(x, &t);
-  f80 sr = f80_sin_red(t.hi, t.lo);
-  f80 cr = f80_cos_red(t.hi, t.lo);
+  // WHICH evaluator feeds which output depends on the quadrant - in quadrants
+  // 1 and 3 the sine comes out of the COSINE series and vice versa - so the
+  // final-rounding context has to follow the value rather than the routine.
+  // Getting this backwards would rounds the wrong one under the caller's RC
+  // and leave the delivered result rounded to nearest regardless.
+  bool sin_from_sr = (t.quadrant == 0 || t.quadrant == 2);
+  f80_ctx fc = f80_ctx_make(c.cw);
+  f80_ctx *fin_sr = 0, *fin_cr = 0;
+  if (sin_out) { if (sin_from_sr) fin_sr = &fc; else fin_cr = &fc; }
+  if (cos_out) { if (sin_from_sr) fin_cr = &fc; else fin_sr = &fc; }
+  f80 sr = f80_sin_red(t.hi, t.lo, fin_sr);
+  f80 cr = f80_cos_red(t.hi, t.lo, fin_cr);
+  f80_merge_final(c, fc);
+  c.flags |= F80_PE;
   bool neg = f80_neg(x);
   f80 sv, cv;
   switch (t.quadrant) {
@@ -1872,7 +1948,6 @@ static inline bool f80_sincos(f80 x, f80 *sin_out, f80 *cos_out, f80_ctx &c) {
     default: sv = f80_chs(cr);   cv = sr;            break;
   }
   if (neg) sv = f80_chs(sv);                       // sin is odd, cos is even
-  c.flags |= F80_PE;
   if (sin_out) *sin_out = sv;
   if (cos_out) *cos_out = cv;
   return true;
@@ -1882,9 +1957,21 @@ static inline bool f80_sin(f80 x, f80 *out, f80_ctx &c)  { return f80_sincos(x, 
 static inline bool f80_cos(f80 x, f80 *out, f80_ctx &c)  { return f80_sincos(x, 0, out, c); }
 
 static inline bool f80_ptan(f80 x, f80 *out, f80_ctx &c) {
+  // The sine and the cosine are INTERMEDIATES here, so they are computed in
+  // their own context and only the divide rounds under the caller's - one
+  // rounding, not three.  DE and IE still have to come out of the inner
+  // context, because they are properties of the OPERAND rather than of the
+  // rounding.
   f80 s, co;
-  if (!f80_sincos(x, &s, &co, c)) return false;
-  *out = f80x_div(s, co);
+  f80_ctx inner = f80_ctx_make(0x037F);
+  if (!f80_sincos(x, &s, &co, inner)) {
+    c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE));
+    return false;
+  }
+  c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE));
+  f80_ctx fc = f80_ctx_make(c.cw);
+  *out = f80_div_p(s, co, fc, 64);
+  f80_merge_final(c, fc);
   return true;
 }
 

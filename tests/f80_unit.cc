@@ -706,6 +706,59 @@ static void oracle_boundaries() {
   std::snprintf(msg, sizeof msg,
                 "#U on the narrowing store matches the host x87 (%d cases)", scases);
   check(sbad == 0, msg);
+
+  // 4. What the transcendentals REPORT, which is a separate question from how
+  //    accurate they are and was not graded at all: oracle_transcendental below
+  //    measures ulps and runs only cw=0x037F, so nothing here could see a
+  //    rounding-control bug or a wrong exception flag.
+  //
+  //    These are held exactly, unlike the values, because a flag is a flag.
+  {
+    // FYL2X of a power of two is EXACT - log2(1.0) is 0 - and must raise
+    // nothing.  This is the one case where #P has to be suppressed, and the
+    // hard-coded #P these functions used to carry got it wrong.
+    f80_ctx c = f80_ctx_make(0x037F);
+    f80 g = f80_yl2x(f80_of(3.0L), f80_of(1.0L), c);
+    volatile long double vy = 3.0L, vx = 1.0L;
+    long double xy = vy, xx = vx, xr;
+    uint16_t hsw;
+    setcw(0x037F); clex();
+    __asm__ volatile("fyl2x\n\tfnstsw %1" : "=t"(xr), "=a"(hsw) : "0"(xx), "u"(xy) : "st(1)");
+    (void)xr; setcw(0x037F);
+    check((uint16_t)(c.flags & 0x3F) == (uint16_t)(hsw & 0x3F) &&
+          f80_classify(g) == F80_CLASS_ZERO,
+          "FYL2X of an exact power of two raises what the host raises (nothing)");
+
+    // And an overflowing one has to report #O, which no transcendental did.
+    f80 big; big.sig = 0xFFFFFFFFFFFFFFFFULL; big.se = 0x7FFE;
+    c = f80_ctx_make(0x037F);
+    f80 go = f80_yl2x(big, f80_of(65536.0L), c);
+    volatile long double vb = ld_of(big), vx2 = 65536.0L;
+    long double xb = vb, xx2 = vx2, xr2;
+    setcw(0x037F); clex();
+    __asm__ volatile("fyl2x\n\tfnstsw %1" : "=t"(xr2), "=a"(hsw) : "0"(xx2), "u"(xb) : "st(1)");
+    setcw(0x037F);
+    (void)go;
+    check((uint16_t)(c.flags & 0x3F) == (uint16_t)(hsw & 0x3F),
+          "an overflowing FYL2X reports #O the way the host does");
+
+    // Rounding control has to REACH them.  The internal helpers round to
+    // nearest at 64 bits whatever the guest asked for, so before the final
+    // rounding was moved into the caller's context every mode returned the
+    // same bits.  This does not assert WHICH way each mode goes - the series
+    // is a few ulp out and the host's is too - only that the control word is
+    // no longer ignored.
+    f80 sines[4];
+    static const uint16_t rcs[4] = { 0x037F, 0x077F, 0x0B7F, 0x0F7F };
+    for (int i = 0; i < 4; i++) {
+      f80_ctx cc = f80_ctx_make(rcs[i]);
+      f80_sin(f80_of(0.7L), &sines[i], cc);
+    }
+    bool all_same = true;
+    for (int i = 1; i < 4; i++)
+      if (sines[i].sig != sines[0].sig || sines[i].se != sines[0].se) all_same = false;
+    check(!all_same, "FSIN answers to the guest's rounding-control field");
+  }
 }
 
 // The recorded bound.  Measured, not asserted from the manual: raise it only

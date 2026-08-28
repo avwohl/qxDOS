@@ -792,6 +792,63 @@ and not for what comes after it.
   `tests/fpu_test.cc` 608 checks to 616, and the three that can be asserted
   were red against the previous commit's core first.
 
+- **The transcendentals answer to the control word now**, which closes three of
+  the four counts against them and leaves the fourth open on purpose. Moves
+  `emu88/emu88_f80.h`; dosiz compiles it.
+
+  Every one of the eight computed through internal helpers that build a private
+  context from a hard-coded `0x037F` and discard its flags, then hard-coded
+  `c.flags |= F80_PE` on the way out. So rounding control reached none of them,
+  `#U` and `#O` of the final result were never reported, `C1` was never set, and
+  `#P` was reported even when the answer was exact. All four were measured
+  against the host before anything was changed.
+
+  The fix is one shared shape: each entry point's **last** arithmetic operation
+  now rounds in a context built from the caller's control word, and everything
+  before it stays nearest-even in a throwaway. Getting "last" right is most of
+  the work - `f80_sincos` picks which of the sine and cosine series feeds which
+  output **by quadrant**, so in quadrants 1 and 3 the sine comes out of the
+  cosine series and the rounding context has to follow the value rather than the
+  routine; `f80_patan`'s last step is one of three depending on the operands;
+  and `f80_ptan`'s sine and cosine are intermediates, so only the divide rounds.
+  Precision control is deliberately **not** applied - the host was measured and a
+  387 ignores `PC` for these - so every one of these roundings is at an explicit
+  64 bits.
+
+  **What that buys, exactly:** `FYL2X` of a power of two is exact and now raises
+  nothing where it used to raise `#P`; an overflowing `FYL2X` now reports `#O`;
+  and all four rounding modes now produce different answers where they used to
+  produce identical bits. The ulp figures are **unchanged** - 3.0, 2.0, 3.0,
+  2.0, 2.0, 2.0, 3.0, 2.0 - which is the point: the internal helpers already
+  rounded to nearest at 64 bits, so at the default control word this is a no-op
+  on values and only the flags and the directed modes move.
+
+  **What it does not buy, measured rather than assumed.** `#U` for a tiny result
+  is still missing: `F2XM1` of `2^-16382` reports `#P` where the host reports
+  `#U|#P`, because that underflow happens in an intermediate multiply that has
+  already been denormalised in a throwaway context by the time the last step
+  runs. And `C1` is derived from a real rounding now instead of being hard zero,
+  but its agreement with hardware is unchanged at about chance - it depends on
+  which way *our* approximation rounds, and ours is a couple of ulp from the
+  host's. Neither is claimed as fixed.
+
+  Two things went wrong inside this change and are worth recording because both
+  looked like progress. Moving the final rounding into the caller's context made
+  it see the internal head/tail pieces, so `F2XM1` of the smallest **normal**
+  started reporting `#D` - a denormal operand report for an operand that was not
+  denormal. Only what a rounding can legitimately raise is merged back now.
+  And removing the hard-coded `#P` lost it wherever the last step happens to be
+  exact while the function is irrational, which is most of them; `#P` here means
+  "this result is not representable", which no final rounding can derive. It is
+  restored, with an exactness test on `FYL2X` for the one case - `x` a power of
+  two - where it genuinely has to be suppressed.
+
+  `tests/f80_unit.cc` gains a fourth section to `oracle_boundaries()` for what
+  the transcendentals REPORT, which nothing graded before:
+  `oracle_transcendental` measures ulps and runs only `cw=0x037F`, so no check
+  in this repository could see a rounding-control bug or a wrong flag. 53 checks
+  to 56, all three red against the previous commit's core first.
+
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
   `(void)` casts, 13 insertions and 142 deletions, and
