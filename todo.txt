@@ -170,33 +170,40 @@ against the host x87 on 2026-08-28 produced 39 distinct findings; twelve were
 fixed in two passes (f5f8f18 and the commit after it) and each of those twelve
 was reproduced against the host by hand before being touched.  what is below is
 the rest.
-  READ THIS BEFORE PICKING ONE UP: these are REPORTED, not confirmed.  Of 66
-verifier verdicts the hunt returned before it was stopped, 7 came back refuted,
-and the run does not record which findings those 7 attach to - so somewhere in
-this list are up to seven things that are not defects.  Every entry came with a
-reproduction; reproduce it before believing it.  Two of the twelve that WERE
-fixed looked wrong on first inspection and turned out to be real only after a
-proper sweep, and one looked real and was my own arithmetic error, so the
-inspection is worth doing in both directions.
+  THESE WERE RE-VERIFIED ON 2026-08-28 AND ALL OF THEM REPRODUCE.  An earlier
+version of this entry warned that up to seven were probably not defects,
+because the hunt that found them returned 7 refutations it did not attach to
+particular findings.  That warning was wrong and is corrected here rather than
+deleted: a second pass built a probe per finding against the host x87 and
+confirmed every one at high confidence, with none refuted and none already
+fixed by accident.  The 7 refutations must have landed on findings that were
+fixed while the run was still going.
+  Two of them came back with the REPORT corrected rather than just confirmed,
+which is worth knowing before picking one up.  The two unmasked-exception
+entries are ONE change, not two: whether #P belongs on an unmasked overflow
+depends on the inexactness of the 24576-biased value, so the flags cannot be
+fixed without computing that value.  And the fix proposed for it - "do not set
+#P for an unmasked overflow" - is wrong as stated; it breaks the 82 of 738
+cases in that verifier's own sweep where the biased result really is inexact.
 
-  the transcendental exception family, which is one refactor rather than four
-  fixes.  measured against the host, all four confirmed: RC is ignored entirely
-  (FSIN of 1.0 returns identical bits in all four rounding modes where the host
-  differs); UE and OE are never reported (F2XM1 of 2^-16382 gives PE where the
-  host gives UE|PE, FYL2X of maxfinite by 65536 gives PE where the host gives
-  OE|PE); C1 is never set after any of the eight; and #P is hard-coded, so
-  FYL2X(3.0, 1.0) - which is exactly zero - reports PE where the host reports
-  nothing.  the fix for all four is the same shared exit that rounds the final
-  result under the CALLER's ctx at 64-bit precision (PC must not apply; the
-  host was measured and a 387 ignores it for these).  F2XM1, FYL2X, FYL2XP1 and
-  FPTAN each end in one arithmetic operation and could take that exit today.
-  FSIN, FCOS, FSINCOS and FPATAN do NOT: their results come straight out of
-  f80_sin_red/f80_cos_red/f80_atan_unit with no trailing rounding step, so the
-  evaluators would have to carry a head+tail pair out to a shared exit.  doing
-  the four that are easy would leave the eight inconsistent with each other,
-  which is why none of them were done.  whoever takes it also has to widen
-  tests/f80_unit.cc's oracle_transcendental, which only ever runs cw=0x037F, so
-  no check there can currently see an RC bug at all.
+  what is LEFT of the transcendental exception family, three of whose four
+  counts closed on 2026-08-28 and are in CHANGELOG.md.  rounding control
+  reaches all eight now, an overflowing FYL2X reports #O, and an exact FYL2X no
+  longer reports a #P it did not earn.  two things did not close:
+    - #U for a tiny result.  F2XM1 of 2^-16382 reports #P where the host
+      reports #U|#P.  that underflow happens in an INTERMEDIATE multiply which
+      has already been denormalised in a throwaway context by the time the last
+      step runs, so moving the final rounding into the caller's context - which
+      is what fixed the other three - cannot see it.  fixing it means carrying
+      underflow information out of the intermediates, which is a different and
+      larger change.
+    - C1.  it is derived from a real rounding now rather than being hard zero,
+      but its agreement with hardware is unchanged at about chance (measured
+      2365/4000 after against 2010/4000 before, at RC=nearest), because it
+      depends on which way OUR approximation rounds and ours sits a couple of
+      ulp from the host's.  closing this properly needs the transcendentals to
+      be correctly rounded, which is a much bigger claim than the 6-ulp bound
+      they are held to.
 
   the rest, each with the file it is in:
   - emu88_f80.h: unmasked #O and #U deliver the MASKED result rather than the
@@ -208,13 +215,6 @@ inspection is worth doing in both directions.
     rule runs, so the wrong NaN can win.
   - emu88_f80.h: FPREM/FPREM1 hand back a pseudo-denormal dividend in its
     unnormalized encoding.
-  - emu88_f80.h: f80_mul2's tail is 2^62 too large when the rounded head
-    carries out of 64 bits.
-  - emu88_f80.h: FYL2X with y = +-0 delivers the wrong-signed zero for
-    0 < x < 1; FYL2XP1 with ST(0) = +-0 and ST(1) = +-inf returns a zero where
-    the 387 raises #IA and delivers the indefinite; FYL2XP1 of a bottom-of-range
-    denormal returns zero because x/(2+x) underflows; and both skip the #D
-    report when the other operand short-circuits the result.
   - emu88_fpu.cc: FLDENV/FRSTOR take the three non-EMPTY tag encodings
     verbatim.  a real x87 keeps only the EMPTY/non-EMPTY decision from the
     image and re-derives valid/zero/special from what is actually in the

@@ -759,6 +759,87 @@ static void oracle_boundaries() {
       if (sines[i].sig != sines[0].sig || sines[i].se != sines[0].se) all_same = false;
     check(!all_same, "FSIN answers to the guest's rounding-control field");
   }
+
+  // 5. The logarithm edge cases, where the shortcut returns get the answer
+  //    without going near the series - and where four of them were wrong.
+  //    Every one of these is graded against the host exactly: value, the sign
+  //    of a zero, and flags.
+  {
+    struct Edge {
+      int op;                       // 0 = FYL2X, 1 = FYL2XP1
+      f80 y, x;
+      const char *what;
+    };
+    f80 dn_small; dn_small.sig = 0x0000000000000001ULL; dn_small.se = 0x0000;
+    f80 dn_half;  dn_half.sig  = 0x4000000000000000ULL; dn_half.se  = 0x0000;
+    const Edge edges[] = {
+      { 0, f80_make_zero(false), f80_of(0.5L),  "FYL2X(+0, 0.5): log2 is negative, so -0" },
+      { 0, f80_make_zero(false), f80_of(2.0L),  "FYL2X(+0, 2.0): log2 is positive, so +0" },
+      { 0, f80_make_zero(true),  f80_of(0.5L),  "FYL2X(-0, 0.5): both signs, so +0" },
+      { 0, f80_make_zero(false), dn_half,       "FYL2X(+0, denormal): #D survives the shortcut" },
+      { 1, f80_make_inf(false),  f80_make_zero(false), "FYL2XP1(+inf, +0) is 0*inf: #IA" },
+      { 1, f80_make_inf(true),   f80_make_zero(false), "FYL2XP1(-inf, +0) is 0*inf: #IA" },
+      { 1, f80_of(1.0L),         dn_small,      "FYL2XP1 of a bottom-of-range denormal" },
+    };
+    int ebad = 0;
+    for (unsigned i = 0; i < sizeof edges / sizeof edges[0]; i++) {
+      const Edge &e = edges[i];
+      f80_ctx c = f80_ctx_make(0x037F);
+      f80 g = e.op ? f80_yl2xp1(e.y, e.x, c) : f80_yl2x(e.y, e.x, c);
+      volatile long double vy = ld_of(e.y), vx = ld_of(e.x);
+      long double xy = vy, xx = vx, xr;
+      uint16_t hsw;
+      setcw(0x037F); clex();
+      if (e.op)
+        __asm__ volatile("fyl2xp1\n\tfnstsw %1" : "=t"(xr), "=a"(hsw) : "0"(xx), "u"(xy) : "st(1)");
+      else
+        __asm__ volatile("fyl2x\n\tfnstsw %1"   : "=t"(xr), "=a"(hsw) : "0"(xx), "u"(xy) : "st(1)");
+      setcw(0x037F);
+      f80 want = f80_of(xr);
+      uint16_t gf = (uint16_t)(c.flags & 0x3F), wf = (uint16_t)(hsw & 0x3F);
+      if (g.sig != want.sig || g.se != want.se || gf != wf) {
+        ebad++;
+        report(e.what, 0x037F, e.y, e.x, g, gf, want, wf);
+      }
+    }
+    check(ebad == 0, "the FYL2X/FYL2XP1 shortcut returns match the host exactly");
+  }
+
+  // 6. f80_mul2's tail, graded against EXACT integer arithmetic rather than
+  //    against the host - there is no instruction that exposes a double-double
+  //    product, so the oracle here is the 128-bit product itself.  The tail
+  //    belongs to the scale the product had BEFORE the rounding carry, and
+  //    reading it against the adjusted exponent was wrong by exactly half an
+  //    ulp of the head: large enough to matter to every transcendental that
+  //    uses the pair, small enough to look plausible in a spot check.
+  {
+    static const uint64_t pairs[][2] = {
+      { 0xFFFFFFFFFFFFFFFEULL, 0x8000000000000001ULL },   // carries out
+      { 0xFFFFFFFFFFFFFFFCULL, 0x8000000000000002ULL },   // carries out
+      { 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL },
+      { 0x8000000000000000ULL, 0x8000000000000000ULL },   // exact, no tail
+      { 0xC000000000000001ULL, 0xB000000000000003ULL },
+    };
+    int mbad = 0;
+    for (unsigned i = 0; i < sizeof pairs / sizeof pairs[0]; i++) {
+      f80 a, b;
+      a.sig = pairs[i][0]; a.se = 0x3FFF;
+      b.sig = pairs[i][1]; b.se = 0x3FFF;
+      f80 hi, lo;
+      f80_mul2(a, b, &hi, &lo);
+      unsigned __int128 P = (unsigned __int128)a.sig * b.sig;   // value = P * 2^-126
+      __int128 acc = 0;
+      for (int w = 0; w < 2; w++) {
+        f80 v = w ? lo : hi;
+        if (!v.sig) continue;
+        int e = (int)(v.se & 0x7FFF) - 16383, sh = e - 63 + 126;
+        __int128 t = (sh >= 0) ? ((__int128)v.sig << sh) : ((__int128)(v.sig >> (-sh)));
+        acc += (v.se & 0x8000) ? -t : t;
+      }
+      if (acc != (__int128)P) mbad++;
+    }
+    check(mbad == 0, "f80_mul2's head and tail sum to the exact product");
+  }
 }
 
 // The recorded bound.  Measured, not asserted from the manual: raise it only

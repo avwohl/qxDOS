@@ -849,6 +849,61 @@ and not for what comes after it.
   in this repository could see a rounding-control bug or a wrong flag. 53 checks
   to 56, all three red against the previous commit's core first.
 
+- **The logarithm shortcuts, `f80_mul2`'s tail, and a wrong warning withdrawn.**
+  Moves `emu88/emu88_f80.h`, which dosiz compiles.
+
+  Five shortcut returns in `FYL2X` and `FYL2XP1` - the paths that answer without
+  going near the series - were wrong, and all five are graded against the host
+  exactly now, value, sign of zero and flags:
+
+  - `FYL2X(+0, 0.5)` returned `+0`. `log2(x)` is **negative** for `0 < x < 1`, so
+    the product's sign follows the sign of the logarithm rather than the sign of
+    `x`; the host returns `-0`.
+  - `FYL2XP1(+inf, +0)` returned a signed zero. That is `0 * inf`; the host
+    raises `#IA` and delivers the indefinite. The zero-`x` shortcut fired before
+    anything looked at `y`.
+  - `FYL2XP1` of a bottom-of-range denormal returned **zero**. The reduction
+    `t = x/(2+x)` is about `x/2`, which for a denormal underflows to nothing and
+    takes the whole result with it. There is a linear path for `|x| < 2^-66` now,
+    where the series past its first term is under half an ulp of `y*x*log2(e)`
+    anyway - the host returns the smallest denormal with `#U|#P`, and so does
+    this.
+  - `#D` was skipped whenever the other operand short-circuited the result. It
+    belongs before those shortcuts and after the `#IA`/`#Z` paths, which is the
+    priority rule the rest of the file already follows.
+
+  **`f80_mul2`'s tail was wrong by exactly half an ulp of the head** whenever
+  rounding the head carried out of 64 bits. The tail belongs to the scale the
+  product had *before* the carry; the code adjusted the exponent first, then read
+  the tail against the adjusted one and halved it as well. For
+  `0xFFFFFFFFFFFFFFFE:3FFF x 0x8000000000000001:3FFF` that came back `2^62 + 1`
+  times too large. Every transcendental that carries a head/tail pair uses this.
+  It is graded against **exact 128-bit integer arithmetic** rather than against
+  the host, because no instruction exposes a double-double product - the oracle
+  has to be the product itself.
+
+  **And a warning in `todo.txt` is withdrawn, which is the part worth reading.**
+  That file told anyone picking up the remaining findings that up to seven of
+  them were probably not defects, because the hunt that produced them returned
+  seven refutations it had not attached to particular findings. A second pass
+  built a probe per finding against the host and **confirmed every one of the
+  seventeen at high confidence, with none refuted**. The seven refutations must
+  have landed on findings that were fixed while that run was still going. The
+  warning was wrong, it was discouraging work on real defects, and it is
+  corrected in place rather than deleted.
+
+  Two of those seventeen came back with the *report* corrected rather than
+  merely confirmed, and that is now recorded with them: the two unmasked-
+  exception entries are **one** change, because whether `#P` belongs on an
+  unmasked overflow depends on the inexactness of the 24576-biased value and so
+  cannot be decided without computing it - and the fix originally proposed for
+  it, "do not set `#P` for an unmasked overflow", is wrong as stated. It breaks
+  the 82 of 738 cases in that verifier's own sweep where the biased result
+  really is inexact.
+
+  `tests/f80_unit.cc` 56 checks to 58; both new ones red against the previous
+  commit's core first.
+
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
   `(void)` casts, 13 insertions and 142 deletions, and

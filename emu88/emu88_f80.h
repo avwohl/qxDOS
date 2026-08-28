@@ -1405,18 +1405,26 @@ static inline void f80_mul2(f80 a, f80 b, f80 *hi, f80 *lo) {
   // p = the exact significand, bit 127 set, value = p * 2^(e-127).
   uint64_t head = (uint64_t)(p >> 64);
   uint64_t tail = (uint64_t)p;
+  // The tail belongs to the scale the product had BEFORE any rounding carry,
+  // and the carry moves only the head.  Adjusting e first and then reading the
+  // tail against it - which is what this did, along with halving the tail -
+  // came back 2^62+1 times too large for
+  // 0xFFFFFFFFFFFFFFFE:3FFF x 0x8000000000000001:3FFF, an error of exactly
+  // half an ulp of the head, which is the worst a tail can be wrong by and
+  // still look plausible.  Graded against exact rational arithmetic now.
+  const int32_t e_tail = e;
   bool up = (tail > (1ULL << 63)) || (tail == (1ULL << 63) && (head & 1));
   if (up) {
     head += 1;
-    if (head == 0) { head = 1ULL << 63; e += 1; tail = (uint64_t)(tail >> 1); }
+    if (head == 0) { head = 1ULL << 63; e += 1; }
   }
   *hi = f80_from_sig(s, head, e);
   // The tail is what the head threw away, signed by the rounding direction.
   if (up) {
     uint64_t back = (uint64_t)0 - tail;              // 2^64 - tail
-    *lo = f80_from_sig(!s, back, e - 64);
+    *lo = f80_from_sig(!s, back, e_tail - 64);
   } else {
-    *lo = f80_from_sig(s, tail, e - 64);
+    *lo = f80_from_sig(s, tail, e_tail - 64);
   }
 }
 
@@ -1589,8 +1597,21 @@ static inline f80 f80_yl2x(f80 y, f80 x, f80_ctx &c) {
     if (ky == F80_CLASS_ZERO) { c.flags |= F80_IE; return f80_indefinite(); }
     return f80_make_inf(f80_neg(y));
   }
-  if (ky == F80_CLASS_ZERO) { c.c1 = false; return f80_make_zero(f80_neg(y)); }
+  // #D belongs BEFORE the y-zero shortcut: a denormal operand is still a
+  // denormal operand when the other operand decides the result, and the host
+  // reports it.  It stays after the #IA and #Z paths above, because those two
+  // suppress it - which is the rule the rest of this file already follows.
   if (kx == F80_CLASS_DENORMAL || ky == F80_CLASS_DENORMAL) c.flags |= F80_DE;
+  if (ky == F80_CLASS_ZERO) {
+    // y * log2(x) with y zero is a signed zero, and the sign follows the sign
+    // of log2(x) - which is NEGATIVE for 0 < x < 1, not the sign of x.  x is
+    // positive and finite by here, so log2(x) < 0 is exactly x < 1, and x == 1
+    // gives +0 rather than a negative zero.  Measured: FYL2X(+0, 0.5) is -0 on
+    // the host and was +0 here.
+    bool logneg = f80_biased(x) < 0x3FFF;
+    c.c1 = false;
+    return f80_make_zero(f80_neg(y) != logneg);
+  }
 
   f80_wide w = f80_unpack(x);
   int32_t e = w.exp;
@@ -1623,14 +1644,40 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
   f80 r;
   if (f80_prop_nan2(y, x, c, &r)) return r;
   f80_class kx = f80_classify(x), ky = f80_classify(y);
-  if (kx == F80_CLASS_ZERO) { c.c1 = false; return f80_make_zero(f80_neg(x) != f80_neg(y)); }
+  if (kx == F80_CLASS_ZERO) {
+    // log2(1+0) is +0, so this is y * 0 - and if y is an INFINITY that is
+    // 0 * inf, which is invalid.  The zero shortcut used to fire first and
+    // hand back a signed zero; the host raises #IA and delivers the
+    // indefinite.
+    if (ky == F80_CLASS_INF) { c.flags |= F80_IE; return f80_indefinite(); }
+    c.c1 = false; return f80_make_zero(f80_neg(x) != f80_neg(y));
+  }
   if (kx == F80_CLASS_INF) {
     if (f80_neg(x)) { c.flags |= F80_IE; return f80_indefinite(); }
     if (ky == F80_CLASS_ZERO) { c.flags |= F80_IE; return f80_indefinite(); }
     return f80_make_inf(f80_neg(y));
   }
-  if (ky == F80_CLASS_ZERO) { c.c1 = false; return f80_make_zero(f80_neg(x) != f80_neg(y)); }
   if (kx == F80_CLASS_DENORMAL || ky == F80_CLASS_DENORMAL) c.flags |= F80_DE;
+  if (ky == F80_CLASS_ZERO) { c.c1 = false; return f80_make_zero(f80_neg(x) != f80_neg(y)); }
+
+  // For |x| below 2^-66 everything past the first term of the series is under
+  // half an ulp of x*log2(e), so the answer IS y*x*log2(e).  Computing it that
+  // way is not an optimisation here, it is the only way to get an answer at
+  // all near the bottom of the exponent range: t = x/(2+x) is about x/2, which
+  // for a denormal x underflows to zero and takes the whole result with it.
+  // FYL2XP1(1.0, smallest denormal) returned 0 where the host returns the
+  // smallest denormal with #U|#P.
+  {
+    f80_wide wx = f80_unpack(x);
+    if (wx.exp < -66) {
+      f80 t1 = f80x_mul(y, x);
+      f80_ctx fc = f80_ctx_make(c.cw);
+      f80 rr = f80_mul_p(t1, F80_L2E, fc, 64);
+      f80_merge_final(c, fc);
+      c.flags |= F80_PE;
+      return rr;
+    }
+  }
 
   // Past the series' range, fall back on log2(1+x).  The range is NOT |x| <= 1:
   // t = x/(2+x) is what the twenty atanh terms have to cover, and |t| <= 1/3
