@@ -949,7 +949,16 @@ static inline f80 f80_prem1(f80 a, f80 b, f80_ctx &c, int *quo, bool *partial) {
 // Widening is exact, so this only has to decode.  The one thing it is NOT
 // allowed to do is flush a denormal: a 387 loads it, normalises it into the
 // wider exponent range, and reports #D.
-static inline f80 f80_from_ieee(uint64_t bits, int mbits, int ebits, f80_ctx &c) {
+// `quiet_snan' is true for a plain LOAD, where the delivered value has to be
+// the quieted NaN, and false when this is an arithmetic OPERAND: the two-NaN
+// tie-break compares significands, and setting the quiet bit first can change
+// which one wins.  FADD m32real of the SNaN 7F800001 against an ST(0) of
+// C000000000000001 is the case - quieting first makes the memory NaN
+// C000010000000000, which outranks ST(0); the host delivers ST(0)'s.
+// f80_prop_nan2 quiets whichever NaN it selects, so the arithmetic path loses
+// nothing by leaving it signalling until then.
+static inline f80 f80_from_ieee(uint64_t bits, int mbits, int ebits, f80_ctx &c,
+                                bool quiet_snan = true) {
   int bias = (1 << (ebits - 1)) - 1;
   uint64_t emax = (((uint64_t)1) << ebits) - 1;
   bool s = ((bits >> (ebits + mbits)) & 1) != 0;
@@ -967,8 +976,10 @@ static inline f80 f80_from_ieee(uint64_t bits, int mbits, int ebits, f80_ctx &c)
   }
   if (e == emax) {
     if (m == 0) return f80_make_inf(s);
-    if ((m & (((uint64_t)1) << (mbits - 1))) == 0) c.flags |= F80_IE;   // SNaN
-    r.sig = (1ULL << 63) | (m << (63 - mbits)) | (1ULL << 62);
+    bool snan = (m & (((uint64_t)1) << (mbits - 1))) == 0;
+    if (snan) c.flags |= F80_IE;
+    r.sig = (1ULL << 63) | (m << (63 - mbits));
+    if (!snan || quiet_snan) r.sig |= 1ULL << 62;
     r.se  = s ? 0xFFFF : 0x7FFF;
     return r;
   }
@@ -1052,11 +1063,11 @@ static inline uint64_t f80_to_ieee(f80 a, int mbits, int ebits, f80_ctx &c) {
   return sbit | ((normal_now ? (uint64_t)1 : (uint64_t)0) << mbits) | (m & fmask);
 }
 
-static inline f80 f80_from_f32(uint32_t bits, f80_ctx &c) {
-  return f80_from_ieee(bits, 23, 8, c);
+static inline f80 f80_from_f32(uint32_t bits, f80_ctx &c, bool quiet_snan = true) {
+  return f80_from_ieee(bits, 23, 8, c, quiet_snan);
 }
-static inline f80 f80_from_f64(uint64_t bits, f80_ctx &c) {
-  return f80_from_ieee(bits, 52, 11, c);
+static inline f80 f80_from_f64(uint64_t bits, f80_ctx &c, bool quiet_snan = true) {
+  return f80_from_ieee(bits, 52, 11, c, quiet_snan);
 }
 static inline uint32_t f80_to_f32(f80 a, f80_ctx &c) {
   return (uint32_t)f80_to_ieee(a, 23, 8, c);

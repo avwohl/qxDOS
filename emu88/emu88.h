@@ -190,8 +190,10 @@ public:
   void execute_fpu(emu88_uint8 opcode);
 
   // FPU memory access helpers
-  f80  fpu_read_m32real(uint16_t seg, uint32_t off, f80_ctx &c);
-  f80  fpu_read_m64real(uint16_t seg, uint32_t off, f80_ctx &c);
+  // quiet_snan is false when the value is an arithmetic OPERAND rather than a
+  // plain load - see f80_from_ieee in emu88_f80.h for why the order matters.
+  f80  fpu_read_m32real(uint16_t seg, uint32_t off, f80_ctx &c, bool quiet_snan = true);
+  f80  fpu_read_m64real(uint16_t seg, uint32_t off, f80_ctx &c, bool quiet_snan = true);
   f80  fpu_read_m80real(uint16_t seg, uint32_t off);
   void fpu_write_m32real(uint16_t seg, uint32_t off, f80 v, f80_ctx &c);
   void fpu_write_m64real(uint16_t seg, uint32_t off, f80 v, f80_ctx &c);

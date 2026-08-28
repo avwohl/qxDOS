@@ -211,8 +211,6 @@ cases in that verifier's own sweep where the biased result really is inexact.
     either, so this only matters to a guest that unmasks and polls.
   - emu88_f80.h: f80_round_pack ignores the exception masks - an exact tiny
     result raises no #U when #U is unmasked, and an unmasked #O also sets #P.
-  - emu88_f80.h: an m32/m64 SNaN operand is quieted BEFORE the NaN-selection
-    rule runs, so the wrong NaN can win.
   - emu88_f80.h: FPREM/FPREM1 hand back a pseudo-denormal dividend in its
     unnormalized encoding.
   - emu88_fpu.cc: FLDENV/FRSTOR take the three non-EMPTY tag encodings
@@ -222,11 +220,6 @@ cases in that verifier's own sweep where the biased result really is inexact.
     round-trips differently here than on hardware.  note the FRSTOR case
     currently documents taking them verbatim as DELIBERATE, so that comment is
     part of what has to change.
-  - emu88_fpu.cc: the 32-bit environment images leave the reserved upper halves
-    zero where a real x87 writes all ones.
-  - emu88_fpu.cc: when one instruction both reads an empty register AND pushes
-    onto a full stack, C1 reports the overflow where hardware reports the first
-    fault, the underflow.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808

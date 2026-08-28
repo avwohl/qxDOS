@@ -428,6 +428,27 @@ int main() {
     check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "...and reports IE|SF");
     check((sw() & SW_PE) == 0, "...and raises no PE for an operation it aborted");
 
+    // A signalling NaN arriving as an m32 OPERAND must not be quieted before
+    // the two-NaN tie-break runs.  The rule compares significands, and setting
+    // the quiet bit first lifts the memory NaN above ST(0) and hands it the
+    // result.  Measured on the host: ST(0)=C000000000000001 against the m32
+    // SNaN 7F800001 delivers ST(0)'s NaN, and emu88 delivered the memory one.
+    // The control below is the same shape with a QUIET memory NaN, where the
+    // memory NaN legitimately does win.
+    FNINIT();
+    push80(0x7FFF, 0xC000000000000001ULL);      // ST(0) = a QNaN, small payload
+    wr32(SCRATCH64, 0x7F800001u);               // an m32 SNaN
+    opm(0xD8, 0, SCRATCH64);                    // FADD m32real
+    check(st_is(0, 0x7FFF, 0xC000000000000001ULL),
+          "an m32 SNaN operand does not outrank ST(0) by being quieted first");
+    check((sw() & SW_IE) != 0, "...and the SNaN still raises #IA");
+    FNINIT();
+    push80(0x7FFF, 0xC000000000000001ULL);
+    wr32(SCRATCH64, 0x7FC00001u);               // an m32 QUIET NaN, larger
+    opm(0xD8, 0, SCRATCH64);
+    check(st_is(0, 0x7FFF, 0xC000010000000000ULL),
+          "...while a larger quiet m32 NaN still wins on significand");
+
     // #D is the lowest-priority report and a higher-priority one displaces it.
     // The memory-operand helpers raise DE into the same context BEFORE the
     // arithmetic decides to raise #IS, so a denormal operand used to be
@@ -451,6 +472,20 @@ int main() {
     wr32(SCRATCH64, 0x802CCD94u);
     opm(0xD8, 0, SCRATCH64);
     check((sw() & SW_DE) != 0, "...while a live ST(0) still reports the denormal");
+
+    // When ONE instruction raises both faults - it reads an empty register and
+    // then pushes onto a full stack - the FIRST one owns C1.  fpu_get already
+    // latched an underflow and refused to be overwritten; fpu_push did not,
+    // so the later overflow displaced it and C1 came out set.  Measured on the
+    // host for FLD ST(i), FXTRACT and FPTAN: SW=3841, C1 clear.
+    FNINIT();
+    for (int i = 0; i < 8; i++) push(1.0);      // stack full, TOP = 0
+    opr(0xDD, 0xC0);                            // FFREE ST(0): empty it, still 7 live
+    opr(0xD9, 0xC0);                            // FLD ST(0): reads empty, pushes onto full
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF),
+          "reading empty and then pushing onto full raises IE and SF");
+    check((sw() & SW_C1) == 0,
+          "...and C1 reports the FIRST fault, the underflow, not the overflow");
 
     // The two-result instructions write one result and push the other, so a
     // stack fault has to claim BOTH destinations - and the arithmetic they had
@@ -1953,6 +1988,22 @@ int main() {
     opm(0xD9, 6, ENV);
     check(rd16(ENV + 8) == CS_SEL,
           "protected mode writes the code selector at +8 instead");
+
+    // The reserved upper halves of the 16-bit fields in the 32-BIT image are
+    // written as ONES.  Measured on the host with the destination pre-poisoned
+    // with 0x00, 0xAA and 0x5A, identical every time, so they are stored and
+    // not left over: FNINIT then FNSTENV32 gives +00=FFFF037F, +04=FFFF0000,
+    // +08=FFFFFFFF, +18=FFFF0000.  The three dwords carrying a full 32 bits -
+    // FIP, the selector-and-opcode, FDP - have no reserved half and get none.
+    for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
+    FNINIT();
+    run({0x66, 0xD9, mrm_disp16(6), (uint8_t)(ENV & 0xFF), (uint8_t)(ENV >> 8)});
+    check((rd32(ENV + 0) >> 16) == 0xFFFF, "FNSTENV32 fills the reserved half of +0 with ones");
+    check((rd32(ENV + 4) >> 16) == 0xFFFF, "...and of +4");
+    check((rd32(ENV + 8) >> 16) == 0xFFFF, "...and of +8");
+    check((rd32(ENV + 24) >> 16) == 0xFFFF, "...and of the operand selector at +24");
+    check((rd32(ENV + 12) >> 16) == 0x0000,
+          "...but FIP at +12 is a full 32-bit field and keeps its high half");
     cpu->cr0 &= (uint32_t)~emu88::CR0_PE;
     setup();
 

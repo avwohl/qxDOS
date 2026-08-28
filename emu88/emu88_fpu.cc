@@ -135,7 +135,12 @@ static inline void fpu_push(emu88::FPUState &fpu, f80 v, f80_ctx &c, int &sf) {
   int top = ((((fpu.sw >> 11) & 7)) - 1) & 7;
   if (fpu.tags[top] != TAG_EMPTY) {
     c.flags |= F80_IE;
-    sf = SF_OVER;
+    // The FIRST fault owns C1, the way fpu_get already latches an underflow.
+    // An instruction that reads an empty register AND then pushes onto a full
+    // stack - FLD ST(0) with the stack full, FXTRACT, FPTAN - raises both, and
+    // the host reports the underflow: SW=3841 with C1 clear, where overwriting
+    // sf here gave 3A41 with C1 set.
+    if (sf == SF_NONE) sf = SF_OVER;
     v = f80_indefinite();
   }
   fpu.sw = (uint16_t)((fpu.sw & ~0x3800) | (top << 11));
@@ -170,14 +175,14 @@ static inline void fpu_two_result_fault(emu88::FPUState &fpu, f80_ctx &c, int sf
 // Memory access helpers for FPU operand types
 //=============================================================================
 
-f80 emu88::fpu_read_m32real(uint16_t seg, uint32_t off, f80_ctx &c) {
-  return f80_from_f32(fetch_dword(seg, off), c);
+f80 emu88::fpu_read_m32real(uint16_t seg, uint32_t off, f80_ctx &c, bool quiet_snan) {
+  return f80_from_f32(fetch_dword(seg, off), c, quiet_snan);
 }
 
-f80 emu88::fpu_read_m64real(uint16_t seg, uint32_t off, f80_ctx &c) {
+f80 emu88::fpu_read_m64real(uint16_t seg, uint32_t off, f80_ctx &c, bool quiet_snan) {
   uint32_t lo = fetch_dword(seg, off);
   uint32_t hi = fetch_dword(seg, off + 4);
-  return f80_from_f64(((uint64_t)hi << 32) | lo, c);
+  return f80_from_f64(((uint64_t)hi << 32) | lo, c, quiet_snan);
 }
 
 // A ten-byte move.  The old version rebuilt a double out of the encoding with
@@ -312,14 +317,28 @@ void emu88::fpu_store_env(uint16_t seg, uint32_t base, bool op32) {
     }
     return;
   }
-  sw32(base + 0, fpu.cw);
-  sw32(base + 4, fpu.sw);
-  sw32(base + 8, tw);
+  // The reserved upper halves of the 16-bit fields are written as ONES, not
+  // zeroes.  Measured on the host with the destination pre-poisoned three ways
+  // (0x00, 0xAA, 0x5A) and identical every time, so they are actively stored
+  // rather than left over: FNINIT then FNSTENV32 gives +00=FFFF037F,
+  // +04=FFFF0000, +08=FFFFFFFF, +18=FFFF0000.  The three dwords that carry a
+  // full 32 bits - FIP at +0C, the selector-and-opcode at +10, FDP at +14 -
+  // have no reserved half and get none.
+  //
+  // CW, SW and TW sit at +0/+4/+8 in BOTH 32-bit layouts, so the ones go in for
+  // real-address mode too; only the protected form could actually be measured,
+  // because this host cannot leave protected mode.  The operand selector at
+  // +18 is protected-mode-only and is handled inside that branch; the
+  // real-address branch below packs its pointers differently and is left as
+  // it is rather than guessed at.
+  sw32(base + 0, 0xFFFF0000u | fpu.cw);
+  sw32(base + 4, 0xFFFF0000u | fpu.sw);
+  sw32(base + 8, 0xFFFF0000u | tw);
   if (prot) {
     sw32(base + 12, fpu.fip);
     sw32(base + 16, (uint32_t)fpu.fcs | ((uint32_t)(fpu.fop & 0x07FF) << 16));
     sw32(base + 20, fpu.fdp);
-    sw32(base + 24, fpu.fds);
+    sw32(base + 24, 0xFFFF0000u | fpu.fds);
   } else {
     // The 32-bit real-address-mode image is NOT the 16-bit one widened.  SDM
     // Vol.1, "Real Mode x87 FPU State Image in Memory, 32-Bit Format":
@@ -458,7 +477,7 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   // D8: FADD/FMUL/FCOM/FCOMP/FSUB/FSUBR/FDIV/FDIVR — m32real or ST(i)
   //=========================================================================
   case 0: {
-    f80 val = is_mem ? fpu_read_m32real(mr.seg, mr.offset, c) : RD(rm);
+    f80 val = is_mem ? fpu_read_m32real(mr.seg, mr.offset, c, false) : RD(rm);
     f80 st0 = RD(0);
     switch (reg) {
       case 0: WRR(0, f80_add(st0, val, c)); break;                 // FADD
@@ -746,7 +765,7 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   //=========================================================================
   case 4: {
     if (is_mem) {
-      f80 val = fpu_read_m64real(mr.seg, mr.offset, c);
+      f80 val = fpu_read_m64real(mr.seg, mr.offset, c, false);   // an operand
       f80 st0 = RD(0);
       switch (reg) {
         case 0: WRR(0, f80_add(st0, val, c)); break;

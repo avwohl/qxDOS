@@ -904,6 +904,47 @@ and not for what comes after it.
   `tests/f80_unit.cc` 56 checks to 58; both new ones red against the previous
   commit's core first.
 
+- **Three more from the re-verified list**: the `C1` fault priority, the
+  reserved halves of the 32-bit environment image, and the order in which a
+  signalling NaN gets quieted. Moves `emu88/emu88_fpu.cc`, `emu88/emu88_f80.h`
+  and `emu88/emu88.h`, all of which dosiz compiles.
+
+  - **`C1` reported the second fault instead of the first.** One instruction can
+    raise both: `FLD ST(i)` with the stack full and `ST(i)` empty reads an empty
+    register and then pushes onto a full one, and so do `FXTRACT` and `FPTAN`.
+    `fpu_get` already latched an underflow and refused to be overwritten;
+    `fpu_push` overwrote it unconditionally, so the later overflow won and `C1`
+    came out set. The host reports the underflow - `SW=3841`, `C1` clear.
+  - **The reserved upper halves of the 32-bit environment image are ONES.**
+    `FNINIT` then `FNSTENV32` gives `+00=FFFF037F`, `+04=FFFF0000`,
+    `+08=FFFFFFFF`, `+18=FFFF0000` on the host; this wrote zeroes. Measured with
+    the destination pre-poisoned with `0x00`, `0xAA` and `0x5A` and identical
+    every time, so they are actively stored rather than left over. The three
+    dwords that carry a full 32 bits - `FIP`, the selector-and-opcode, `FDP` -
+    have no reserved half and get none. Only the protected form could be
+    measured, because this host cannot leave protected mode; `CW`/`SW`/`TW` sit
+    at the same offsets in both 32-bit layouts so the change covers both, and
+    the real-address-mode pointer packing below is left alone rather than
+    guessed at.
+  - **A signalling NaN arriving as an m32/m64 operand was quieted too early.**
+    The two-NaN tie-break compares significands, and setting the quiet bit first
+    lifts the memory NaN above `ST(0)`: `FADD m32real` of the SNaN `7F800001`
+    against an `ST(0)` of `C000000000000001` delivered the memory NaN where the
+    host delivers `ST(0)`'s.
+
+    Removing the quieting outright would have been wrong - `FLD m32real` of an
+    SNaN has to deliver the QUIETED NaN, because nothing downstream quiets it
+    there. The distinction is load versus operand, so `f80_from_ieee` takes a
+    `quiet_snan` flag defaulting to the load behaviour and only the two
+    arithmetic escapes pass `false`; `f80_prop_nan2` already quiets whichever
+    NaN it selects, so the arithmetic path loses nothing by waiting. The control
+    case - a *larger quiet* m32 NaN, which legitimately does win - is asserted
+    beside it.
+
+  `tests/fpu_test.cc` 616 checks to 626, six of them red against the previous
+  commit's core first. (The other four are the control cases, which pass either
+  way and are there to keep the fixes honest.)
+
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
   `(void)` casts, 13 insertions and 142 deletions, and
