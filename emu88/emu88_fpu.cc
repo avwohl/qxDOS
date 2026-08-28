@@ -432,6 +432,24 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   // the stack underflow instead of handing back a stale value.
   #define RD(i)     fpu_get(fpu, (i), c, sf)
   #define WR(i, v)  fpu_put(fpu, (i), (v))
+  // WRR is WR for an ARITHMETIC RESULT, and it exists because the masked #IS
+  // response is the indefinite, unconditionally.  fpu_get substitutes the
+  // indefinite for an empty operand, but the f80 primitive then runs its
+  // ordinary two-NaN tie-break on it, so any QNaN in the live register with a
+  // significand above C000000000000000 outranked the substitute and landed in
+  // the destination.  Measured on the host: FADD ST,ST(1) with ST(0) empty and
+  // ST(1) = 7FFF:FFFFFFFFFFFFFFFF gives FFFF:C000000000000000, not the QNaN.
+  //
+  // The value is evaluated into a temporary FIRST.  Several call sites read
+  // their operands inside the argument - WRR(1, f80_yl2x(RD(1), RD(0), c)) -
+  // so sf is not yet set when the argument is written, and testing it before
+  // the argument runs would never fire.  It is deliberately NOT applied to
+  // FXCH or to FST ST(i): the host exchanges WITH the substitute rather than
+  // flooding both registers, and a blanket rule here would destroy the live
+  // operand.
+  #define WRR(i, v) do { f80 rslt_ = (v); \
+                         fpu_put(fpu, (i), sf != SF_NONE ? f80_indefinite() : rslt_); \
+                       } while (0)
   #define TAGP(i)   fpu.tags[(FPU_TOP + (i)) & 7]
 
   switch (esc) {
@@ -443,14 +461,14 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
     f80 val = is_mem ? fpu_read_m32real(mr.seg, mr.offset, c) : RD(rm);
     f80 st0 = RD(0);
     switch (reg) {
-      case 0: WR(0, f80_add(st0, val, c)); break;                 // FADD
-      case 1: WR(0, f80_mul(st0, val, c)); break;                 // FMUL
+      case 0: WRR(0, f80_add(st0, val, c)); break;                 // FADD
+      case 1: WRR(0, f80_mul(st0, val, c)); break;                 // FMUL
       case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;  // FCOM
       case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
-      case 4: WR(0, f80_sub(st0, val, c)); break;                 // FSUB
-      case 5: WR(0, f80_sub(val, st0, c)); break;                 // FSUBR
-      case 6: WR(0, f80_div(st0, val, c)); break;                 // FDIV
-      case 7: WR(0, f80_div(val, st0, c)); break;                 // FDIVR
+      case 4: WRR(0, f80_sub(st0, val, c)); break;                 // FSUB
+      case 5: WRR(0, f80_sub(val, st0, c)); break;                 // FSUBR
+      case 6: WRR(0, f80_div(st0, val, c)); break;                 // FDIV
+      case 7: WRR(0, f80_div(val, st0, c)); break;                 // FDIVR
     }
     break;
   }
@@ -526,9 +544,9 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         case 0xEC: fpu_push(fpu, F80_LG2, c, sf); break;   // FLDLG2
         case 0xED: fpu_push(fpu, F80_LN2, c, sf); break;   // FLDLN2
         case 0xEE: fpu_push(fpu, f80_make_zero(false), c, sf); break;   // FLDZ
-        case 0xF0: WR(0, f80_2xm1(RD(0), c)); break;       // F2XM1
+        case 0xF0: WRR(0, f80_2xm1(RD(0), c)); break;       // F2XM1
         case 0xF1:                                         // FYL2X
-          WR(1, f80_yl2x(RD(1), RD(0), c));
+          WRR(1, f80_yl2x(RD(1), RD(0), c));
           fpu_pop(fpu);
           break;
         case 0xF2: {                                       // FPTAN
@@ -541,7 +559,7 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           break;
         }
         case 0xF3:                                         // FPATAN
-          WR(1, f80_patan(RD(1), RD(0), c));
+          WRR(1, f80_patan(RD(1), RD(0), c));
           fpu_pop(fpu);
           break;
         case 0xF4: {                                       // FXTRACT
@@ -569,10 +587,10 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         case 0xF6: FPU_SET_TOP(FPU_TOP - 1); break;                  // FDECSTP
         case 0xF7: FPU_SET_TOP(FPU_TOP + 1); break;                  // FINCSTP
         case 0xF9:                                         // FYL2XP1
-          WR(1, f80_yl2xp1(RD(1), RD(0), c));
+          WRR(1, f80_yl2xp1(RD(1), RD(0), c));
           fpu_pop(fpu);
           break;
-        case 0xFA: WR(0, f80_sqrt(RD(0), c)); break;       // FSQRT
+        case 0xFA: WRR(0, f80_sqrt(RD(0), c)); break;       // FSQRT
         case 0xFB: {                                       // FSINCOS
           f80 s, co;
           if (!f80_sincos(RD(0), &s, &co, c)) { fpu.sw |= SW_C2; c1_own = true; break; }
@@ -582,8 +600,8 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           fpu.sw &= (uint16_t)~SW_C2;
           break;
         }
-        case 0xFC: WR(0, f80_rndint(RD(0), c)); break;     // FRNDINT
-        case 0xFD: WR(0, f80_scale(RD(0), RD(1), c)); break;  // FSCALE
+        case 0xFC: WRR(0, f80_rndint(RD(0), c)); break;     // FRNDINT
+        case 0xFD: WRR(0, f80_scale(RD(0), RD(1), c)); break;  // FSCALE
         case 0xFE: case 0xFF: {                            // FSIN / FCOS
           f80 v;
           bool ok = (op2 == 0xFE) ? f80_sin(RD(0), &v, c) : f80_cos(RD(0), &v, c);
@@ -619,14 +637,14 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
       f80 val = f80_from_i32((int32_t)fetch_dword(mr.seg, mr.offset));
       f80 st0 = RD(0);
       switch (reg) {
-        case 0: WR(0, f80_add(st0, val, c)); break;
-        case 1: WR(0, f80_mul(st0, val, c)); break;
+        case 0: WRR(0, f80_add(st0, val, c)); break;
+        case 1: WRR(0, f80_mul(st0, val, c)); break;
         case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;
         case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
-        case 4: WR(0, f80_sub(st0, val, c)); break;
-        case 5: WR(0, f80_sub(val, st0, c)); break;
-        case 6: WR(0, f80_div(st0, val, c)); break;
-        case 7: WR(0, f80_div(val, st0, c)); break;
+        case 4: WRR(0, f80_sub(st0, val, c)); break;
+        case 5: WRR(0, f80_sub(val, st0, c)); break;
+        case 6: WRR(0, f80_div(st0, val, c)); break;
+        case 7: WRR(0, f80_div(val, st0, c)); break;
       }
     } else if (modrm_byte == 0xE9) {
       // FUCOMPP (DA E9) — the only register-form DA opcode that is not an
@@ -731,28 +749,28 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
       f80 val = fpu_read_m64real(mr.seg, mr.offset, c);
       f80 st0 = RD(0);
       switch (reg) {
-        case 0: WR(0, f80_add(st0, val, c)); break;
-        case 1: WR(0, f80_mul(st0, val, c)); break;
+        case 0: WRR(0, f80_add(st0, val, c)); break;
+        case 1: WRR(0, f80_mul(st0, val, c)); break;
         case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;
         case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
-        case 4: WR(0, f80_sub(st0, val, c)); break;
-        case 5: WR(0, f80_sub(val, st0, c)); break;
-        case 6: WR(0, f80_div(st0, val, c)); break;
-        case 7: WR(0, f80_div(val, st0, c)); break;
+        case 4: WRR(0, f80_sub(st0, val, c)); break;
+        case 5: WRR(0, f80_sub(val, st0, c)); break;
+        case 6: WRR(0, f80_div(st0, val, c)); break;
+        case 7: WRR(0, f80_div(val, st0, c)); break;
       }
     } else {
       // Destination is ST(i), source ST(0).  FSUB/FSUBR and FDIV/FDIVR carry
       // the opposite reg encodings here from the ones they carry in D8.
       f80 sti = RD(rm), st0 = RD(0);
       switch (reg) {
-        case 0: WR(rm, f80_add(sti, st0, c)); break;                    // FADD
-        case 1: WR(rm, f80_mul(sti, st0, c)); break;                    // FMUL
+        case 0: WRR(rm, f80_add(sti, st0, c)); break;                    // FADD
+        case 1: WRR(rm, f80_mul(sti, st0, c)); break;                    // FMUL
         case 2: fpu_set_cc(fpu, f80_compare(st0, sti, false, c)); break;
         case 3: fpu_set_cc(fpu, f80_compare(st0, sti, false, c)); fpu_pop(fpu); break;
-        case 4: WR(rm, f80_sub(st0, sti, c)); break;                    // FSUBR
-        case 5: WR(rm, f80_sub(sti, st0, c)); break;                    // FSUB
-        case 6: WR(rm, f80_div(st0, sti, c)); break;                    // FDIVR
-        case 7: WR(rm, f80_div(sti, st0, c)); break;                    // FDIV
+        case 4: WRR(rm, f80_sub(st0, sti, c)); break;                    // FSUBR
+        case 5: WRR(rm, f80_sub(sti, st0, c)); break;                    // FSUB
+        case 6: WRR(rm, f80_div(st0, sti, c)); break;                    // FDIVR
+        case 7: WRR(rm, f80_div(sti, st0, c)); break;                    // FDIV
       }
     }
     break;
@@ -838,20 +856,20 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
       f80 val = f80_from_i16((int16_t)fetch_word(mr.seg, mr.offset));
       f80 st0 = RD(0);
       switch (reg) {
-        case 0: WR(0, f80_add(st0, val, c)); break;
-        case 1: WR(0, f80_mul(st0, val, c)); break;
+        case 0: WRR(0, f80_add(st0, val, c)); break;
+        case 1: WRR(0, f80_mul(st0, val, c)); break;
         case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;
         case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
-        case 4: WR(0, f80_sub(st0, val, c)); break;
-        case 5: WR(0, f80_sub(val, st0, c)); break;
-        case 6: WR(0, f80_div(st0, val, c)); break;
-        case 7: WR(0, f80_div(val, st0, c)); break;
+        case 4: WRR(0, f80_sub(st0, val, c)); break;
+        case 5: WRR(0, f80_sub(val, st0, c)); break;
+        case 6: WRR(0, f80_div(st0, val, c)); break;
+        case 7: WRR(0, f80_div(val, st0, c)); break;
       }
     } else {
       f80 sti = RD(rm), st0 = RD(0);
       switch (reg) {
-        case 0: WR(rm, f80_add(sti, st0, c)); fpu_pop(fpu); break;      // FADDP
-        case 1: WR(rm, f80_mul(sti, st0, c)); fpu_pop(fpu); break;      // FMULP
+        case 0: WRR(rm, f80_add(sti, st0, c)); fpu_pop(fpu); break;      // FADDP
+        case 1: WRR(rm, f80_mul(sti, st0, c)); fpu_pop(fpu); break;      // FMULP
         case 2: fpu_set_cc(fpu, f80_compare(st0, sti, false, c));       // FCOMP alias
                 fpu_pop(fpu); break;
         case 3:                                                          // FCOMPP
@@ -864,10 +882,10 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
             fpu_unhandled("DE", modrm_byte);
           }
           break;
-        case 4: WR(rm, f80_sub(st0, sti, c)); fpu_pop(fpu); break;      // FSUBRP
-        case 5: WR(rm, f80_sub(sti, st0, c)); fpu_pop(fpu); break;      // FSUBP
-        case 6: WR(rm, f80_div(st0, sti, c)); fpu_pop(fpu); break;      // FDIVRP
-        case 7: WR(rm, f80_div(sti, st0, c)); fpu_pop(fpu); break;      // FDIVP
+        case 4: WRR(rm, f80_sub(st0, sti, c)); fpu_pop(fpu); break;      // FSUBRP
+        case 5: WRR(rm, f80_sub(sti, st0, c)); fpu_pop(fpu); break;      // FSUBP
+        case 6: WRR(rm, f80_div(st0, sti, c)); fpu_pop(fpu); break;      // FDIVRP
+        case 7: WRR(rm, f80_div(sti, st0, c)); fpu_pop(fpu); break;      // FDIVP
       }
     }
     break;
@@ -998,7 +1016,20 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
     if (c.c1) fpu.sw |= SW_C1;
   }
 
-  fpu.sw |= (uint16_t)(c.flags & SW_EXC);
+  // #D is the lowest-priority report here and a higher-priority one displaces
+  // it.  The f80 primitives already do this within a single call, but two
+  // paths reach this point with a stale DE beside a higher exception: the
+  // memory-operand helpers raise DE into this same context BEFORE the
+  // arithmetic decides to raise #IA or #Z, and a stack fault discards the
+  // arithmetic's result entirely while its DE stays behind.  Measured on the
+  // host: FLD m32 of a denormal onto a FULL stack reports IE alone, and FADD
+  // m32 of a denormal with ST(0) empty reports IE alone, where the same FADD
+  // against a live ST(0) reports DE|PE.
+  {
+    uint16_t f = (uint16_t)(c.flags & SW_EXC);
+    if ((f & (SW_IE | SW_ZE)) || sf != SF_NONE) f &= (uint16_t)~SW_DE;
+    fpu.sw |= f;
+  }
 
   // ES latches when a raised exception is NOT masked, and B follows ES on a
   // 387.  Neither was ever set before.  Note what this still does not do:
@@ -1008,5 +1039,6 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
 
   #undef RD
   #undef WR
+  #undef WRR
   #undef TAGP
 }

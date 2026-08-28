@@ -157,6 +157,17 @@ emu88::emu88(emu88_mem *memory)
   memset(&tr_cache, 0, sizeof(tr_cache));
   init_seg_caches();
   setup_parity();
+  // FPUState has no default member initialisers and f80 is a plain aggregate,
+  // so without this the control word, the status word, all eight tags and all
+  // eight registers hold whatever was in the storage until reset() runs.  Every
+  // current consumer does reset first - dos_machine's constructor does it at
+  // dos_machine.cc:199 and every harness does it through setup() - so this is
+  // a latent uninitialised read rather than a live one, and it is the kind
+  // that waits for the first consumer to construct a core and run an x87
+  // opcode without a reset.  A poisoned sw alone is enough to matter: TOP
+  // comes out of bits 13:11, so the first FLD would take the stack-overflow
+  // path against tags that were never set.
+  fpu_power_on();
 }
 
 void emu88::setup_parity(void) {

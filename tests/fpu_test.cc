@@ -413,6 +413,45 @@ int main() {
     check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "FABS on empty ST(0) sets IE and SF");
     check(st_indef(0), "FABS on empty ST(0) leaves the indefinite, not a positive QNaN");
 
+    // The masked #IS response is the indefinite UNCONDITIONALLY, and that is
+    // not what falls out of substituting it for the empty operand: the f80
+    // primitive then runs its ordinary two-NaN tie-break on the substitute, so
+    // any QNaN in the live register with a significand above C000000000000000
+    // outranks it and lands in the destination.  Measured on the host, which
+    // delivers FFFF:C000000000000000 there.
+    FNINIT();
+    push80(0x7FFF, 0xFFFFFFFFFFFFFFFFULL);      // ST(0) = a big QNaN
+    push(1.0);                                  // ST(0) = 1.0, ST(1) = the QNaN
+    opr(0xDD, 0xC0);                            // FFREE ST(0)
+    opr(0xD8, 0xC1);                            // FADD ST(0), ST(1)
+    check(st_indef(0), "a stack underflow outranks the surviving NaN operand");
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "...and reports IE|SF");
+    check((sw() & SW_PE) == 0, "...and raises no PE for an operation it aborted");
+
+    // #D is the lowest-priority report and a higher-priority one displaces it.
+    // The memory-operand helpers raise DE into the same context BEFORE the
+    // arithmetic decides to raise #IS, so a denormal operand used to be
+    // reported beside a stack fault.  The host reports IE alone for both of
+    // these, and DE|PE for the same FADD against a live ST(0).
+    FNINIT();
+    for (int i = 0; i < 8; i++) push(1.0);      // stack full
+    wr32(SCRATCH64, 0x802CCD94u);               // a denormal single
+    opm(0xD9, 0, SCRATCH64);                    // FLD m32real -> stack overflow
+    check((sw() & SW_IE) != 0, "FLD m32 of a denormal onto a full stack raises IE");
+    check((sw() & SW_DE) == 0, "...and the stack fault suppresses #D");
+
+    FNINIT();
+    wr32(SCRATCH64, 0x802CCD94u);
+    opm(0xD8, 0, SCRATCH64);                    // FADD m32real, ST(0) empty
+    check((sw() & SW_IE) != 0, "FADD m32 of a denormal with ST(0) empty raises IE");
+    check((sw() & SW_DE) == 0, "...and the stack fault suppresses #D there too");
+
+    FNINIT();                                   // the control: a live ST(0)
+    push(1.0);
+    wr32(SCRATCH64, 0x802CCD94u);
+    opm(0xD8, 0, SCRATCH64);
+    check((sw() & SW_DE) != 0, "...while a live ST(0) still reports the denormal");
+
     // The two-result instructions write one result and push the other, so a
     // stack fault has to claim BOTH destinations - and the arithmetic they had
     // already finished has to go with it.  FPTAN and FSINCOS in particular had

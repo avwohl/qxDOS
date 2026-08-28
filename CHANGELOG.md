@@ -749,6 +749,49 @@ and not for what comes after it.
   `fpu_test`'s 608, with 192 tininess mismatches and 3,072 store mismatches
   behind two of those three.
 
+- **The x87 defect pass, second round**: three more from the same hunt, and one
+  of them is the rule the first round applied in three places, applied in a
+  fourth. Moves `emu88/emu88_fpu.cc`, `emu88/emu88.cc` and nothing else that
+  dosiz compiles.
+
+  - **A stack fault did not outrank a surviving NaN.** `fpu_get` substitutes
+    the indefinite for an empty operand, but the `f80` primitive then ran its
+    ordinary two-NaN tie-break *on the substitute*, so any QNaN in the live
+    register with a significand above `C000000000000000` won and landed in the
+    destination. The masked `#IS` response is the indefinite, unconditionally.
+    44 arithmetic result-writes go through a new `WRR` macro that says so.
+
+    It is deliberately **not** applied to `FXCH` or `FST ST(i)`, and that is the
+    part worth recording: the host was measured first, and it exchanges *with*
+    the substitute rather than flooding both registers - `FXCH ST(1)` with
+    `ST(1)` empty leaves the indefinite in `ST(0)` and the live `1.0` in
+    `ST(1)`. A blanket rule at the write site would have destroyed the live
+    operand. The macro also evaluates its value into a temporary before testing
+    the fault, because several call sites read their operands *inside* the
+    argument - `WR(1, f80_yl2x(RD(1), RD(0), c))` - so a test written the
+    obvious way would never have fired.
+  - **`#D` was not suppressed by a higher-priority exception.** The `f80`
+    primitives already do this within one call, but two paths reached the
+    status word with a stale `DE` beside a higher exception: the memory-operand
+    helpers raise `DE` into the same context *before* the arithmetic decides to
+    raise `#IA` or `#Z`, and a stack fault discards the arithmetic's result
+    while its `DE` stays behind. The host reports `IE` alone for `FLD m32` of a
+    denormal onto a full stack and for `FADD m32` of one with `ST(0)` empty,
+    and `DE|PE` for the same `FADD` against a live `ST(0)`.
+  - **The constructor left the whole `FPUState` indeterminate.** `FPUState` has
+    no default member initialisers and `f80` is a plain aggregate, so the
+    control word, the status word, all eight tags and all eight registers held
+    whatever was in the storage until `reset()` ran. Latent rather than live -
+    `dos_machine`'s constructor resets, and every harness resets through
+    `setup()` - but a poisoned `sw` alone decides `TOP` out of bits 13:11, so
+    the first `FLD` would take the stack-overflow path against tags nobody set.
+    `emu88::emu88()` calls `fpu_power_on()` now. This one carries no assertion:
+    asserting it needs placement-new over poisoned storage, which is a test
+    about the language rather than about the 387.
+
+  `tests/fpu_test.cc` 608 checks to 616, and the three that can be asserted
+  were red against the previous commit's core first.
+
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
   `(void)` casts, 13 insertions and 142 deletions, and

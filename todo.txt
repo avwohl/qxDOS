@@ -152,16 +152,81 @@ forever.  in practice DOS software masks - DJGPP's startup does - which is why
 this has never been the thing that broke, and it is recorded rather than fixed
 because delivery needs an IRQ13 path and a decision about CR0.NE that nothing
 currently forces.
-  the transcendentals are the other half of the same entry.  they are accurate
-to a worst observed 4 ulp of a 64-bit significand (tests/f80_unit.cc prints a
-worst case per function and holds the set to a bound of 6; FSINCOS is not
-listed separately because it is the same code path as FSIN and FCOS), which
+  the transcendentals are the other half of the same entry, and it grew on
+2026-08-28.  they are accurate to a worst observed 4 ulp of a 64-bit
+significand (tests/f80_unit.cc prints a worst case per function and holds the
+set to a bound of 6; FSINCOS is not listed separately because it is the same
+code path as FSIN and FCOS), which
 is about what an 80387 delivers and some 500x better than the host-double
 implementation they replaced, but they
 are not correctly rounded and neither suite pretends they are.  a spot check
 against an exact reference showed part of the remaining difference is glibc's
 rather than ours, so the number is an upper bound on our error, not a
 measurement of it.
+
+- fifteen or so x87 defects are reported and NOT fixed, and this entry exists
+so they are written down somewhere other than a chat log.  a differential hunt
+against the host x87 on 2026-08-28 produced 39 distinct findings; twelve were
+fixed in two passes (f5f8f18 and the commit after it) and each of those twelve
+was reproduced against the host by hand before being touched.  what is below is
+the rest.
+  READ THIS BEFORE PICKING ONE UP: these are REPORTED, not confirmed.  Of 66
+verifier verdicts the hunt returned before it was stopped, 7 came back refuted,
+and the run does not record which findings those 7 attach to - so somewhere in
+this list are up to seven things that are not defects.  Every entry came with a
+reproduction; reproduce it before believing it.  Two of the twelve that WERE
+fixed looked wrong on first inspection and turned out to be real only after a
+proper sweep, and one looked real and was my own arithmetic error, so the
+inspection is worth doing in both directions.
+
+  the transcendental exception family, which is one refactor rather than four
+  fixes.  measured against the host, all four confirmed: RC is ignored entirely
+  (FSIN of 1.0 returns identical bits in all four rounding modes where the host
+  differs); UE and OE are never reported (F2XM1 of 2^-16382 gives PE where the
+  host gives UE|PE, FYL2X of maxfinite by 65536 gives PE where the host gives
+  OE|PE); C1 is never set after any of the eight; and #P is hard-coded, so
+  FYL2X(3.0, 1.0) - which is exactly zero - reports PE where the host reports
+  nothing.  the fix for all four is the same shared exit that rounds the final
+  result under the CALLER's ctx at 64-bit precision (PC must not apply; the
+  host was measured and a 387 ignores it for these).  F2XM1, FYL2X, FYL2XP1 and
+  FPTAN each end in one arithmetic operation and could take that exit today.
+  FSIN, FCOS, FSINCOS and FPATAN do NOT: their results come straight out of
+  f80_sin_red/f80_cos_red/f80_atan_unit with no trailing rounding step, so the
+  evaluators would have to carry a head+tail pair out to a shared exit.  doing
+  the four that are easy would leave the eight inconsistent with each other,
+  which is why none of them were done.  whoever takes it also has to widen
+  tests/f80_unit.cc's oracle_transcendental, which only ever runs cw=0x037F, so
+  no check there can currently see an RC bug at all.
+
+  the rest, each with the file it is in:
+  - emu88_f80.h: unmasked #O and #U deliver the MASKED result rather than the
+    value with the exponent biased by -/+24576.  nothing here delivers #MF
+    either, so this only matters to a guest that unmasks and polls.
+  - emu88_f80.h: f80_round_pack ignores the exception masks - an exact tiny
+    result raises no #U when #U is unmasked, and an unmasked #O also sets #P.
+  - emu88_f80.h: an m32/m64 SNaN operand is quieted BEFORE the NaN-selection
+    rule runs, so the wrong NaN can win.
+  - emu88_f80.h: FPREM/FPREM1 hand back a pseudo-denormal dividend in its
+    unnormalized encoding.
+  - emu88_f80.h: f80_mul2's tail is 2^62 too large when the rounded head
+    carries out of 64 bits.
+  - emu88_f80.h: FYL2X with y = +-0 delivers the wrong-signed zero for
+    0 < x < 1; FYL2XP1 with ST(0) = +-0 and ST(1) = +-inf returns a zero where
+    the 387 raises #IA and delivers the indefinite; FYL2XP1 of a bottom-of-range
+    denormal returns zero because x/(2+x) underflows; and both skip the #D
+    report when the other operand short-circuits the result.
+  - emu88_fpu.cc: FLDENV/FRSTOR take the three non-EMPTY tag encodings
+    verbatim.  a real x87 keeps only the EMPTY/non-EMPTY decision from the
+    image and re-derives valid/zero/special from what is actually in the
+    register - so an image whose tag word disagrees with its register data
+    round-trips differently here than on hardware.  note the FRSTOR case
+    currently documents taking them verbatim as DELIBERATE, so that comment is
+    part of what has to change.
+  - emu88_fpu.cc: the 32-bit environment images leave the reserved upper halves
+    zero where a real x87 writes all ones.
+  - emu88_fpu.cc: when one instruction both reads an empty register AND pushes
+    onto a full stack, C1 reports the overflow where hardware reports the first
+    fault, the underflow.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808
