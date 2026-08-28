@@ -399,6 +399,51 @@ int main() {
     check((sw() & SW_C1) == 0, "stack underflow clears C1");
     check(st_indef(0), "the underflowing operand delivers the indefinite");
 
+    // FCHS and FABS are the two instructions that reach the sign bit without
+    // going through an f80_* routine, so they are the two that can deform the
+    // substitute they were just handed.  The masked #IS response is the
+    // indefinite as it is - sign set - not a sign-manipulated copy of it.
+    // Checked against the host: fninit; fchs; fnsave leaves FFFF:C000...
+    FNINIT();
+    opr(0xD9, 0xE0);                  // FCHS on an empty stack
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "FCHS on empty ST(0) sets IE and SF");
+    check(st_indef(0), "FCHS on empty ST(0) leaves the indefinite, not a positive QNaN");
+    FNINIT();
+    opr(0xD9, 0xE1);                  // FABS on an empty stack
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "FABS on empty ST(0) sets IE and SF");
+    check(st_indef(0), "FABS on empty ST(0) leaves the indefinite, not a positive QNaN");
+
+    // The two-result instructions write one result and push the other, so a
+    // stack fault has to claim BOTH destinations - and the arithmetic they had
+    // already finished has to go with it.  FPTAN and FSINCOS in particular had
+    // the transcendental's own inexactness sitting in the context, which
+    // reached the status word as a PE the instruction never earned.  Measured
+    // on the host for all three, on a full stack and an empty one: SW is IE|SF
+    // plus the C1 direction bit, PE clear, and both registers the indefinite.
+    {
+      static const uint8_t two_op[3] = { 0xF4, 0xF2, 0xFB };
+      static const char *two_nm[3]   = { "FXTRACT", "FPTAN", "FSINCOS" };
+      for (int k = 0; k < 3; k++) {
+        char msg[96];
+        FNINIT();
+        for (int i = 0; i < 8; i++) push(1.0);      // stack full -> overflow
+        opr(0xD9, two_op[k]);
+        std::snprintf(msg, sizeof msg, "%s on a full stack: both results indefinite", two_nm[k]);
+        check(st_indef(0) && st_indef(1), msg);
+        std::snprintf(msg, sizeof msg, "%s on a full stack: IE|SF with C1 set", two_nm[k]);
+        check((sw() & (SW_IE | SW_SF | SW_C1)) == (SW_IE | SW_SF | SW_C1), msg);
+        std::snprintf(msg, sizeof msg, "%s on a full stack raises no PE", two_nm[k]);
+        check((sw() & SW_PE) == 0, msg);
+
+        FNINIT();                                   // empty stack -> underflow
+        opr(0xD9, two_op[k]);
+        std::snprintf(msg, sizeof msg, "%s on an empty stack: both results indefinite", two_nm[k]);
+        check(st_indef(0) && st_indef(1), msg);
+        std::snprintf(msg, sizeof msg, "%s on an empty stack: C1 clear, no PE", two_nm[k]);
+        check((sw() & (SW_C1 | SW_PE)) == 0, msg);
+      }
+    }
+
     // FCMOVcc reads BOTH operands whatever the condition says, so an empty
     // source is a stack underflow even on the path that moves nothing.
     FNINIT();
@@ -407,6 +452,16 @@ int main() {
     opr(0xDB, 0xC1);                            // FCMOVNB ST(0), ST(1): !CF, false
     check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF),
           "FCMOVcc reads its source even when the condition is false");
+    // And #IS owns the destination: the indefinite lands in ST(0) whichever
+    // operand was empty and whatever the condition decided, rather than the
+    // other operand's real value.  Measured on the host for both DA and DB and
+    // for CF set and clear.
+    check(st_indef(0), "FCMOVcc on a stack underflow delivers the indefinite");
+    check(tg(0) == TAG_SPECIAL, "...and tags the destination SPECIAL");
+    FNINIT();
+    push(1.0);                                  // ST(1) empty, condition TRUE
+    opr(0xDA, 0xC1);                            // FCMOVB ST(0), ST(1): CF = 1
+    check(st_indef(0), "...on the taken path too");
     cpu->flags &= (uint16_t)~0x0001;
 
     // The FCOMI family CLEARS C1 rather than leaving it alone.
@@ -1862,23 +1917,30 @@ int main() {
     cpu->cr0 &= (uint32_t)~emu88::CR0_PE;
     setup();
 
-    // Real-mode pointers are twenty bits, and a real-mode linear address can
-    // need twenty-ONE: (0xFFFF << 4) + 0xFFFF is 0x10FFEF.  Only the low four
-    // bits above the word go in the high field; bits 16 and up of that dword
-    // are reserved.  The 16-bit form gets this free from its uint16 field, the
-    // 32-bit form does not, and nothing here reached it until this fixture -
-    // the harness's own CS puts every address comfortably under 2^20.
+    // The 32-bit real-address-mode image is not the 16-bit one widened.  The
+    // pointer's high bits go at bits 27:16 of +16 and +24, with twelve bits of
+    // room; the 16-bit layout's bits 15:12, with four, is a different picture
+    // and is what this used to assert.  A real-mode linear address needs
+    // twenty-ONE bits ((0xFFFF << 4) + 0xFFFF is 0x10FFEF), so the old packing
+    // truncated as well as misplaced - and nothing reached it until this
+    // fixture, because the harness's own CS puts every address under 2^20.
     FNINIT();
     cpu->fpu.fcs = 0xFFFF; cpu->fpu.fip = 0xFFFF;
     cpu->fpu.fds = 0xFFFF; cpu->fpu.fdp = 0xFFFF;
+    cpu->fpu.fop = 0x01DD;
     for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
     run({0x66, 0xD9, mrm_disp16(6), (uint8_t)(ENV & 0xFF), (uint8_t)(ENV >> 8)});
-    check((rd32(ENV + 16) >> 16) == 0,
-          "FNSTENV32 in real mode leaves the reserved half of +16 zero");
-    check((rd32(ENV + 24) >> 16) == 0,
-          "...and the reserved half of +24");
     check((rd32(ENV + 12) & 0xFFFF) == 0xFFEF,
           "FNSTENV32 writes the low word of the 21-bit linear address at +12");
+    check(rd32(ENV + 16) == 0x001001DD,
+          "FNSTENV32 puts IP[31:16] at bits 27:16 of +16, with the opcode below");
+    check(rd32(ENV + 24) == 0x00100000,
+          "...and OP[31:16] at bits 27:16 of +24");
+    // And back: the round trip has to survive the full twenty-one bits.
+    cpu->fpu.fip = 0; cpu->fpu.fdp = 0; cpu->fpu.fcs = 0; cpu->fpu.fds = 0;
+    run({0x66, 0xD9, mrm_disp16(4), (uint8_t)(ENV & 0xFF), (uint8_t)(ENV >> 8)});
+    check(cpu->fpu.fip == 0x0010FFEF && cpu->fpu.fdp == 0x0010FFEF,
+          "FLDENV32 reads all twenty-one bits of both pointers back");
     FNINIT();
 
     // FNSTENV masks every exception afterwards, so the handler it is about to
@@ -2098,6 +2160,33 @@ int main() {
     check(ftop() == 7 && st(0) == 1.0, "FFREEP ST(0) frees and pops");
     check(tg(1) == TAG_EMPTY, "...leaving the vacated slot empty");
 
+    // --- The other four undocumented alias groups, for the same reason: three
+    // of the four POP, so decoding them as nothing left the stack one deeper
+    // every pass.  All four were measured on the host before being decoded
+    // here; the comparison instruction in each case is the documented
+    // encoding that does the same thing.
+    //   D9 D8-DF  FSTP1 ST(i)   = DD D8-DF
+    //   DF C8-CF  FXCH7 ST(i)   = D9 C8-CF
+    //   DF D0-D7  FSTP8 ST(i)   = DD D8-DF
+    //   DF D8-DF  FSTP9 ST(i)   = DD D8-DF
+    FNINIT();
+    push(1.5); push(2.5); push(3.5);
+    opr(0xD9, 0xDA);                            // FSTP1 ST(2)
+    check(st(0) == 2.5 && st(1) == 3.5,
+          "D9 D8+i is FSTP ST(i): it stores THEN pops, not a bare pop");
+    FNINIT();
+    push(1.5); push(2.5); push(3.5);
+    opr(0xDF, 0xC9);                            // FXCH7 ST(1)
+    check(st(0) == 2.5 && st(1) == 3.5 && ftop() == 5,
+          "DF C8+i is FXCH ST(i), and does not pop");
+    for (int enc = 0; enc < 2; enc++) {
+      FNINIT();
+      push(1.5); push(2.5); push(3.5);
+      opr(0xDF, (uint8_t)(enc ? 0xD9 : 0xD1));  // FSTP8 / FSTP9 ST(1)
+      check(st(0) == 3.5 && st(1) == 1.5 && ftop() == 6,
+            enc ? "DF D8+i is FSTP ST(i)" : "DF D0+i is FSTP ST(i)");
+    }
+
     // --- FNSAVE / FRSTOR are lossless for every encoding class now, which is
     // the property that made a save/restore pair safe to use at all.
     {
@@ -2212,6 +2301,33 @@ int main() {
     bool unwrapped = true;
     for (int i = 0; i < 16; i++) if (rd8((uint16_t)i) != 0xEE) unwrapped = false;
     check(unwrapped, "...and nothing after the fault wrapped onto the low segment");
+
+    // The environment stores are the same shape and were the one multi-field
+    // x87 write with NO guard on them: FNSAVE's register loop and FBSTP's byte
+    // loop both carried `&& !fault_abort()` and fpu_store_env's seven fields
+    // did not, so the fields after the faulting one wrapped to the start of
+    // the segment exactly as the bytes above would have.  FNSAVE is here as
+    // well as FNSTENV because its guarded register loop sits behind an
+    // unguarded environment.
+    setup(); FNINIT();
+    for (int i = 0; i < 16; i++) wr8((uint16_t)i, 0xEE);
+    opm(0xD9, 6, 0xFFF8);                       // FNSTENV, 14 bytes from 0xFFF8
+    check(cpu->exception_pending, "FNSTENV past the limit faults");
+    {
+      bool clean = true;
+      for (int i = 0; i < 16; i++) if (rd8((uint16_t)i) != 0xEE) clean = false;
+      check(clean, "...and no environment field wrapped onto the low segment");
+    }
+
+    setup(); FNINIT();
+    for (int i = 0; i < 16; i++) wr8((uint16_t)i, 0xEE);
+    opm(0xDD, 6, 0xFFF8);                       // FNSAVE, environment then registers
+    check(cpu->exception_pending, "FNSAVE past the limit faults");
+    {
+      bool clean = true;
+      for (int i = 0; i < 16; i++) if (rd8((uint16_t)i) != 0xEE) clean = false;
+      check(clean, "...and neither its environment nor its registers wrapped");
+    }
 
     // The control: the same three instructions at an address that fits.
     setup(); FNINIT();

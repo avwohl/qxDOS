@@ -149,6 +149,23 @@ static inline void fpu_pop(emu88::FPUState &fpu) {
   fpu.sw = (uint16_t)((fpu.sw & ~0x3800) | ((((top + 1) & 7)) << 11));
 }
 
+// The masked #IS response for the TWO-RESULT instructions.  FXTRACT, FPTAN and
+// FSINCOS each write one result and then push the other, so an overflowing
+// push left the first result standing beside the indefinite instead of being
+// replaced by one; and the transcendental had already run, so its inexactness
+// was still in c.flags and reached the status word as a PE the instruction
+// never earned.  Hardware gives BOTH destinations the indefinite and reports
+// IE|SF and the C1 direction bit alone.  Measured on the host, on a full stack
+// and an empty one alike: SW=3A41 with C1 set for the overflow and 3841 with
+// C1 clear for the underflow, PE clear in both.
+static inline void fpu_two_result_fault(emu88::FPUState &fpu, f80_ctx &c, int sf) {
+  if (sf == SF_NONE) return;
+  fpu_put(fpu, 0, f80_indefinite());
+  fpu_put(fpu, 1, f80_indefinite());
+  c.flags &= (uint16_t)~(F80_DE | F80_ZE | F80_OE | F80_UE | F80_PE);
+  c.c1 = false;
+}
+
 //=============================================================================
 // Memory access helpers for FPU operand types
 //=============================================================================
@@ -257,47 +274,72 @@ static inline uint16_t fpu_tag_word(const emu88::FPUState &fpu) {
 // two, which is why tests/fpu_test.cc had FNSTENV pinned as a stub.
 void emu88::fpu_store_env(uint16_t seg, uint32_t base, bool op32) {
   uint16_t tw = fpu_tag_word(fpu);
+  // Every field below is written through one of these two, and they exist for
+  // the reason the FNSAVE register-area loop and the FBSTP loop already carry
+  // `&& !fault_abort()`: check_segment_write deliberately lets an access
+  // through once an exception is already pending.  An unguarded run of stores
+  // therefore keeps going PAST the fault with the offset wrapped to 16 bits,
+  // landing at the start of the segment - memory the instruction never named.
+  // execute_fpu restores the FPU state on a fault but cannot un-write guest
+  // memory.  FNSTENV [FFF8] in real mode was writing four bytes to DS:0002.
+  auto sw16 = [&](uint32_t off, uint16_t v) {
+    if (fault_abort()) return;
+    store_word(seg, off, v);
+  };
+  auto sw32 = [&](uint32_t off, uint32_t v) {
+    if (fault_abort()) return;
+    store_dword(seg, off, v);
+  };
   // Virtual-8086 mode has CR0.PE set and uses the REAL-address-mode layout,
   // which is the one place `protected_mode()` alone gives the wrong answer.
   bool prot = protected_mode() && !v86_mode();
   if (!op32) {
-    store_word(seg, base + 0,  fpu.cw);
-    store_word(seg, base + 2,  fpu.sw);
-    store_word(seg, base + 4,  tw);
+    sw16(base + 0,  fpu.cw);
+    sw16(base + 2,  fpu.sw);
+    sw16(base + 4,  tw);
     if (prot) {
-      store_word(seg, base + 6,  (uint16_t)fpu.fip);
-      store_word(seg, base + 8,  fpu.fcs);
-      store_word(seg, base + 10, (uint16_t)fpu.fdp);
-      store_word(seg, base + 12, fpu.fds);
+      sw16(base + 6,  (uint16_t)fpu.fip);
+      sw16(base + 8,  fpu.fcs);
+      sw16(base + 10, (uint16_t)fpu.fdp);
+      sw16(base + 12, fpu.fds);
     } else {
       uint32_t ilin = ((uint32_t)fpu.fcs << 4) + fpu.fip;
       uint32_t dlin = ((uint32_t)fpu.fds << 4) + fpu.fdp;
-      store_word(seg, base + 6,  (uint16_t)ilin);
-      store_word(seg, base + 8,  (uint16_t)((((ilin >> 16) & 0x0F) << 12) | (fpu.fop & 0x07FF)));
-      store_word(seg, base + 10, (uint16_t)dlin);
-      store_word(seg, base + 12, (uint16_t)(((dlin >> 16) & 0x0F) << 12));
+      sw16(base + 6,  (uint16_t)ilin);
+      sw16(base + 8,  (uint16_t)((((ilin >> 16) & 0x0F) << 12) | (fpu.fop & 0x07FF)));
+      sw16(base + 10, (uint16_t)dlin);
+      sw16(base + 12, (uint16_t)(((dlin >> 16) & 0x0F) << 12));
     }
     return;
   }
-  store_dword(seg, base + 0, fpu.cw);
-  store_dword(seg, base + 4, fpu.sw);
-  store_dword(seg, base + 8, tw);
+  sw32(base + 0, fpu.cw);
+  sw32(base + 4, fpu.sw);
+  sw32(base + 8, tw);
   if (prot) {
-    store_dword(seg, base + 12, fpu.fip);
-    store_dword(seg, base + 16, (uint32_t)fpu.fcs | ((uint32_t)(fpu.fop & 0x07FF) << 16));
-    store_dword(seg, base + 20, fpu.fdp);
-    store_dword(seg, base + 24, fpu.fds);
+    sw32(base + 12, fpu.fip);
+    sw32(base + 16, (uint32_t)fpu.fcs | ((uint32_t)(fpu.fop & 0x07FF) << 16));
+    sw32(base + 20, fpu.fdp);
+    sw32(base + 24, fpu.fds);
   } else {
-    // Real-mode addresses are twenty bits, so only FOUR bits of each pointer
-    // go in the high field - bits 16 and up of these dwords are reserved and
-    // must stay zero.  The 16-bit branch above masks because its field is a
-    // uint16 and truncates for free; this one has to say so.
+    // The 32-bit real-address-mode image is NOT the 16-bit one widened.  SDM
+    // Vol.1, "Real Mode x87 FPU State Image in Memory, 32-Bit Format":
+    //
+    //   +0Ch  bits 15:0  = IP 15:0,      bits 31:16 reserved
+    //   +10h  bits 27:16 = IP 31:16,     bits 10:0  = opcode
+    //   +14h  bits 15:0  = OP 15:0,      bits 31:16 reserved
+    //   +18h  bits 27:16 = OP 31:16,     bits 15:0  reserved
+    //
+    // The pointer's high bits live in the UPPER half of the dword, with twelve
+    // bits of room - not at bits 12:15 with four, which is the SIXTEEN-bit
+    // layout and is what this branch used to copy.  A real-mode linear address
+    // needs twenty-one bits at the top ((0xFFFF << 4) + 0xFFFF is 0x10FFEF),
+    // so the old packing truncated as well as misplaced.
     uint32_t ilin = ((uint32_t)fpu.fcs << 4) + fpu.fip;
     uint32_t dlin = ((uint32_t)fpu.fds << 4) + fpu.fdp;
-    store_dword(seg, base + 12, ilin & 0xFFFF);
-    store_dword(seg, base + 16, (((ilin >> 16) & 0x0F) << 12) | (fpu.fop & 0x07FF));
-    store_dword(seg, base + 20, dlin & 0xFFFF);
-    store_dword(seg, base + 24, ((dlin >> 16) & 0x0F) << 12);
+    sw32(base + 12, ilin & 0xFFFF);
+    sw32(base + 16, (ilin & 0xFFFF0000) | (fpu.fop & 0x07FF));
+    sw32(base + 20, dlin & 0xFFFF);
+    sw32(base + 24, dlin & 0xFFFF0000);
   }
 }
 
@@ -338,11 +380,12 @@ void emu88::fpu_load_env(uint16_t seg, uint32_t base, bool op32) {
       uint32_t d16 = fetch_dword(seg, base + 16);
       uint32_t d20 = fetch_dword(seg, base + 20);
       uint32_t d24 = fetch_dword(seg, base + 24);
-      // Same four bits on the way back in: the reserved half of the dword is
-      // not part of the pointer.
-      fpu.fip = (d12 & 0xFFFF) | ((((d16 >> 12) & 0x0F)) << 16);
+      // The same upper half on the way back in - see the store side for the
+      // layout.  Reading bits 12:15 here is what made the image round-trip
+      // self-consistently while matching no real 387.
+      fpu.fip = (d12 & 0xFFFF) | (d16 & 0xFFFF0000);
       fpu.fop = (uint16_t)(d16 & 0x07FF);
-      fpu.fdp = (d20 & 0xFFFF) | ((((d24 >> 12) & 0x0F)) << 16);
+      fpu.fdp = (d20 & 0xFFFF) | (d24 & 0xFFFF0000);
       fpu.fcs = 0; fpu.fds = 0;
     }
   }
@@ -445,8 +488,17 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         WR(0, b); WR(rm, a);
       } else switch (op2) {
         case 0xD0: break;                                  // FNOP
-        case 0xE0: WR(0, f80_chs(RD(0))); break;           // FCHS
-        case 0xE1: WR(0, f80_abs(RD(0))); break;           // FABS
+        // FCHS and FABS are the only two instructions here that touch the
+        // sign bit directly instead of going through an f80_* routine, which
+        // makes them the only two that can deform the #IS substitute: reading
+        // an empty ST(0) delivers the indefinite, FFFF:C000000000000000, and
+        // flipping or clearing ITS sign leaves 7FFF:C000000000000000 - an
+        // ordinary positive QNaN where hardware leaves the indefinite.  The
+        // masked #IS response is the indefinite delivered as it is.
+        case 0xE0: { f80 v = RD(0);                        // FCHS
+          WR(0, sf == SF_NONE ? f80_chs(v) : v); break; }
+        case 0xE1: { f80 v = RD(0);                        // FABS
+          WR(0, sf == SF_NONE ? f80_abs(v) : v); break; }
         case 0xE4:                                         // FTST
           fpu_set_cc(fpu, f80_compare(RD(0), f80_make_zero(false), false, c));
           break;
@@ -484,6 +536,7 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           if (!f80_ptan(RD(0), &t, c)) { fpu.sw |= SW_C2; c1_own = true; break; }
           WR(0, t);
           fpu_push(fpu, F80_ONE, c, sf);
+          fpu_two_result_fault(fpu, c, sf);
           fpu.sw &= (uint16_t)~SW_C2;
           break;
         }
@@ -496,6 +549,7 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           f80_extract(RD(0), &e, &m, c);
           WR(0, e);
           fpu_push(fpu, m, c, sf);
+          fpu_two_result_fault(fpu, c, sf);
           break;
         }
         case 0xF5: case 0xF8: {                            // FPREM1 / FPREM
@@ -524,6 +578,7 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           if (!f80_sincos(RD(0), &s, &co, c)) { fpu.sw |= SW_C2; c1_own = true; break; }
           WR(0, s);
           fpu_push(fpu, co, c, sf);
+          fpu_two_result_fault(fpu, c, sf);
           fpu.sw &= (uint16_t)~SW_C2;
           break;
         }
@@ -538,6 +593,17 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
           break;
         }
         default:
+          // D9 D8-DF is FSTP1 ST(i): the undocumented second encoding of
+          // FSTP ST(i), and a POPPING form, so leaving it unhandled left the
+          // stack one deeper on every pass - the FFREEP failure mode exactly.
+          // Checked against the host: with 1.5, 2.5, 3.5 pushed, D9 DA stores
+          // ST(0) into ST(2) and pops, leaving ST(0)=2.5 and ST(1)=3.5, which
+          // is FSTP and not a bare pop.
+          if (op2 >= 0xD8 && op2 <= 0xDF) {
+            WR(rm, RD(0));
+            fpu_pop(fpu);
+            break;
+          }
           fpu_unhandled("D9", op2);
           break;
       }
@@ -580,9 +646,13 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         default: fpu_unhandled("DA", modrm_byte); break;
       }
       // Both operands are read whatever the condition says, so an empty
-      // register is a stack underflow on the paths that move nothing too.
+      // register is a stack underflow on the paths that move nothing too -
+      // and the masked #IS response is the indefinite in ST(0), whichever
+      // operand was empty and whatever the condition decided.  Measured on the
+      // host: with ST(2) freed, FCMOVB ST(2) leaves FFFF:C000000000000000 at
+      // CF=0 and at CF=1 alike, and the same with ST(0) freed instead.
       f80 src = RD(rm), dst = RD(0);
-      WR(0, cond ? src : dst);
+      WR(0, sf != SF_NONE ? f80_indefinite() : (cond ? src : dst));
     }
     break;
   }
@@ -638,8 +708,8 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         else if (op2 <= 0xCF) cond = !get_flag(FLAG_ZF);                          // FCMOVNE
         else if (op2 <= 0xD7) cond = !get_flag(FLAG_CF) && !get_flag(FLAG_ZF);    // FCMOVNBE
         else                  cond = !get_flag(FLAG_PF);                          // FCMOVNU
-        f80 src = RD(rm), dst = RD(0);
-        WR(0, cond ? src : dst);
+        f80 src = RD(rm), dst = RD(0);      // see the DA note: #IS owns ST(0)
+        WR(0, sf != SF_NONE ? f80_indefinite() : (cond ? src : dst));
       } else if (op2 >= 0xE8 && op2 <= 0xEF) {                      // FUCOMI
         // C1 is cleared, not left alone: it reports the stack-fault direction
         // and nothing else here, which the commit below does for free.
@@ -867,6 +937,18 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         // reported as unhandled and did nothing, which left the stack one
         // deeper than the compiler believed.
         TAGP(rm) = TAG_EMPTY;
+        fpu_pop(fpu);
+      } else if (op2 >= 0xC8 && op2 <= 0xCF) {
+        // FXCH7 ST(i): the third encoding of FXCH, after D9 C8-CF and
+        // DD C8-CF.  Verified on the host - DF C9 exchanges ST(0) and ST(1)
+        // and does not pop.
+        f80 a = RD(0), b = RD(rm);
+        WR(0, b); WR(rm, a);
+      } else if (op2 >= 0xD0 && op2 <= 0xDF) {
+        // FSTP8 (D0-D7) and FSTP9 (D8-DF): two more FSTP ST(i) aliases, both
+        // popping.  Verified on the host - DF D1 and DF D9 both leave exactly
+        // what the documented DD D9 leaves.
+        WR(rm, RD(0));
         fpu_pop(fpu);
       } else if (op2 >= 0xE8 && op2 <= 0xEF) {                     // FUCOMIP
         fpu_cmp_eflags(f80_compare(RD(0), RD(rm), true, c));

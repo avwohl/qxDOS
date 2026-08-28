@@ -543,6 +543,171 @@ static double ulps(f80 g, f80 w) {
   return 1e9;
 }
 
+// Two boundaries a random generator does not reach.
+//
+// Both were live defects that every check above passed over, and both are
+// invisible to gen() and genr() for the same kind of reason: the interesting
+// operands occupy a set of near-zero measure.  Enumerating beats sampling
+// here, so these are enumerated.
+//
+// This section is worth its length only because it was shown to fail: against
+// the code as it stood before the fixes it reports 192 tininess mismatches and
+// eight FYL2XP1 failures, and zero of either after.
+static void oracle_boundaries() {
+  static const uint16_t cws[] = {
+    0x037F, 0x077F, 0x0B7F, 0x0F7F,     // RC 0..3 at PC = 64
+    0x003F, 0x043F, 0x083F, 0x0C3F,     // RC 0..3 at PC = 24
+    0x023F, 0x063F, 0x0A3F, 0x0E3F,     // RC 0..3 at PC = 53
+  };
+
+  // 1. Tininess is decided on the UNBOUNDED exponent range.  A result whose
+  //    exact value lies below 2^-16382 is tiny even when rounding on the
+  //    denormal grid lifts what is delivered back up to exactly 2^-16382, and
+  //    hardware raises #U for it.  Reading the delivered J bit instead calls
+  //    that result normal and loses the flag.  Reaching it needs an exact
+  //    product in the last half ulp below the boundary, which is why the
+  //    significands here are all-ones and near-all-ones rather than random.
+  uint64_t sigs[40];
+  int ns = 0;
+  for (int k = 0; k < 20; k++) sigs[ns++] = 0xFFFFFFFFFFFFFFFFULL - (uint64_t)k;
+  for (int k = 1; k <= 20; k++)
+    sigs[ns++] = 0x8000000000000000ULL | (0xFFFFFFFFFFFFFFFFULL >> k);
+
+  int bad = 0, cases = 0;
+  for (unsigned ci = 0; ci < sizeof cws / sizeof cws[0]; ci++) {
+    uint16_t cw = cws[ci];
+    for (int op = 0; op < 3; op++)
+      for (int ae = 1; ae <= 8; ae++)
+        for (int si = 0; si < ns; si++)
+          for (int sc = 1; sc <= 8; sc++) {
+            f80 a; a.sig = sigs[si]; a.se = (uint16_t)ae;
+            f80 b; b.sig = 0x8000000000000000ULL;
+            b.se = (uint16_t)(16383 + (op == 1 ? sc : -sc));
+            f80_ctx c = f80_ctx_make(cw);
+            f80 got;
+            volatile long double va = ld_of(a), vb = ld_of(b), vr;
+            long double xa = va, xb = vb, xr;
+            uint16_t hsw;
+            setcw(cw); clex();
+            const char *name;
+            switch (op) {
+              case 0: name = "mul.tiny";   got = f80_mul(a, b, c);
+                __asm__ volatile("fmulp %%st,%%st(1)\n\tfnstsw %1"
+                                 : "=t"(xr), "=a"(hsw) : "0"(xb), "u"(xa) : "st(1)"); break;
+              case 1: name = "div.tiny";   got = f80_div(a, b, c);
+                __asm__ volatile("fdivrp %%st,%%st(1)\n\tfnstsw %1"
+                                 : "=t"(xr), "=a"(hsw) : "0"(xb), "u"(xa) : "st(1)"); break;
+              default: name = "scale.tiny"; got = f80_scale(a, b, c);
+                __asm__ volatile("fscale\n\tfnstsw %1"
+                                 : "=t"(xr), "=a"(hsw) : "0"(xa), "u"(xb)); break;
+            }
+            vr = xr;
+            setcw(0x037F);
+            f80 want = f80_of(vr);
+            uint16_t gf = (uint16_t)(c.flags & 0x3F), wf = (uint16_t)(hsw & 0x3F);
+            cases++;
+            if (got.sig != want.sig || got.se != want.se || gf != wf) {
+              bad++;
+              report(name, cw, a, b, got, gf, want, wf);
+            }
+          }
+  }
+  char msg[160];
+  std::snprintf(msg, sizeof msg,
+                "#U at the 2^-16382 boundary matches the host x87 (%d cases)", cases);
+  check(bad == 0, msg);
+
+  // 2. FYL2XP1 over the whole of its domain, not just the small-|x| part the
+  //    encoding exists for.  The reduced argument is t = x/(2+x), and the
+  //    twenty atanh terms cover |t| <= 1/3, which is x >= -1/2 - so the band
+  //    -1 < x <= -1/2 has to reach the log2(1+x) fallback instead.  genr(-70,
+  //    -3) never produces |x| >= 1/8, so nothing here looked at that band.
+  //    The host's own FYL2XP1 is the oracle, not libm.
+  static const double xs[] = {
+    -0.5, -0.5625, -0.6, -0.75, -0.875, -0.9, -0.99, -0.999, -0.9999,
+    -0.4999, -0.25, 0.25, 0.5, 0.9, 1.0,
+  };
+  int tbad = 0;
+  for (unsigned i = 0; i < sizeof xs / sizeof xs[0]; i++) {
+    f80 x = f80_of((long double)xs[i]), y = f80_of(1.0L);
+    f80_ctx c = f80_ctx_make(0x037F);
+    f80 got = f80_yl2xp1(y, x, c);
+    volatile long double vx = ld_of(x), vy = ld_of(y), vr;
+    long double xx = vx, xy = vy, xr;
+    uint16_t hsw;
+    setcw(0x037F); clex();
+    __asm__ volatile("fyl2xp1\n\tfnstsw %1"
+                     : "=t"(xr), "=a"(hsw) : "0"(xx), "u"(xy) : "st(1)");
+    vr = xr;
+    setcw(0x037F);
+    f80 want = f80_of(vr);
+    // The fallback path forms 1+x, so allow the half ulp that costs; the
+    // defect this catches was 2.4e14 ulp, not one.
+    if (ulps(got, want) > 1.0) {
+      tbad++;
+      report("yl2xp1", 0x037F, y, x, got, (uint16_t)(c.flags & 0x3F), want,
+             (uint16_t)(hsw & 0x3F));
+    }
+  }
+  std::snprintf(msg, sizeof msg,
+                "FYL2XP1 tracks the host across its whole domain (%d arguments, "
+                "including the -1 < x <= -1/2 band)", (int)(sizeof xs / sizeof xs[0]));
+  check(tbad == 0, msg);
+
+  // 3. The same tininess question on the STORE path, which is a separate site
+  //    with the same mistake in it.  Worth its own sweep rather than four
+  //    hand-picked values: the two tests agree over most of the boundary and
+  //    disagree only where denormal-grid rounding carries up to the
+  //    destination's smallest normal from a value that rounding at the
+  //    destination's precision, unbounded, leaves below it.  Four hand-picked
+  //    cases all landed on the agreeing side; walking the last ulps finds
+  //    3072 disagreements in 320000.
+  int sbad = 0, scases = 0;
+  for (int w = 0; w < 2; w++) {
+    int be = w ? 1022 : 126;
+    for (unsigned ci = 0; ci < 4; ci++) {
+      uint16_t cw = cws[ci];                      // the four RC modes at PC = 64
+      for (int eoff = 1; eoff <= 2; eoff++) {
+        uint16_t se = (uint16_t)(16383 - be - eoff + 1);
+        for (uint64_t d = 0; d < 4000; d++) {
+          f80 a; a.se = se; a.sig = 0xFFFFFFFFFFFFFFFFULL - d;
+          f80_ctx c = f80_ctx_make(cw);
+          volatile long double va = ld_of(a);
+          long double xa = va;
+          uint16_t hsw;
+          unsigned long long gv, hv;
+          setcw(cw); clex();
+          if (!w) {
+            gv = f80_to_f32(a, c);
+            float hf32;
+            __asm__ volatile("fstps %0\n\tfnstsw %1" : "=m"(hf32), "=a"(hsw) : "t"(xa) : "st");
+            __asm__ volatile("fstp %%st(0)" ::: "st");
+            uint32_t t32; std::memcpy(&t32, &hf32, 4); hv = t32;
+          } else {
+            gv = f80_to_f64(a, c);
+            double hf64;
+            __asm__ volatile("fstpl %0\n\tfnstsw %1" : "=m"(hf64), "=a"(hsw) : "t"(xa) : "st");
+            __asm__ volatile("fstp %%st(0)" ::: "st");
+            uint64_t t64; std::memcpy(&t64, &hf64, 8); hv = t64;
+          }
+          setcw(0x037F);
+          uint16_t gf = (uint16_t)(c.flags & 0x3F), wf = (uint16_t)(hsw & 0x3F);
+          scases++;
+          if (gv != hv || gf != wf) {
+            if (sbad++ < 4)
+              std::printf("  store.%s cw=%04X a=%016llX:%04X  got %llX fl=%02X  want %llX fl=%02X\n",
+                          w ? "m64" : "m32", cw, (unsigned long long)a.sig, a.se,
+                          gv, gf, hv, wf);
+          }
+        }
+      }
+    }
+  }
+  std::snprintf(msg, sizeof msg,
+                "#U on the narrowing store matches the host x87 (%d cases)", scases);
+  check(sbad == 0, msg);
+}
+
 // The recorded bound.  Measured, not asserted from the manual: raise it only
 // after looking at what moved, because these are the numbers that say whether
 // the polynomial evaluations are still doing their job.
@@ -676,6 +841,7 @@ int main(int argc, char **argv) {
   std::printf("== host x87 oracle (x86-64, 64-bit long double)\n");
   oracle_arith(4000 * scale);
   oracle_ops(600 * scale);
+  oracle_boundaries();
   oracle_transcendental(20000 * scale);
 #else
   std::printf("== host x87 oracle SKIPPED: needs x86-64 with a 64-bit long double\n");

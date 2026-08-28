@@ -528,7 +528,11 @@ and not for what comes after it.
     real-mode linear address can need twenty-ONE bits - `(0xFFFF << 4) + 0xFFFF`
     is `0x10FFEF` - and only four of them belong in the high field; the rest of
     that dword is reserved. The 16-bit form got this free from its `uint16`
-    field and the 32-bit one did not.
+    field and the 32-bit one did not. *(This bullet is wrong, and is corrected
+    under "The x87 defect pass" below rather than edited away: four bits at
+    12:15 is the **16-bit** layout. The 32-bit real-address-mode image puts the
+    pointer's high bits at bits 27:16, with twelve bits of room, so what this
+    change did was move a truncation from one wrong place to another.)*
   - `FNSTENV`/`FLDENV` write and read all seven environment fields in the
     layout the operand size and the processor mode select - four layouts, and
     virtual-8086 mode takes the real-address one even though `CR0.PE` is set,
@@ -631,6 +635,10 @@ and not for what comes after it.
   area, `FRSTOR`'s, `FBSTP`'s ten bytes - would keep writing *past* the fault,
   to wherever the offset had wrapped to. They stop at the first fault now, and
   `tests/fpu_test.cc` section 22 asserts that the bytes after it are untouched.
+  *(The three LOOPS did. `fpu_store_env`'s seven fields are the same shape and
+  were left unguarded, so `FNSTENV` and the environment half of `FNSAVE` kept
+  writing past a fault - see "The x87 defect pass" below. "They" was too broad
+  a word, and the sentence is corrected there rather than edited here.)*
   What is still not undone is memory the instruction had already written
   *before* the faulting access: a multi-dword store that faults halfway leaves
   its first half behind, here as on the integer side of this core.
@@ -638,6 +646,108 @@ and not for what comes after it.
   What this still does **not** do: deliver `#MF`. There is no exception
   delivery and no FERR path anywhere in emu88, so an unmasked exception is
   visible to a program that polls `FNSTSW`, and to nothing else.
+
+- **The x87 defect pass**: nine defects found by a differential hunt against the
+  host x87 after the 80-bit rewrite landed, fixed together rather than one at a
+  time. **This moves the core and dosiz compiles it** - `emu88/emu88_f80.h` and
+  `emu88/emu88_fpu.cc`, both on the six-file list.
+
+  Two were wrong **answers**, four were wrong **reports**, and three were the
+  masked stack-fault response - which turned out to be one rule applied in
+  three places rather than three separate defects.
+
+  - `FYL2XP1` was grossly wrong across `-1 < x <= -1/2`. It reduces with
+    `t = x/(2+x)` and evaluates `atanh(t)` from a twenty-term table covering
+    `|t| <= 1/3`, but that bound is `x >= -1/2`, not `|x| <= 1` as the table's
+    own comment claimed - at `x = -0.9`, `t` is `-0.818`. The only guard bailed
+    out to `log2(1+x)` at `|x| >= 1`, so the whole band in between ran a
+    diverged series: 4.3e-11 relative error at `x = -0.75`, 6.7% at `-0.99` and
+    **29% at `-0.999`**, against a real 387 that is correct across all of it.
+    The fallback is exact there - `1 + x` is exact by Sterbenz over that band -
+    so widening the guard costs nothing. The comment is corrected too.
+  - The 32-bit **real-address-mode** environment image put the pointer's high
+    bits at bits 12:15, which is the **16-bit** layout. The 32-bit one puts
+    them at bits 27:16 with twelve bits of room. `FNSTENV`/`FNSAVE` wrote them
+    in the wrong place and `FLDENV`/`FRSTOR` read them back from the same wrong
+    place, so the image round-tripped self-consistently and matched no real
+    387; a twenty-one-bit linear address also lost its top bits on the way
+    through. The bullet above this one asserted the old behaviour was right,
+    and is marked rather than deleted.
+  - **Tininess was decided on the denormal grid**, in two separate places. The
+    IEEE rule is tininess *after rounding as if the exponent range were
+    unbounded*; reading the delivered result's J bit instead calls a value that
+    denormal-grid rounding lifted back up to `2^-16382` normal, and loses `#U`.
+    `f80_round_pack` had it, so `FMUL`, `FDIV` and `FSCALE` dropped the flag,
+    and `f80_to_ieee` had it independently, so `FST`/`FSTP m32real`/`m64real`
+    dropped it at the destination's own subnormal boundary. Both now re-round
+    at the same precision with no exponent bound and test that. It matters that
+    the second rounding is at the *working* precision: under `PC=24` and
+    `PC=53` the unbounded rounding really does carry out to the smallest
+    normal, so hardware reports no `#U` either, and a blanket "inexact down
+    here implies `#U`" is wrong in the other direction.
+  - `FCHS` and `FABS` on an empty `ST(0)` delivered a **positive QNaN**. They
+    are the only two x87 instructions here that reach the sign bit without
+    going through an `f80_*` routine, so they are the only two that could
+    deform the `#IS` substitute: the masked response is the indefinite,
+    `FFFF:C000000000000000`, and flipping or clearing its sign leaves
+    `7FFF:C000000000000000`. The status word was already right, so a guest
+    checking `FNSTSW` saw nothing and a guest checking the value saw a QNaN
+    that is not the indefinite.
+  - **Four more undocumented alias groups decoded to nothing**: `D9 D8-DF`
+    (`FSTP1`), `DF C8-CF` (`FXCH7`), `DF D0-D7` (`FSTP8`) and `DF D8-DF`
+    (`FSTP9`). Three of the four **pop**, which is the `FFREEP` failure mode
+    this file already fixed once - a program using one to discard `ST(0)` left
+    the stack one deeper every pass, and a stack overflow after eight. All four
+    were measured on the host first, which is also how `D9 DA` was shown to be
+    `FSTP ST(2)` and not a bare pop.
+
+  - **`FNSTENV` kept writing past a fault.** `check_segment_write` lets an
+    access through once an exception is already pending, which is why the
+    `FNSAVE` register loop and the `FBSTP` byte loop carry
+    `&& !fault_abort()`. `fpu_store_env`'s seven fields carried nothing, so
+    once one field faulted the rest were let through with the offset wrapped to
+    sixteen bits and landed at the **start of the segment** - memory the
+    instruction never named. `FNSTENV [FFF8]` in real mode wrote four bytes to
+    `DS:0002`. `execute_fpu` restores the FPU state on a fault but cannot
+    un-write guest memory. Every field is guarded now, `FNSAVE` included,
+    because its guarded register loop sat behind an unguarded environment.
+  - **`FCMOVcc` ignored the masked `#IS` response.** Both operands are read
+    whatever the condition says, so an empty one is a stack underflow either
+    way - but the instruction then stored the *other* operand's real value.
+    Hardware delivers the indefinite to `ST(0)` whichever operand was empty and
+    whatever the condition decided, and tags it `SPECIAL`; measured at `CF=0`
+    and `CF=1`, on both the `DA` and `DB` encodings.
+  - **The two-result instructions left half a result behind.** `FXTRACT`,
+    `FPTAN` and `FSINCOS` write one result and push the other, so an
+    overflowing push replaced only the pushed value and left the first result
+    standing beside the indefinite. `FPTAN` and `FSINCOS` were worse: the
+    transcendental had already run and its inexactness was still in the
+    context, so the status word got a `PE` the instruction never earned.
+    Hardware gives **both** destinations the indefinite and reports `IE|SF`
+    plus the `C1` direction bit alone - `SW=3A41` on a full stack, `3841` on an
+    empty one, `PE` clear in both.
+
+  **How they were found, and what that says about the harnesses.** A fan-out of
+  differential probes against the host x87, each required to reproduce a wrong
+  answer before reporting it. Every one of the six sits in a place the existing
+  suites structurally could not reach, and two of those places are worth
+  naming. The tininess cases need an exact result in the last half-ulp below
+  the boundary, which random operands hit with probability near zero: a
+  540,000-case random sweep at the denormal boundary passes against the
+  **broken** code. And `f80_unit`'s `FYL2XP1` generator draws exponents in
+  `[-70, -3]`, so it cannot produce `|x| >= 1/8` at all, let alone the band that
+  was broken.
+
+  So `tests/f80_unit.cc` gains an `oracle_boundaries()` that **enumerates**
+  rather than samples - the last ulps below `2^-16382` for `FMUL`/`FDIV`/
+  `FSCALE`, the same below both narrower destinations for the stores, and
+  `FYL2XP1` across its whole domain - and `tests/fpu_test.cc` gains the four
+  alias groups, the two stack-underflow sign cases and a 32-bit real-mode
+  environment fixture whose pointers actually exceed 2^20. 50 checks to 53 and
+  577 to 608. The whole set was run against the unfixed core first, which is
+  the only reason to believe any of it: 3 of `f80_unit`'s 53 red and 19 of
+  `fpu_test`'s 608, with 192 tininess mismatches and 3,072 store mismatches
+  behind two of those three.
 
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no

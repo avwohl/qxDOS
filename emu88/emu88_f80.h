@@ -338,15 +338,34 @@ static inline f80 f80_round_pack(bool sign, int32_t exp, unsigned __int128 sig,
 
   // Denormal grid.  `keep` cannot carry past 2^prec here, because the extra
   // dshift already cost it that many bits; the one thing it CAN do is reach
-  // the smallest normal, which is the tininess-after-rounding rule x86 uses:
-  // a result that rounds up to 2^-16382 is not tiny and raises no #U.
+  // the smallest normal.
+  //
+  // Which is NOT the tininess test.  Tininess is decided on the UNBOUNDED
+  // exponent range - "after rounding" means after rounding as if the exponent
+  // had no lower bound, not after rounding onto the denormal grid.  The two
+  // disagree exactly when denormal-grid rounding lifts the delivered result
+  // back up to 2^-16382 from a value that was below it: hardware calls that
+  // tiny and raises #U, and reading J off the delivered result calls it normal
+  // and raises nothing.  FSCALE of 0002:FFFFFFFFFFFFFFFF by -2 is the case -
+  // the host x87 reports UE|PE there and testing `m` alone reports PE.
+  //
+  // Rounding the same significand a second time with dshift = 0 asks the
+  // unbounded question directly.  It matters that this is the same rounding at
+  // the same precision: under PC=24 and PC=53 the unbounded rounding really
+  // does carry out to the smallest normal, so hardware reports no #U either,
+  // and a blanket "inexact implies UE down here" would wrongly raise it.
+  unsigned __int128 ukeep;
+  bool uinexact, uinc;
+  f80_round_sig(sig, sticky, prec, 0, rc, sign, &ukeep, &uinexact, &uinc);
+  bool tiny = (exp + (((ukeep >> prec) != 0) ? 1 : 0)) < -16382;
+
   f80 r;
   uint64_t m = (uint64_t)(keep << (64 - prec));
   r.sig = m;
   r.se  = (uint16_t)((sign ? 0x8000 : 0) | ((m >> 63) ? 1u : 0u));
   if (inexact) {
     c.flags |= F80_PE;
-    if ((m >> 63) == 0) c.flags |= F80_UE;    // tiny AND inexact
+    if (tiny) c.flags |= F80_UE;              // tiny AND inexact
   }
   c.c1 = inc;
   return r;
@@ -1014,9 +1033,20 @@ static inline uint64_t f80_to_ieee(f80 a, int mbits, int ebits, f80_ctx &c) {
 
   uint64_t m = (uint64_t)keep;
   bool normal_now = (m >> mbits) != 0;      // rounded all the way up to 2^(1-bias)
+  // Tininess is the unbounded-exponent question here exactly as it is in
+  // f80_round_pack, and for the same reason: denormal-grid rounding is
+  // coarser, so it can carry up to 2^(1-bias) from a value that rounding at
+  // the destination's precision with no exponent bound leaves below it.  That
+  // value is tiny and hardware raises #U for it; `normal_now` alone says
+  // otherwise.  Storing 3C00:FFFFFFFFFFFFFBFF to m64real is the case - the
+  // host x87 reports UE|PE and reading `normal_now` reports PE.
+  unsigned __int128 ukeep;
+  bool uinexact, uinc;
+  f80_round_sig(w.sig, false, prec, 0, c.rc(), w.sign, &ukeep, &uinexact, &uinc);
+  bool tiny = (w.exp + (((ukeep >> prec) != 0) ? 1 : 0)) < 1 - bias;
   if (inexact) {
     c.flags |= F80_PE;
-    if (!normal_now) c.flags |= F80_UE;
+    if (tiny) c.flags |= F80_UE;
   }
   c.c1 = inc;
   return sbit | ((normal_now ? (uint64_t)1 : (uint64_t)0) << mbits) | (m & fmask);
@@ -1210,9 +1240,10 @@ static const f80 F80_INV_FACT[19] = {
 };
 
 // 1/(2k+1) for k = 0..19 -- atanh(t)/t, used by FYL2X and FYL2XP1.  Fifteen
-// terms cover FYL2X's |t| <= 0.1716; twenty cover |t| <= 1/3, which is what
-// FYL2XP1 needs to stay accurate across the whole of |x| <= 1 rather than
-// only across the |x| < 1 - sqrt(2)/2 the architecture promises.
+// terms cover FYL2X's |t| <= 0.1716; twenty cover |t| <= 1/3.  For FYL2XP1
+// that is x in [-1/2, 1], NOT the whole of |x| <= 1: t = x/(2+x) grows past
+// 1/3 as soon as x drops below -1/2.  f80_yl2xp1 falls back on log2(1+x)
+// outside that band, which is why the claim here has to name it exactly.
 static const f80 F80_ATANH_C[20] = {
   { 0x8000000000000000ULL, 0x3FFF },  // 1/1
   { 0xAAAAAAAAAAAAAAABULL, 0x3FFD },  // 1/3
@@ -1558,12 +1589,20 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
   if (ky == F80_CLASS_ZERO) { c.c1 = false; return f80_make_zero(f80_neg(x) != f80_neg(y)); }
   if (kx == F80_CLASS_DENORMAL || ky == F80_CLASS_DENORMAL) c.flags |= F80_DE;
 
-  // Past |x| = 1 the reduced argument leaves the series' range, and the
-  // architecture calls the result undefined there anyway.  Falling back on
-  // log2(1+x) costs the half-ulp that forming 1+x rounds away - which is
-  // exactly the precision this encoding exists to avoid, and exactly why the
-  // fallback is confined to arguments the encoding was never for.
-  if ((int)(x.se & 0x7FFF) - 16383 >= 0)
+  // Past the series' range, fall back on log2(1+x).  The range is NOT |x| <= 1:
+  // t = x/(2+x) is what the twenty atanh terms have to cover, and |t| <= 1/3
+  // holds for x >= -1/2 but not below it - at x = -0.9, t = -0.818, and at
+  // x = -0.999, t = -0.998, where twenty terms are nowhere near converged.
+  // Guarding only |x| >= 1 left the whole band -1 < x <= -1/2 to a diverged
+  // series: 4.3e-11 relative error at x = -0.75, 6.7% at x = -0.99 and 29% at
+  // x = -0.999, against a real 387 that is correct across all of it.
+  //
+  // The fallback costs nothing on the negative side.  1 + x for x in [-1, -1/2]
+  // is exact by Sterbenz - both operands lie within a factor of two - so only
+  // the positive band, where forming 1+x really does round away the half-ulp
+  // this encoding exists to keep, is worth confining the fallback away from.
+  int xe = (int)(x.se & 0x7FFF) - 16383;
+  if (xe >= 0 || (f80_neg(x) && xe >= -1))
     return f80_yl2x(y, f80x_add(F80_ONE, x), c);
 
   // t = x/(2+x) gives atanh(t) = ln(1+x)/2 with no cancellation at all, which
