@@ -1,0 +1,25 @@
+--- a/src/gui/render/shader_manager.cpp
++++ b/src/gui/render/shader_manager.cpp
+@@ -111,7 +111,9 @@
+ 		const auto& shader_key = descriptor.shader_name;
+ 		assert(shader_cache.contains(shader_key));
+ 
++#if C_OPENGL
+ 		glDeleteProgram(shader_cache[shader_key].program_object);
++#endif
+ 		shader_cache[shader_key] = shader;
+ 	};
+ 
+@@ -181,10 +183,12 @@
+ 	               pragmas.output_size,
+ 	               pragmas.preset};
+ 
++#if C_OPENGL
+ 	if (!shader.BuildShaderProgram(shader_source)) {
+ 		LOG_ERR("RENDER: Error loading shader '%s'", shader_name.c_str());
+ 		return {};
+ 	}
++#endif
+ 	return shader;
+ }
+ 

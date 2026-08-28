@@ -79,6 +79,18 @@ set(COMMON_INCLUDES
     ${CONFIG_DIR}             # dosbox_config.h
     ${CONFIG_DIR}/stubs       # stub headers for missing libraries
     ${DB}                     # dosbox.h and other top-level headers
+
+    # glad, even though C_OPENGL is 0.  v0.83.0 made
+    # gui/render/private/shader_common.h include "glad/gl.h" with no C_OPENGL
+    # guard, and private/shader.h declares `GLuint program_object', so five
+    # translation units this build compiles need the header for its TYPES
+    # whether or not any GL function is ever called.  Including it costs
+    # nothing at link: gl.h is 4865 lines of declarations with zero inline
+    # bodies - 983 extern function pointers - so only CALLING one creates a
+    # dependency on glad's gl.c, which this build still does not compile.
+    # The one call that existed is guarded by
+    # patches/shader_manager_no_opengl.patch.
+    ${DB}/libs/glad/release/include
 )
 
 # Loguru (logging)
@@ -178,6 +190,7 @@ set(DOSBOX_PATCHES
     "shell/autoexec.cpp;restart_reset_autoexec_statics.patch"
     "misc/cross.cpp;restart_clear_cached_config_dir.patch"
     "gui/mapper.cpp;restart_null_lock_events.patch"
+    "gui/render/shader_manager.cpp;shader_manager_no_opengl.patch"
 )
 
 set(PATCHED_SOURCES "")
@@ -316,7 +329,7 @@ add_library(dosbox-core STATIC
     ${DB}/gui/clipboard.cpp
     ${PATCHED_DIR}/gui/mapper.cpp
     ${DB}/gui/sdl_gui.cpp
-    ${DB}/gui/render/shader_manager.cpp
+    ${PATCHED_DIR}/gui/render/shader_manager.cpp
     ${DB}/gui/titlebar.cpp
     ${DB}/gui/render/deinterlacer.cpp
     ${DB}/gui/render/render.cpp

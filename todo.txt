@@ -20,8 +20,9 @@ inaccuracies.  Two more were narrowed rather than closed - the x87 entry lost
 its nine defects and kept its register format, and the dosiz entry gained a gate
 and kept its pin - and both are below with what is left of them.
 
-Eleven items, then.  The first is the live one - a half-finished submodule bump -
-and it is first because it is the only thing here that a Mac could finish today.
+Eleven items, then.  The first is the live one - a submodule bump that is
+statically clean and has never been compiled - and it is first because it is the
+only thing here that a Mac could finish today.
 The clone-breaking pin it replaced is closed and is in CHANGELOG.md rather than
 here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
@@ -33,49 +34,39 @@ dependency that lives on their side.  The last two were found on
 reason: closing either is a decision about what the product does, not a
 cleanup.
 
-- THE v0.83.0 BUMP DOES NOT BUILD YET, and what is left is a decision rather
-than a fix.  e4ade9d moved the submodule off a pin that did not exist upstream
-and 359a287 closed eleven build breaks found by static audit: the six lost fork
+- the v0.83.0 bump is statically clean and has never been compiled.  twelve
+build breaks were found by audit and all twelve are closed - the six lost fork
 patches recovered into dosbox-ios/patches/, the two renamed webserver classes,
 the MidiSynth reparenting in the fluidsynth stub, three newly-required upstream
-sources, DOSBOX_VERSION_SHORT, and imgmount_fix.cpp - which upstream made
-obsolete by merging IMGMOUNT into MOUNT, so dos_programs.cpp:97 registers
-IMGMOUNT.COM as ProgramCreate<MOUNT> and `class IMGMOUNT' now exists in zero
-files.  The twelfth break is the shader path and it cannot be closed by adding a
-file to the source list.
-  measured 2026-08-27 against the checked-out submodule:
-    src/gui/render/private/shader_common.h:14 does `#include "glad/gl.h"' with
-      NO C_OPENGL guard.  five compiled translation units reach it transitively -
-      gui/render/render.cpp, gui/render/shader_manager.cpp,
-      gui/render/auto_image_adjustments.cpp, gui/sdl_gui.cpp and the patched
-      gui/render/sdl_renderer.cpp.  glad exists upstream at src/libs/glad, but
-      `grep -n glad dosbox-ios/CMakeLists.txt' returns NOTHING - it is not on the
-      include path, because this build has never needed it.
-    src/gui/render/shader_manager.cpp contains ZERO occurrences of C_OPENGL and
-      calls glDeleteProgram at :114 and Shader::BuildShaderProgram at :184.
-      glDeleteProgram is a glad function pointer defined only in glad's gl.c,
-      which upstream compiles only when C_OPENGL is on.  BuildShaderProgram is
-      defined in src/gui/render/shader.cpp, whose entire body sits behind
-      `#if C_OPENGL' at line 6.
-    this build sets C_OPENGL 0, at dosbox_config.h:52 and as a compile definition
-      at CMakeLists.txt:570.
-  so with C_OPENGL=0 those two symbols are unresolvable NO MATTER WHAT is added
-to the source list.  upstream made the shader path assume OpenGL is present and
-this build assumes it is not.  three options, none mechanical:
-    turn C_OPENGL on and vendor glad.  the largest change, and it runs against
-      the grain of the platform: the app renders through SDL's Metal backend and
-      OpenGL ES is deprecated on Apple platforms.
-    stop compiling shader_manager.cpp and auto_image_adjustments.cpp and patch
-      render.cpp and sdl_gui.cpp not to need them.  fits the patch mechanism
-      dosbox-ios/patches/ already provides and is the most in keeping with what
-      this integration does, but it is a real patch against churning upstream
-      code, not a one-liner.
-    add glad's include directory and gl.c so the header resolves and the function
-      pointers link.  NOT sufficient alone: BuildShaderProgram still does not
-      exist with C_OPENGL=0.
-  whoever picks one needs a Mac.  eleven breaks were found without building; the
-twelfth is where a compiler has to be involved, and where the count of remaining
-ones stops being knowable from here.
+sources, DOSBOX_VERSION_SHORT, the obsolete imgmount_fix.cpp, and the shader
+path.  what is left is not a list of known problems; it is that nothing here can
+run a compiler over it.
+  the shader one is worth recording because the first assessment of it was too
+pessimistic.  it looked architectural: v0.83.0's
+gui/render/private/shader_common.h:14 includes "glad/gl.h" with no C_OPENGL
+guard, private/shader.h:17 declares `GLuint program_object', and
+gui/render/shader_manager.cpp called glDeleteProgram and
+Shader::BuildShaderProgram with no guard at all while shader.cpp's whole body
+sits behind `#if C_OPENGL'.  the conclusion drawn was that those symbols were
+unresolvable with C_OPENGL=0 no matter what, and that the way out was either
+enabling OpenGL or patching render.cpp and sdl_gui.cpp.
+  neither was needed.  glad's gl.h is 4865 lines with ZERO inline bodies and 983
+extern function-pointer declarations, so including it costs nothing at link -
+only CALLING a gl function does.  and shader_manager.cpp turned out to have
+exactly one such call.  so: add ${DB}/libs/glad/release/include to the include
+path for the types, and guard the one call and the one BuildShaderProgram use
+behind #if C_OPENGL.  two hunks.  render.cpp and sdl_gui.cpp are untouched, no
+file was dropped from the build, and glad's gl.c is still not compiled because
+nothing references a pointer from it.
+  WHAT IS ACTUALLY LEFT: a build.  every claim above is static - paths resolve,
+patches apply with no fuzz, declared symbols match their headers, no unguarded GL
+call remains in any compiled translation unit.  none of it is a compiler's
+opinion.  four thousand commits of upstream drift across 241 files will contain
+things this kind of checking cannot see: changed semantics behind unchanged
+signatures, template instantiation failures, ODR problems, anything to do with
+the Objective-C++ side.  the next step is `cmake --build' on a Mac, and the
+useful thing to record afterwards is what static analysis MISSED, because that
+is the number that says how much to trust this method next time.
 
   one smaller thing from the same audit, NOT fixed because it predates the bump:
 dosbox-ios/CMakeLists.txt globs src/libs/residfp and gets 18 files where
