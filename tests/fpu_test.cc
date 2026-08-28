@@ -1902,6 +1902,44 @@ int main() {
     check(rd16(SAVE + 4) == 0x33FF,
           "the restored image still carries the physical-order tag word");
 
+    // A tag word that DISAGREES with the register data does not round-trip the
+    // way it was written.  A real x87 keeps only the EMPTY/non-EMPTY decision
+    // from the image and re-derives valid/zero/special from what is actually in
+    // each register.  Measured on the host with a hand-built 108-byte image:
+    // tag word 0x0000 (all VALID) over +0.0, 1.0, an SNaN and a denormal comes
+    // back 0x55A1; 0x5555 and 0xAAAA over eight 1.0s both come back 0x0000;
+    // and 0xFFFF and 0x0003 come back unchanged, because EMPTY is honoured.
+    {
+      const uint16_t IMG = 0x0600;
+      struct { uint16_t se; uint64_t sig; } rv[8] = {
+        { 0x0000, 0x0000000000000000ULL },   // +0.0      -> ZERO
+        { 0x3FFF, 0x8000000000000000ULL },   // 1.0       -> VALID
+        { 0x7FFF, 0x8000000000000001ULL },   // SNaN      -> SPECIAL
+        { 0x0000, 0x0000000000000001ULL },   // denormal  -> SPECIAL
+        { 0x0000, 0x0000000000000000ULL }, { 0x0000, 0x0000000000000000ULL },
+        { 0x0000, 0x0000000000000000ULL }, { 0x0000, 0x0000000000000000ULL },
+      };
+      static const uint16_t in_tw[]  = { 0x0000, 0x5555, 0xAAAA, 0xFFFF, 0x0003 };
+      static const uint16_t out_tw[] = { 0x55A1, 0x55A1, 0x55A1, 0xFFFF, 0x55A3 };
+      int tbad = 0;
+      for (unsigned k = 0; k < sizeof in_tw / sizeof in_tw[0]; k++) {
+        for (int i = 0; i < 128; i++) wr8((uint16_t)(IMG + i), 0);
+        wr32(IMG + 0, 0x037F); wr32(IMG + 4, 0x0000); wr32(IMG + 8, in_tw[k]);
+        for (int i = 0; i < 8; i++) {
+          wr64((uint16_t)(IMG + 28 + 10 * i), rv[i].sig);
+          wr16((uint16_t)(IMG + 28 + 10 * i + 8), rv[i].se);
+        }
+        FNINIT();
+        run({0x66, 0xDD, mrm_disp16(4), (uint8_t)(IMG & 0xFF), (uint8_t)(IMG >> 8)});  // FRSTOR
+        const uint16_t OUT = 0x0700;
+        for (int i = 0; i < 32; i++) wr8((uint16_t)(OUT + i), 0xAA);
+        run({0x66, 0xD9, mrm_disp16(6), (uint8_t)(OUT & 0xFF), (uint8_t)(OUT >> 8)});  // FNSTENV
+        if ((uint16_t)rd32(OUT + 8) != out_tw[k]) tbad++;
+      }
+      check(tbad == 0,
+            "FRSTOR re-derives the non-EMPTY tags from the data and honours EMPTY");
+    }
+
     // The 32-bit (108-byte) form has 32-bit environment fields, so the whole
     // of each FIP/FDP field is cleared, not just its low word.
     for (int i = 0; i < 120; i++) wr8((uint16_t)(SAVE + i), 0xFF);

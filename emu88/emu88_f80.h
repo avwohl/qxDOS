@@ -879,6 +879,20 @@ static inline f80 f80_prem_common(f80 a, f80 b, bool ieee, f80_ctx &c,
     return f80_indefinite();
   }
   if (ka == F80_CLASS_DENORMAL || kb == F80_CLASS_DENORMAL) c.flags |= F80_DE;
+  // A PSEUDO-denormal - exponent field 0 with the significand's J bit SET - has
+  // an exactly equal normalized form: the same significand at biased exponent
+  // 1.  Several paths below hand the dividend straight back with `return a',
+  // so without this the unnormalized encoding survives where hardware delivers
+  // the normalized one.  Measured: FPREM of 0000:8000000000000000 by 1.0 gives
+  // 0001:8000000000000000 on the host and gave 0000:8000000000000000 here, on
+  // the |a| < |b| path, the mod-infinity path and the large-divisor path
+  // alike.  The VALUE is identical either way, which is why the flags already
+  // agreed and only the encoding was wrong.
+  //
+  // Not to be confused with an UNNORMAL, which is J clear with a nonzero
+  // exponent: that one is genuinely unsupported, and f80_classify already
+  // sends it to #IA and the indefinite.
+  if ((a.se & 0x7FFF) == 0 && (a.sig >> 63) != 0) a.se = (uint16_t)(a.se | 1);
   if (kb == F80_CLASS_INF) return a;           // x mod inf is x
   if (ka == F80_CLASS_ZERO) return a;
 

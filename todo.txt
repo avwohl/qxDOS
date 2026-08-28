@@ -211,15 +211,6 @@ cases in that verifier's own sweep where the biased result really is inexact.
     either, so this only matters to a guest that unmasks and polls.
   - emu88_f80.h: f80_round_pack ignores the exception masks - an exact tiny
     result raises no #U when #U is unmasked, and an unmasked #O also sets #P.
-  - emu88_f80.h: FPREM/FPREM1 hand back a pseudo-denormal dividend in its
-    unnormalized encoding.
-  - emu88_fpu.cc: FLDENV/FRSTOR take the three non-EMPTY tag encodings
-    verbatim.  a real x87 keeps only the EMPTY/non-EMPTY decision from the
-    image and re-derives valid/zero/special from what is actually in the
-    register - so an image whose tag word disagrees with its register data
-    round-trips differently here than on hardware.  note the FRSTOR case
-    currently documents taking them verbatim as DELIBERATE, so that comment is
-    part of what has to change.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808

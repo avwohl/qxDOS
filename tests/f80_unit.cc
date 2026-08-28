@@ -840,6 +840,54 @@ static void oracle_boundaries() {
     }
     check(mbad == 0, "f80_mul2's head and tail sum to the exact product");
   }
+
+  // 7. FPREM/FPREM1 with a PSEUDO-denormal dividend - exponent field 0 with the
+  //    significand's J bit SET.  Several paths hand the dividend straight back,
+  //    so the unnormalized encoding used to survive where hardware delivers the
+  //    normalized one.  The value is the same either way, which is why the
+  //    flags always agreed and only the bits were wrong.  Not to be confused
+  //    with an UNNORMAL (J clear, nonzero exponent), which is genuinely
+  //    unsupported and already goes to #IA; the last row checks that still holds.
+  {
+    struct { uint16_t ase; uint64_t asig; uint16_t bse; uint64_t bsig; bool ieee; } t[] = {
+      { 0x0000, 0x8000000000000000ULL, 0x3FFF, 0x8000000000000000ULL, false },
+      { 0x0000, 0x8000000000000000ULL, 0x3FFF, 0x8000000000000000ULL, true  },
+      { 0x0000, 0x8000000000000000ULL, 0x7FFE, 0x8000000000000000ULL, false },
+      { 0x0000, 0x8000000000000000ULL, 0x7FFF, 0x8000000000000000ULL, false },
+      { 0x3FFF, 0xC000000000000000ULL, 0x3FFE, 0x8000000000000000ULL, false },
+      { 0x4000, 0x4000000000000000ULL, 0x3FFF, 0x8000000000000000ULL, false },
+    };
+    int pbad = 0;
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
+      f80 a, b;
+      a.se = t[i].ase; a.sig = t[i].asig;
+      b.se = t[i].bse; b.sig = t[i].bsig;
+      f80_ctx c = f80_ctx_make(0x037F);
+      int q; bool part;
+      f80 g = t[i].ieee ? f80_prem1(a, b, c, &q, &part) : f80_prem(a, b, c, &q, &part);
+      volatile long double va = ld_of(a), vb = ld_of(b);
+      long double xa = va, xb = vb, xr;
+      uint16_t hsw;
+      setcw(0x037F); clex();
+      // No st(1) clobber: FPREM does not pop, so the divisor is still live and
+      // gcc has to be left to retire it.  Declaring it clobbered leaks a stack
+      // slot per iteration, and six of them is enough to corrupt every test
+      // that runs afterwards - which is exactly what it did.
+      if (t[i].ieee)
+        __asm__ volatile("fprem1\n\tfnstsw %1" : "=t"(xr), "=a"(hsw) : "0"(xa), "u"(xb));
+      else
+        __asm__ volatile("fprem\n\tfnstsw %1"  : "=t"(xr), "=a"(hsw) : "0"(xa), "u"(xb));
+      setcw(0x037F);
+      f80 want = f80_of(xr);
+      if (g.sig != want.sig || g.se != want.se ||
+          (uint16_t)(c.flags & 0x3F) != (uint16_t)(hsw & 0x3F)) {
+        pbad++;
+        report("prem.pseudo", 0x037F, a, b, g, (uint16_t)(c.flags & 0x3F),
+               want, (uint16_t)(hsw & 0x3F));
+      }
+    }
+    check(pbad == 0, "FPREM/FPREM1 normalise a pseudo-denormal dividend like the host");
+  }
 }
 
 // The recorded bound.  Measured, not asserted from the manual: raise it only

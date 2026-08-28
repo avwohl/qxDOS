@@ -408,7 +408,18 @@ void emu88::fpu_load_env(uint16_t seg, uint32_t base, bool op32) {
       fpu.fcs = 0; fpu.fds = 0;
     }
   }
-  for (int i = 0; i < 8; i++) fpu.tags[i] = (uint8_t)((tw >> (i * 2)) & 3);
+  // Only the EMPTY/non-EMPTY decision comes from the image.  A real x87
+  // re-derives valid/zero/special from what is actually in the register, so an
+  // image whose tag word disagrees with its register data does not round-trip
+  // the way it was written.  Measured: FRSTOR of an image with tag word 0x0000
+  // - all VALID - over registers holding +0.0, 1.0, an SNaN and a denormal
+  // gives 0x55A1 back out of FNSTENV, not 0x0000.  A tag word of 0x5555 or
+  // 0xAAAA over eight 1.0s both come back 0x0000.  EMPTY, by contrast, is
+  // honoured verbatim: 0xFFFF in gives 0xFFFF out, and 0x0003 gives 0x0003.
+  for (int i = 0; i < 8; i++) {
+    uint8_t t = (uint8_t)((tw >> (i * 2)) & 3);
+    fpu.tags[i] = (t == TAG_EMPTY) ? TAG_EMPTY : fpu_tag_of(fpu.regs[i]);
+  }
 }
 
 //=============================================================================
@@ -816,12 +827,16 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
         case 4: {                                                  // FRSTOR
           fpu_load_env(mr.seg, mr.offset, op_size_32);
           uint32_t roff = mr.offset + (op_size_32 ? 28u : 14u);
-          // The register area is ST(0)-first; the tag word is not.  The tags
-          // are whatever fpu_load_env just put there, in physical order, and
-          // must NOT be recomputed from the values - a saved EMPTY slot holds
-          // an arbitrary bit pattern and re-tagging it would resurrect it.
+          // The register area is ST(0)-first; the tag word is not.
           for (int i = 0; i < 8 && !fault_abort(); i++)
             fpu.regs[(FPU_TOP + i) & 7] = fpu_read_m80real(mr.seg, roff + i * 10);
+          // And now the tags, which fpu_load_env could only half-decide: the
+          // EMPTY slots come from the image and stay empty - re-tagging one
+          // would resurrect a slot holding an arbitrary bit pattern - while
+          // the other three encodings are re-derived from the register data,
+          // which does not exist until the eighty bytes above have been read.
+          for (int i = 0; i < 8; i++)
+            if (fpu.tags[i] != TAG_EMPTY) fpu.tags[i] = fpu_tag_of(fpu.regs[i]);
           track = false; c1_own = true;
           break;
         }

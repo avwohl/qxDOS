@@ -945,6 +945,50 @@ and not for what comes after it.
   commit's core first. (The other four are the control cases, which pass either
   way and are there to keep the fixes honest.)
 
+- **`FLDENV`/`FRSTOR` regenerate the tag word, and `FPREM` normalises a
+  pseudo-denormal.** Moves `emu88/emu88_fpu.cc` and `emu88/emu88_f80.h`.
+
+  - **Only the EMPTY decision comes from a loaded tag word.** A real x87
+    re-derives valid/zero/special from what is actually in each register, so an
+    image whose tag word disagrees with its register data does not round-trip
+    the way it was written. `fpu_load_env` copied all four encodings verbatim.
+    All five cases were measured on the host with a hand-built 108-byte image
+    rather than derived: tag word `0x0000`, `0x5555` and `0xAAAA` over registers
+    holding `+0.0`, `1.0`, an SNaN and a denormal all come back **`0x55A1`**,
+    while `0xFFFF` and `0x0003` come back unchanged because EMPTY is honoured.
+    `FRSTOR` re-runs the retag after its eighty register bytes are in, since the
+    data does not exist when the environment is read.
+
+    The code carried a comment asserting the opposite - that the tags "must NOT
+    be recomputed from the values". Its *reasoning* was right, and is kept: a
+    saved EMPTY slot holds an arbitrary bit pattern and re-tagging it would
+    resurrect it. That is precisely why the rule keeps EMPTY and regenerates
+    only the other three.
+  - **`FPREM`/`FPREM1` handed back a pseudo-denormal dividend unnormalised.**
+    Exponent field 0 with the significand's J bit set has an exactly equal
+    normalised form at biased exponent 1, and several paths `return a` straight
+    back. `FPREM` of `0000:8000000000000000` by `1.0` gives
+    `0001:8000000000000000` on the host. The value is identical either way,
+    which is why the flags always agreed and only the encoding was wrong.
+
+    The report defined the case as "significand MSB clear with a nonzero
+    exponent". That is an **unnormal**, not a pseudo-denormal, and emu88 already
+    sends those to `#IA` and the indefinite - so an unnormal row is asserted
+    beside the fix, to catch an over-reaching version of it.
+
+  `tests/f80_unit.cc` 58 checks to 59 and `tests/fpu_test.cc` 626 to 627, both
+  red against the previous commit first.
+
+  One thing went wrong writing the `FPREM` assertion and is worth recording,
+  because it corrupted results rather than failing outright: the inline asm
+  declared `st(1)` clobbered. `FPREM` does not pop, unlike `FYL2X`, so that told
+  the compiler not to retire the divisor and leaked an x87 stack slot per
+  iteration - enough, after six, to wreck every test that ran afterwards. It
+  surfaced as the transcendental worst-case ulps jumping to 1e9. Those figures
+  are printed on every run so that a regression shows up as a number changing
+  rather than as a check still passing, and this is the first time that has
+  actually earned its keep.
+
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
   `(void)` casts, 13 insertions and 142 deletions, and
