@@ -888,6 +888,62 @@ static void oracle_boundaries() {
     }
     check(pbad == 0, "FPREM/FPREM1 normalise a pseudo-denormal dividend like the host");
   }
+
+  // 8. The UNMASKED overflow and underflow responses, which are not the masked
+  //    ones with a flag added: the result is delivered at full destination
+  //    precision with the biased exponent moved by -24576 or +24576, so no
+  //    denormalisation happens and the value is usually exact.  That is why an
+  //    unmasked #U carries no #P where the masked one does, and why an EXACT
+  //    tiny result still raises #U.
+  //
+  //    The masked rows are run alongside deliberately.  They are the soundness
+  //    check: this touches the path every arithmetic operation funnels through,
+  //    and a change that fixed the unmasked cases by disturbing the masked ones
+  //    would be worse than the defect.  Against the unfixed core this reports
+  //    800 tininess and 320 overflow divergences with zero on the masked rows.
+  {
+    static const uint16_t cws[3] = { 0x037F, 0x036F, 0x0377 };  // masked, #U, #O
+    int ubad = 0, ucases = 0;
+    for (int ci = 0; ci < 3; ci++) {
+      uint16_t cw = cws[ci];
+      for (int ae = 1; ae <= 4; ae++)
+        for (int d = 0; d < 24; d++)
+          for (int sg = 0; sg < 2; sg++)
+            for (int sc = 1; sc <= 4; sc++) {
+              f80 a; a.sig = 0xFFFFFFFFFFFFFFFFULL - (uint64_t)d;
+              a.se = (uint16_t)((sg ? 0x8000 : 0) | ae);
+              f80 b = f80_of((long double)(-sc));
+              f80_ctx c = f80_ctx_make(cw);
+              f80 g = f80_scale(a, b, c);
+              volatile long double va = ld_of(a), vb = ld_of(b);
+              long double xa = va, xb = vb, xr;
+              uint16_t hsw = 0;
+              // FNSTSW and FNCLEX do not wait, so the status word is read and
+              // the pending #MF cleared before the FSTPT readback - which does
+              // wait, and would trap.
+              __asm__ volatile("fldcw %[c]\n\tfnclex\n\tfldt %[b]\n\tfldt %[a]\n\t"
+                               "fscale\n\tfnstsw %[s]\n\tfnclex\n\tfstpt %[r]\n\t"
+                               "fstp %%st(0)\n\tfninit"
+                               : [s]"=m"(hsw), [r]"=m"(xr)
+                               : [c]"m"(cw), [a]"m"(xa), [b]"m"(xb)
+                               : "st", "st(1)", "memory");
+              setcw(0x037F);
+              f80 want = f80_of(xr);
+              ucases++;
+              if (g.sig != want.sig || g.se != want.se ||
+                  (uint16_t)(c.flags & 0x3F) != (uint16_t)(hsw & 0x3F)) {
+                ubad++;
+                report("unmasked", cw, a, b, g, (uint16_t)(c.flags & 0x3F),
+                       want, (uint16_t)(hsw & 0x3F));
+              }
+            }
+    }
+    char m2[128];
+    std::snprintf(m2, sizeof m2,
+                  "the unmasked #U/#O responses match the host (%d cases, masked rows included)",
+                  ucases);
+    check(ubad == 0, m2);
+  }
 }
 
 // The recorded bound.  Measured, not asserted from the manual: raise it only

@@ -292,7 +292,20 @@ static inline f80 f80_round_pack(bool sign, int32_t exp, unsigned __int128 sig,
   if (sig == 0) { c.c1 = false; return f80_make_zero(sign); }
 
   int rc = c.rc();
-  int dshift = (exp < -16382) ? (int)(-16382 - exp) : 0;
+  // The UNMASKED responses are not the masked ones with a flag added.  When #U
+  // or #O is unmasked a 387 delivers the result at FULL destination precision
+  // with the biased exponent moved by +24576 or -24576, so no denormalisation
+  // happens and the value is usually exact - which is why an unmasked #U comes
+  // with no #P where the masked one has it, and why an EXACT tiny result still
+  // raises #U.  Measured: FSCALE of 0001:8000000000000000 by -1 gives
+  // 0000:4000000000000000 with nothing raised when masked, and
+  // 6000:8000000000000000 with #U alone when unmasked.
+  //
+  // Nothing here delivers #MF, so this is only visible to a guest that unmasks
+  // and then polls FNSTSW.  It is still what the guest is told.
+  const bool u_unmasked = (c.cw & 0x0010) == 0;
+  const bool o_unmasked = (c.cw & 0x0008) == 0;
+  int dshift = (exp < -16382 && !u_unmasked) ? (int)(-16382 - exp) : 0;
   if (dshift > 200) dshift = 200;              // everything below is sticky anyway
 
   unsigned __int128 keep;
@@ -305,6 +318,28 @@ static inline f80 f80_round_pack(bool sign, int32_t exp, unsigned __int128 sig,
     // The carry out of the precision window is the only way a normal result
     // changes exponent here.
     if ((keep >> prec) != 0) { keep >>= 1; E += 1; }
+    if (E > 16383 && o_unmasked) {
+      // Unmasked overflow: the rounded result, exponent biased by -24576.
+      c.flags |= F80_OE;
+      if (inexact) c.flags |= F80_PE;
+      c.c1 = inc;
+      f80 r;
+      r.sig = (uint64_t)(keep << (64 - prec));
+      r.se  = (uint16_t)((sign ? 0x8000 : 0) | (uint16_t)(E + 16383 - 24576));
+      return r;
+    }
+    if (E < -16382) {
+      // Unmasked underflow - only reachable when u_unmasked, because otherwise
+      // dshift moved the result onto the denormal grid and E with it.  Tiny is
+      // enough to raise #U here; it does not also have to be inexact.
+      c.flags |= F80_UE;
+      if (inexact) c.flags |= F80_PE;
+      c.c1 = inc;
+      f80 r;
+      r.sig = (uint64_t)(keep << (64 - prec));
+      r.se  = (uint16_t)((sign ? 0x8000 : 0) | (uint16_t)(E + 16383 + 24576));
+      return r;
+    }
     if (E > 16383) {
       // Masked overflow.  Round-to-nearest and the mode that rounds away from
       // this result's sign deliver an infinity; the other two deliver the

@@ -989,6 +989,44 @@ and not for what comes after it.
   rather than as a check still passing, and this is the first time that has
   actually earned its keep.
 
+- **The unmasked `#O` and `#U` responses**, which closes the last finding on the
+  re-verified list. Moves `emu88/emu88_f80.h`.
+
+  An unmasked response is not the masked one with a flag added. A 387 delivers
+  the result at **full destination precision** with the biased exponent moved by
+  `-24576` for an overflow or `+24576` for an underflow, so no denormalisation
+  happens and the delivered value is usually exact. Two consequences that both
+  read as backwards until you see them: an unmasked `#U` carries **no** `#P`
+  where the masked one does, and an **exact** tiny result still raises `#U` -
+  tininess alone is enough, it does not also have to be inexact.
+
+  Measured: `FSCALE` of `0001:8000000000000000` by `-1` gives
+  `0000:4000000000000000` and raises nothing when masked, and
+  `6000:8000000000000000` with `#U` alone when unmasked.
+
+      band                     HEAD          fixed
+      #U unmasked, tininess    800 diffs     0
+      #O unmasked, overflow    320 diffs     0
+      masked, both bands         0 diffs     0
+
+  That last row is the one that matters. This lives in `f80_round_pack`, which
+  every arithmetic path in the file funnels through, so a change that fixed the
+  unmasked cases by disturbing the masked ones would be worse than the defect it
+  cured. The masked rows are inside the committed assertion for that reason
+  rather than as padding, and `tests/f80_unit.cc` goes from 59 checks to 60 with
+  2,304 cases in the new one.
+
+  **Scope, stated plainly:** emu88 delivers no `#MF` and has no FERR pin, so
+  none of this is visible to a guest that does not unmask an exception and then
+  poll `FNSTSW`. It is still what the guest is told when it looks.
+
+  The first sweep written for this reported **zero** divergences in the tininess
+  band and nearly had the finding recorded as overstated. `FSCALE` truncates its
+  operand toward zero and the sweep was passing `2^-(n+1)` - 0.25, which
+  truncates to **zero**, so nothing was ever scaled. Printing the actual values
+  instead of the counts exposed it in one run. Counts hide that class of
+  mistake; values do not.
+
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
   `(void)` casts, 13 insertions and 142 deletions, and

@@ -164,53 +164,27 @@ against an exact reference showed part of the remaining difference is glibc's
 rather than ours, so the number is an upper bound on our error, not a
 measurement of it.
 
-- fifteen or so x87 defects are reported and NOT fixed, and this entry exists
-so they are written down somewhere other than a chat log.  a differential hunt
-against the host x87 on 2026-08-28 produced 39 distinct findings; twelve were
-fixed in two passes (f5f8f18 and the commit after it) and each of those twelve
-was reproduced against the host by hand before being touched.  what is below is
-the rest.
-  THESE WERE RE-VERIFIED ON 2026-08-28 AND ALL OF THEM REPRODUCE.  An earlier
-version of this entry warned that up to seven were probably not defects,
-because the hunt that found them returned 7 refutations it did not attach to
-particular findings.  That warning was wrong and is corrected here rather than
-deleted: a second pass built a probe per finding against the host x87 and
-confirmed every one at high confidence, with none refuted and none already
-fixed by accident.  The 7 refutations must have landed on findings that were
-fixed while the run was still going.
-  Two of them came back with the REPORT corrected rather than just confirmed,
-which is worth knowing before picking one up.  The two unmasked-exception
-entries are ONE change, not two: whether #P belongs on an unmasked overflow
-depends on the inexactness of the 24576-biased value, so the flags cannot be
-fixed without computing that value.  And the fix proposed for it - "do not set
-#P for an unmasked overflow" - is wrong as stated; it breaks the 82 of 738
-cases in that verifier's own sweep where the biased result really is inexact.
-
-  what is LEFT of the transcendental exception family, three of whose four
-  counts closed on 2026-08-28 and are in CHANGELOG.md.  rounding control
-  reaches all eight now, an overflowing FYL2X reports #O, and an exact FYL2X no
-  longer reports a #P it did not earn.  two things did not close:
-    - #U for a tiny result.  F2XM1 of 2^-16382 reports #P where the host
-      reports #U|#P.  that underflow happens in an INTERMEDIATE multiply which
-      has already been denormalised in a throwaway context by the time the last
-      step runs, so moving the final rounding into the caller's context - which
-      is what fixed the other three - cannot see it.  fixing it means carrying
-      underflow information out of the intermediates, which is a different and
-      larger change.
-    - C1.  it is derived from a real rounding now rather than being hard zero,
-      but its agreement with hardware is unchanged at about chance (measured
-      2365/4000 after against 2010/4000 before, at RC=nearest), because it
-      depends on which way OUR approximation rounds and ours sits a couple of
-      ulp from the host's.  closing this properly needs the transcendentals to
-      be correctly rounded, which is a much bigger claim than the 6-ulp bound
-      they are held to.
-
-  the rest, each with the file it is in:
-  - emu88_f80.h: unmasked #O and #U deliver the MASKED result rather than the
-    value with the exponent biased by -/+24576.  nothing here delivers #MF
-    either, so this only matters to a guest that unmasks and polls.
-  - emu88_f80.h: f80_round_pack ignores the exception masks - an exact tiny
-    result raises no #U when #U is unmasked, and an unmasked #O also sets #P.
+- the seventeen x87 defects a differential hunt found on 2026-08-28 are all
+fixed, and this entry is what is left of that list: nothing.  It is kept, empty,
+only long enough to say how it went, because the way it went is the useful part.
+  Thirty-nine findings came out of the hunt; twelve were fixed in the first two
+passes and the remaining seventeen were written down here with a warning that up
+to seven of them were probably not defects - the hunt had returned seven
+refutations it did not attach to particular findings.  THAT WARNING WAS WRONG.
+A second pass built a probe per finding against the host x87 and confirmed every
+one of the seventeen at high confidence, none refuted and none already fixed by
+accident; the seven refutations had landed on findings that were being fixed
+while the run was still going.  A caveat like that is not free - it discourages
+work on real defects - and it is worth more care than it got.
+  All seventeen are closed now, across five commits, each with both gates run.
+What follows in CHANGELOG.md is the detail.  Three of the seventeen came back
+from re-verification with the REPORT corrected rather than merely confirmed: the
+two unmasked-exception entries were one change and not two, the fix originally
+proposed for them was wrong as stated, and the FPREM entry had defined its own
+case backwards (it described an unnormal, which emu88 already handled).
+  What is NOT closed, and is above and below this entry rather than here: #MF
+delivery, and the two transcendental counts that need more than a final-rounding
+change.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808
