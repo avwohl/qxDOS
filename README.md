@@ -17,8 +17,8 @@ That last clause is a correction, recorded rather than edited away. This file
 said "The qxDOS project provides only the iOS/Mac app shell" and "All PC
 emulation is provided by DOSBox Staging". Both were false by the time you read
 them. PC emulation now comes from `emu88/`: CPU, protected mode, x87, memory,
-BIOS, VGA/VESA, DPMI host, NE2000, AdLib/OPL and Sound Blaster, 24 tracked files
-and 17,244 lines. `qxDOS/Views/MachineConfig.swift` declares
+BIOS, VGA/VESA, DPMI host, NE2000, AdLib/OPL and Sound Blaster, 25 tracked files
+and 19,072 lines. `qxDOS/Views/MachineConfig.swift` declares
 `var backend: EmulatorBackend = .emu88` and decodes a missing key to `.emu88`,
 so both a new profile and an old saved one land on emu88. DOSBox Staging is
 still a git submodule at `dosbox-staging/` and still selectable; it is no longer
@@ -57,13 +57,15 @@ counts, or a 486/Pentium CPU. It is no longer the default.
 
 Named here rather than left to be discovered.
 
-- **The x87 is not a bit-exact 387.** `emu88.h` declares `double regs[8]`, so
-  the register stack carries 53 mantissa bits instead of the 387's 64-bit
-  extended significand. A class of real-hardware results is not reproducible
-  without a rewrite: no denormal class, precision control ignored, `F2XM1` and
-  `FYL2XP1` losing the precision they exist to preserve.
-  [tests/README.md](tests/README.md) section 4 pins each divergence in the
-  harness, with a comment naming the gap, so none of them can drift silently.
+- **The x87 does not deliver unmasked exceptions.** The register file is
+  80-bit extended now (`f80 regs[8]`, a soft float in `emu88/emu88_f80.h`), and
+  `tests/f80_unit.cc` grades its arithmetic against the host's own x87 bit for
+  bit, flags included. What is still missing is delivery: there is no `#MF`
+  and no FERR path anywhere in emu88, so an exception that a program *unmasks*
+  latches ES and B in the status word and is visible to `FNSTSW` polling, and
+  to nothing else. The eight transcendentals are also not correctly rounded —
+  no 387 rounds them either — and `tests/f80_unit.cc` holds them to a measured
+  ulp bound instead.
 - **Defects are recorded before they are fixed, and held at a baseline rather
   than hidden.** A harness that finds one asserts the architecturally correct
   answer and fails on purpose until somebody fixes it; fixing it then fails the
@@ -86,10 +88,10 @@ explore period software archives like Simtel and Walnut Creek.
 ## Features
 
 - Two hardware backends: emu88 (default) and DOSBox Staging
-- 386 CPU with an x87 FPU and a DPMI host. Under emu88 the FPU is not a
-  bit-exact 387 — the register stack is host `double`, 53 mantissa bits rather
-  than 80-bit extended — so some real-hardware results differ. See
-  [tests/README.md](tests/README.md) section 4, which names each divergence.
+- 386 CPU with an x87 FPU and a DPMI host. Under emu88 the FPU's register
+  stack is 80-bit double extended precision, and its arithmetic is checked
+  against a real x87 by [tests/f80_unit.cc](tests/f80_unit.cc). Unmasked
+  exceptions are still not *delivered*; see "What emu88 does not do".
 - VGA/SVGA graphics (S3 Trio64 under DOSBox; VESA VBE 2.0 with an 8 MB linear
   framebuffer under emu88)
 - Sound Blaster 16 audio under DOSBox; Sound Blaster DSP with 8237 DMA plus
@@ -181,7 +183,7 @@ the whole development loop for `emu88/`, and it is what CI runs.
 
 ```bash
 bash tests/fetch_tests.sh   # clones the two corpora into tests/data/ (gitignored, large)
-bash tests/build.sh         # builds eleven harnesses into tests/build/
+bash tests/build.sh         # builds twelve harnesses into tests/build/
 bash tests/run_suites.sh    # runs them and holds them to their recorded scores
 ```
 
@@ -265,7 +267,7 @@ SwiftUI App (qxDOS/)
   ├─ Emu88Emulator.h/.mm — Objective-C++ bridge, DEFAULT backend
   │    ├─ emu88/ — the 386 core and the PC around it
   │    │    ├─ emu88.cc, emu88_pmode.cc, emu88_mem.cc — CPU, protected mode, memory
-  │    │    ├─ emu88_fpu.cc — x87 (host double register stack, not 80-bit)
+  │    │    ├─ emu88_fpu.cc, emu88_f80.h — x87 decode; 80-bit soft float
   │    │    ├─ dos_machine.cc, dos_bios.cc — machine, BIOS, VGA/VESA, INT 10h/13h/16h
   │    │    ├─ dos_dpmi.cc — DPMI host (INT 2Fh AX=1687h, INT 31h)
   │    │    └─ ne2000.cc, opl.cc, sound_blaster.cc, uart16550.cc — hardware
@@ -293,7 +295,8 @@ render path rather than two.
 `${CMAKE_SOURCE_DIR}/../../qxDOS/emu88`
 and compiles six files straight out of this working tree — `emu88.cc`,
 `emu88_pmode.cc`, `emu88_fpu.cc`, `emu88_mem.cc`, `opl.cc` and
-`sound_blaster.cc`, 9,102 lines as measured here. There is no submodule, no
+`sound_blaster.cc`, 9,065 lines as measured here, plus the headers they
+include - among them the 1,852-line `emu88_f80.h`. There is no submodule, no
 copy, no version constant and no checksum, so a local build there picks up
 whatever is in this checkout at that moment; their CI is pinned separately, to a
 full 40-character qxDOS SHA in `QXDOS_REF`, bumped by hand on their side.

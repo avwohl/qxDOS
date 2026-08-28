@@ -3,6 +3,7 @@
 
 #include "emu88_mem.h"
 #include "emu88_trace.h"
+#include "emu88_f80.h"
 #include <cstdio>
 
 class emu88 {
@@ -165,27 +166,39 @@ public:
   // Parity lookup table
   emu88_uint8 parity_table[256];
 
-  // x87 FPU state
+  // x87 FPU state.  regs[] was `double` until the 80-bit rewrite; see
+  // emu88_f80.h for why that had to change and what it cost.  tags[], cw and
+  // sw keep their names and their encodings.
   struct FPUState {
-    double regs[8];       // ST(0)-ST(7) as host doubles
+    f80 regs[8];          // ST(0)-ST(7), 80-bit double extended precision
     uint8_t tags[8];      // Tag per register: 0=valid, 1=zero, 2=special, 3=empty
     uint16_t cw;          // Control word
     uint16_t sw;          // Status word
+    // The last-instruction and last-operand pointers FSTENV and FSAVE write.
+    // Nothing in this emulator reads them back; they exist so the environment
+    // images are the seven fields a 387 writes rather than two of them.
+    uint32_t fip;         // offset of the last non-control x87 instruction
+    uint16_t fcs;         // its code selector
+    uint16_t fop;         // its 11-bit opcode
+    uint32_t fdp;         // offset of its memory operand, if it had one
+    uint16_t fds;         // that operand's selector
   } fpu;
 
   // FPU methods
   void fpu_init();
+  void fpu_power_on();
   void execute_fpu(emu88_uint8 opcode);
 
   // FPU memory access helpers
-  double fpu_read_m32real(uint16_t seg, uint32_t off);
-  double fpu_read_m64real(uint16_t seg, uint32_t off);
-  double fpu_read_m80real(uint16_t seg, uint32_t off);
-  void fpu_write_m32real(uint16_t seg, uint32_t off, double val);
-  void fpu_write_m64real(uint16_t seg, uint32_t off, double val);
-  void fpu_write_m80real(uint16_t seg, uint32_t off, double val);
-  double fpu_round(double val);
-  void fpu_compare(double a, double b);
+  f80  fpu_read_m32real(uint16_t seg, uint32_t off, f80_ctx &c);
+  f80  fpu_read_m64real(uint16_t seg, uint32_t off, f80_ctx &c);
+  f80  fpu_read_m80real(uint16_t seg, uint32_t off);
+  void fpu_write_m32real(uint16_t seg, uint32_t off, f80 v, f80_ctx &c);
+  void fpu_write_m64real(uint16_t seg, uint32_t off, f80 v, f80_ctx &c);
+  void fpu_write_m80real(uint16_t seg, uint32_t off, f80 v);
+  void fpu_store_env(uint16_t seg, uint32_t base, bool op32);
+  void fpu_load_env(uint16_t seg, uint32_t base, bool op32);
+  void fpu_cmp_eflags(f80_cmp_r r);
 
   // Constructor/destructor
   emu88(emu88_mem *memory);

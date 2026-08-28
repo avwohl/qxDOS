@@ -197,7 +197,7 @@ void emu88::reset(void) {
   cr0 = 0; cr2 = 0; cr3 = 0; cr4 = 0;
   memset(dr, 0, sizeof(dr));
   ldtr = 0; tr = 0; cpl = 0;
-  fpu_init();
+  fpu_power_on();   // RESET zeroes the data registers; FNINIT does not
   memset(&ldtr_cache, 0, sizeof(ldtr_cache));
   memset(&tr_cache, 0, sizeof(tr_cache));
   init_seg_caches();

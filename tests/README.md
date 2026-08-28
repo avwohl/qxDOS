@@ -2,14 +2,20 @@
 
 Standalone validation of the **emu88** 386 CPU core (built without the iOS/DOSBox
 app) against two industry-standard suites, plus hand-written harnesses for the
-parts those suites do not reach: the VESA BIOS, the x87 FPU, the DPMI host, the
-NE2000 network card and the PC BIOS.
+parts those suites do not reach: the VESA BIOS, the x87 FPU and the 80-bit soft
+float underneath it, the DPMI host, the NE2000 network card and the PC BIOS.
+
+One of those is different in kind from the rest and worth knowing about before
+you read further. `f80_unit` does not test emu88 against a table of expected
+values; it tests emu88's floating point against **the host's own x87**, because
+on x86-64 `long double` is the same 80-bit format with the same control word.
+See section 4b.
 
 ## Setup
 
 ```sh
 bash tests/fetch_tests.sh   # downloads test data into tests/data/ (gitignored, 585MB)
-bash tests/build.sh         # builds all eleven harnesses into tests/build/
+bash tests/build.sh         # builds all twelve harnesses into tests/build/
 bash tests/run_suites.sh    # runs them and holds them to their recorded scores
 ```
 
@@ -23,7 +29,15 @@ files and never git.
 
 `run_suites.sh` is what `.github/workflows/tests.yml` runs, so a green tick and
 a clean local run mean the same thing. `build.sh` uses `clang++` when it is
-present and `g++` otherwise.
+present and `g++` otherwise — **which matters, and was invisible here until
+2026-08-28.** Every measurement in this file before that date was taken with
+`g++` because no `clang++` was installed; once one was, `build.sh` silently
+switched to it and immediately produced 44 warnings that `g++` had never
+emitted (`-Wunused-const-variable`, which g++ does not raise for a namespace-
+scope `static constexpr` in C++ and clang does). The tree is clean under both
+now — `clang++ 21.1.8` and `g++ 15.2.0`, twelve harnesses each, zero warnings —
+but the lesson is that "zero warnings" is a claim about a compiler, and this
+script picks the compiler for you.
 
 ## 1. SingleStepTests/80386 — per-instruction (real mode)
 
@@ -146,68 +160,196 @@ coordinates onto the guest range (SVGA 1:1; VGA mode 13h to the classic
 > costs minutes rather than seconds. It is the thing to run by hand after
 > touching memory routing or a frame buffer.
 
-## 4. x87 FPU — instruction-level
+## 4. x87 FPU — instruction-level, and the arithmetic underneath it
 
-`emu88_fpu.cc` was 870 lines of CPU core when this was written (967 today), so
-every harness above already compiled it and not one of them ever executed an x87
-opcode. `tests/fpu_test.cc` does,
-by writing real encodings to `CS:0000` and running them through
-`emu88::execute()` — the `D8`–`DF` escape dispatch, the modrm decoder and the
-FPU handler are therefore exercised together, rather than by calling
-`execute_fpu()` behind the decoder's back.
+Two harnesses, and the split between them matters. `tests/fpu_test.cc` owns the
+DECODE, the register stack and the status word; `tests/f80_unit.cc` owns the
+NUMBERS. Neither replaces the other, and until 2026-08-28 only the first
+existed, which is why the arithmetic went ungraded for as long as it did.
+
+### 4a. `tests/fpu_test.cc` — the decoder and the register file
+
+`emu88_fpu.cc` is CPU core, so every harness above already compiled it and not
+one of them ever executed an x87 opcode. This one does, by writing real
+encodings to `CS:0000` and running them through `emu88::execute()` — the
+`D8`–`DF` escape dispatch, the modrm decoder and the FPU handler are therefore
+exercised together, rather than by calling `execute_fpu()` behind the decoder's
+back.
 
 ```sh
 bash tests/build.sh          # builds tests/build/fpu_test
 tests/build/fpu_test
 ```
 
-**Result: PASS** — 470 assertions over ~74 mnemonics: stack discipline and
-`TOP` wraparound, the tag word, all three memory real formats, the seven `FLD`
-constants as exact bit patterns, every arithmetic form with the non-commutative
-ones asserted in both directions, integer load/store rounding versus `FISTTP`'s
-truncation, the `C0`/`C2`/`C3` codes for less-than, equal, greater-than and
-NaN-unordered, `FXAM`'s full classification, the transcendentals, all four
-rounding modes driving `fpu_round`, `FCMOVcc`, `FCOMI`, `CR0.EM`/`CR0.TS`
-gating, and `FNSAVE`/`FRSTOR` in both the 94-byte and 108-byte forms.
+**Result: PASS** — 577 assertions over ~76 mnemonics: stack discipline and
+`TOP` wraparound, stack overflow and underflow with the `IE`/`SF`/`C1` a 387
+reports, the tag word, all three memory real formats, the seven `FLD`
+constants as exact 80-bit bit patterns, every arithmetic form with the
+non-commutative ones asserted in both directions, integer load/store rounding
+versus `FISTTP`'s truncation, the `C0`/`C2`/`C3` codes for less-than, equal,
+greater-than and NaN-unordered, `FXAM`'s full classification including the
+denormal and unsupported classes, the transcendentals and their `C2`
+out-of-range report, all four rounding modes, all three precision-control
+settings, `FCMOVcc`, `FCOMI`, `FFREEP`, `CR0.EM`/`CR0.TS` gating,
+`FNSTENV`/`FLDENV` with all seven environment fields, and `FNSAVE`/`FRSTOR` in
+both the 94-byte and 108-byte forms.
 
-**Three kinds of assertion, because the register stack is not a 387's.**
-`emu88.h` declares `double regs[8]` — 53 mantissa bits, not 80-bit extended —
-so a whole class of real-hardware results is not reproducible here and will not
-be without a rewrite. Rather than quietly asserting whatever the code does:
+**Two kinds of assertion now, not three.** Until the register file was
+rewritten, `emu88.h` declared `double regs[8]` — 53 mantissa bits, not 80-bit
+extended — and this file carried **31 `diverge()` sites**, each pinning a value
+that provably differed from a real 387 and each with a comment naming the gap.
+There are none left. Every one is an ordinary `check()` on the 387's answer:
 
 - `check()` asserts behaviour that is correct.
-- `diverge()` (31 sites) pins a value that provably differs from a real 387,
-  each with a comment naming the gap: `FLD m80real` of 1+2^-53 collapsing to
-  exactly 1.0, no denormal class, no stack-overflow detection, precision
-  control ignored entirely, `F2XM1` computed as `pow(2,x)-1` and `FYL2XP1` as
-  `log2(x+1)` so both lose the precision those instructions exist to preserve.
-  The gap is documented and the test fails if it ever moves.
-- `bug()` asserts the *correct* 387 behaviour for a defect that is **not**
-  explained by the double design. These are red on purpose and held to
-  `KNOWN_BUGS_EXPECTED` the way SingleStepTests is held to `SST_BASELINE`:
-  fixing one **fails** the harness, which prints `FIXED (lower
-  KNOWN_BUGS_EXPECTED)`, because a silent improvement means the number is
-  stale. **`KNOWN_BUGS_EXPECTED` is 0.** All nine defects this harness was
-  written to record were fixed on 2026-08-27 and every assertion that caught one
-  is an ordinary `check()` now; the machinery is left in place for the next
-  defect. What the nine were is below.
+- `bug()` asserts the *correct* 387 behaviour for a defect recorded
+  deliberately. These are red on purpose and held to `KNOWN_BUGS_EXPECTED` the
+  way SingleStepTests is held to `SST_BASELINE`: fixing one **fails** the
+  harness, which prints `FIXED (lower KNOWN_BUGS_EXPECTED)`, because a silent
+  improvement means the number is stale. **`KNOWN_BUGS_EXPECTED` is 0.**
+- `diverge()` is kept, unused, as the shape a future *deliberate* divergence
+  should take. What it must not be used for again is a register format.
 
-**Shown to be able to fail.** 56 single-point mutations of a scratch copy of
-`emu88_fpu.cc` — swapped `FSUB`/`FSUBR`, reversed `FPATAN` operands, `fpu_push`
-incrementing `TOP`, `FISTTP` rounding instead of truncating, `FCOMIP` not
-popping, and 51 more. 45 died. Of the 11 survivors two were provably equivalent
-mutants in unreachable clamps; the other nine were real coverage holes and are
-now closed (+48 assertions), after which all 21 re-applied mutations died and
-none escaped. One first-draft assertion was thrown out during that work because
-it expected a condition code of all-bits-clear, which is exactly what a decode
-that ignored the opcode leaves behind — it passed against a mutant. A comment
-in the file records why the fixture is built the other way up.
+Section 21 of the file exists only for behaviour the 80-bit register file makes
+reachable at all: gradual underflow to a denormal with `#U` and `#P`, overflow
+to an infinity or to the largest finite value at the current precision, the
+denormal and unsupported encoding classes, signalling NaNs, NaN propagation by
+significand, and a `FNSAVE`/`FRSTOR` round trip over all eight encoding classes.
 
-### The nine defects, all fixed 2026-08-27
+Section 22 covers something else again: what happens when the memory operand
+**faults**. Real mode on a 286 or later enforces the 0xFFFF segment limit, so
+an eight-byte operand at `DS:0xFFFE` runs off the end and raises `#GP` — which
+is a fault, so the instruction restarts and the x87 state it re-enters with has
+to be the state it left. Ten of that section's assertions fail against the
+implementation as it stood before 2026-08-28: a faulting `FLD` pushed, a
+faulting `FSTP` popped, a faulting `FISTP` left `#P` behind, and a faulting
+`FNSAVE` re-initialised the whole FPU. One more asserts that `FBSTP` writes
+nothing past the byte that faulted, which is not automatic —
+`check_segment_write` lets an access through once an exception is pending, so
+the rest of the field would otherwise land wherever the offset wrapped to.
+
+### 4b. `tests/f80_unit.cc` — the soft float, against real hardware
+
+Neither validation suite in this repository can grade an FPU. None of the 941
+opcode files in `tests/data/80386/v1_ex_real_mode` begins `D8`..`DF` — the
+capture bench was an 80386EX with no coprocessor — and `test386`'s reference
+output has no x87 mnemonic in it. So when the register file was rewritten there
+was nothing that could say whether the arithmetic underneath was right.
+
+This is that thing. On x86-64, `long double` **is** the 80-bit format
+`emu88/emu88_f80.h` implements, with the same control word, the same four
+rounding modes, the same three precision-control settings and the same six
+exception flags. So the host x87 is driven as an oracle: the same operation
+runs both ways and the result **and the flags** are compared bit for bit.
+
+```sh
+tests/build/f80_unit          # ~3s at the default scale of 3
+tests/build/f80_unit 50       # ~56s, tens of millions of cases
+```
+
+**Exact, with flags:** add, sub, mul, div, sqrt, the m32real/m64real
+conversions both ways, the integer conversions both ways with their range
+checks, packed BCD both ways, `FRNDINT`, `FSCALE`, `FXTRACT`, `FPREM`,
+`FPREM1`, the comparisons and `FXAM`.
+
+**Not exact:** the eight transcendentals. A real 387 does not round those
+correctly either — Intel specifies about 1 ulp — so they are graded against the
+host's long-double libm and held to `ULP_BOUND`, which is **6**. The worst
+actually observed is **4** (`FYL2XP1`, and only at scale 50; the default run
+reports 3), and the harness prints a figure per function on every run, so a
+regression shows up as a number changing rather than as a check still passing.
+`FSIN` of arguments up to 2^62 — where the argument reduction is the whole
+difficulty — sits at 2. A spot check against an exact reference found some of
+that remaining difference is glibc's rather than this file's, so the figure is
+an upper bound on our error and not a measurement of it.
+
+**What the oracle found**, none of which is in the manual in these words and
+every one of which was a real defect when it was found:
+
+- `#D` is raised for a denormal *operand* even when the other operand is an
+  infinity and the denormal never reaches the arithmetic — but `#IA` and `#Z`
+  **suppress** it, because they stop the operation first.
+- The masked-overflow "largest finite value" is the largest finite value *at
+  the current precision*, so under `PC=24` it is `0xFFFFFF0000000000`.
+- Two NaNs with equal significands are separated by the smaller sign-exponent
+  word, not by "the destination" as the manual says.
+- Storing to a narrower format does **not** raise `#D` for a denormal source,
+  because a store is not an arithmetic operation.
+
+On anything that is not x86-64 with a 64-bit `long double` — which includes
+every machine this emulator actually ships on — the oracle cannot run. The
+harness still runs a table of golden vectors captured here, so it asserts
+something real on ARM64 rather than silently passing, and says so on stdout.
+
+### Shown to be able to fail
+
+The earlier mutation record for this section — 56 mutations of `emu88_fpu.cc`,
+45 dead, 11 survivors of which nine were real holes — was evidence about a file
+that no longer exists, so it was re-earned rather than edited. On 2026-08-28,
+**29 single-point mutations across both `emu88/emu88_f80.h` and
+`emu88/emu88_fpu.cc`, rebuilt and run one at a time: 29 died, none survived.**
+
+It did not start there. The first run of the three fault-atomicity mutations
+left two alive, and both were real:
+
+- the `FBSTP` write-suppression assertion was checking the wrong address. A
+  real-mode effective address masks the offset to sixteen bits, so the writes
+  after a fault do not run off the end of the segment — they **wrap to the
+  start of it**, onto `DS:0001` and up. The test was looking past the end,
+  where nothing ever lands.
+- nothing asserted that a successful `FNSAVE` resets the instruction pointers
+  as well as the registers, so a mutant that skipped that half survived.
+
+The second, once `FNSAVE` was made to say `track = false` explicitly rather
+than rely on an early return, became a provably equivalent mutant and was
+replaced with one that is observable.
+
+What is worth reading is not the score but which harness did the killing,
+because it is the argument for why there are two:
+
+| Killed by | Count | Examples |
+|---|---|---|
+| `f80_unit` only | 5 | subtraction dropping the sticky borrow; the alignment shift off by one past 128; the NaN tie-break picking the wrong operand; comparison forgetting that negatives order backwards; an exact cancellation always yielding `+0` |
+| `fpu_test` only | 12 | `DC` `FSUB`/`FSUBR` swapped; stack overflow detected on the inverted condition; the saved tag word back in TOP-relative order; `FNSTENV` no longer masking; `C1` no longer telling overflow from underflow; `FFREEP` freeing without popping; the `FPREM` quotient bits in the wrong codes; `FXAM` losing the denormal class; a faulting memory operand no longer aborting the instruction; `FBSTP` writing on past the byte that faulted |
+| both | 12 | round-to-nearest ignoring the tie rule; round-down and round-up swapped; `sqrt` computing one bit too few; the overflow and denormal exponent thresholds each off by one; precision control reading `PC=00` as 53 bits; multiplication dropping the normalising exponent bump |
+
+Five mutations that no amount of opcode-level testing would have caught, and
+twelve that no amount of arithmetic testing would have. Neither harness is
+redundant, and neither would have been enough on its own.
+
+**And one thing neither harness could have found.** Both were green, the oracle
+had matched the host over millions of cases, and all 26 mutants were dead, when
+a sanitized build
+
+```sh
+ASAN=1 bash tests/build.sh && tests/build-asan/fpu_test
+```
+
+reported `negation of -9223372036854775808 cannot be represented in type 'long
+int'` out of `f80_to_int`. `FISTP m64int` of exactly -2^63 is an ordinary
+in-range instruction; the answer it produced was correct on this compiler, and
+the negation that produced it was undefined. That is the whole class of defect a
+differential oracle cannot see — it compares answers, and the answer was right.
+It is fixed (the negation is done in unsigned now), and section 8 asserts both
+ends of the 64-bit range so the case has coverage as well as a fix. The lesson
+is the one `build.sh` already records for the VESA pan clamp: run the sanitizer
+by hand when you touch this, because CI does not.
+
+An older note from the first pass is still worth keeping: one first-draft
+assertion was thrown out because it expected a condition code of all-bits-clear,
+which is exactly what a decode that ignored the opcode leaves behind — it passed
+against a mutant. A comment in the file records why the fixture is built the
+other way up.
+
+### The defects this harness recorded, all fixed 2026-08-27
 
 Each was found by this harness, each was recorded as a `bug()` first and fixed
 second, and each assertion stayed exactly where it was and became a `check()`.
 They are listed here because the harness's value is the record, not the count.
+
+*(This heading said "the nine defects" and listed seven. The nine is the count
+`CHANGELOG.md` and `todo.txt` use, and it counts two that were fixed in the
+same pass without a separate bullet here. The heading is the thing that was
+wrong, not the list, so the heading is what changed.)*
 
 - **`fpu_write_m80real` mangled subnormals, and `fpu_read_m80real` mis-decoded
   them.** On the way out, a `dexp == 0` double was rebiased as if normalised and
@@ -247,8 +389,15 @@ They are listed here because the harness's value is the record, not the count.
   `+6`..`+13`, the 108-byte form clears the reserved high halves of `CW`/`SW`/
   `TW` at `+2`/`+6`/`+10` and then `+12`..`+27`.
 
-None of this makes the register stack 80-bit. The 31 `diverge()` sites are
-unchanged and still name every place the `double` design shows through.
+**The sentence that used to close this section is now false.** It read: *"None
+of this makes the register stack 80-bit. The 31 `diverge()` sites are unchanged
+and still name every place the `double` design shows through."* That was true
+from the day the harness was written until 2026-08-28, when the register stack
+became 80-bit and the 31 sites went to zero. It is quoted here rather than
+deleted, because a reader who remembers it should be able to find out when it
+stopped being true — and because everything above it, the seven defects
+included, is still an accurate record of a file that has since been rewritten
+around them.
 
 ## 5. DPMI host — end-to-end
 
@@ -508,6 +657,13 @@ for as long as they have both existed.
 - **It also never exercises exception delivery.** The corpus injects a `HALT`
   at the exception ISRs, so a fault is scored by the register and RAM state it
   leaves, not by whether the right vector was dispatched with the right frame.
+- **Neither does anything else, for the FPU.** `emu88_fpu.cc` raises every x87
+  exception and latches `ES`/`B` when one is unmasked, and `f80_unit` grades
+  those flags against real hardware — but there is no `#MF` dispatch and no
+  FERR path anywhere in emu88, so a guest that *unmasks* an exception and waits
+  for a trap waits forever. `todo.txt` carries this as an open item. DOS
+  software masks in practice, which is why it has never been the thing that
+  broke.
 
 Three of the five gaps this section opened with are closed as of 2026-08-27;
 they are kept here, struck, because what they were is the argument for the two

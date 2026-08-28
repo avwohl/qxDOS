@@ -20,49 +20,64 @@
 // ---------------------------------------------------------------------------
 // WHAT THIS EMULATOR IS, AND WHAT THESE TESTS THEREFORE ASSERT
 // ---------------------------------------------------------------------------
-// emu88.h declares:  struct FPUState { double regs[8]; uint8_t tags[8];
-//                                      uint16_t cw; uint16_t sw; }
-// The x87 register stack is HOST DOUBLES.  It is not 80-bit extended, and no
-// amount of test-writing makes it so.  Every real-387 result that depends on a
-// 64-bit mantissa, on the denormal/unsupported tag encodings, or on the
-// exception flags the 387 raises is simply not reproducible here.
+// emu88.h declares:  struct FPUState { f80 regs[8]; uint8_t tags[8];
+//                                      uint16_t cw; uint16_t sw; ... }
+// The x87 register stack is 80-BIT DOUBLE EXTENDED PRECISION, implemented as
+// an integer soft float in emu88/emu88_f80.h.  It used to be host `double`,
+// and this file used to carry thirty-one diverge() assertions pinning the
+// places where 53 mantissa bits showed through.  There are none left: every
+// one of them is an ordinary check() on the 387's answer now.
 //
-// So there are three kinds of assertion in this file, and they are kept apart
-// on purpose:
+// What that changed, concretely, and what this file therefore asserts:
+//
+//   - FLD/FSTP m80real are ten-byte moves, so NaN payloads, signalling NaNs,
+//     denormals and the unsupported encodings survive a round trip (section 5);
+//   - the seven FLD constants are the 387's ROM values to all 64 bits, not
+//     doubles widened (section 6);
+//   - pushing onto a live register is a stack overflow and reading an empty
+//     one is a stack underflow, with the IE|SF and C1 a 387 reports (section 2);
+//   - precision control rounds the significand to 24 or 53 bits inside the
+//     full 15-bit exponent range, which is a thing only a soft float can do
+//     (section 13);
+//   - FPREM reduces a large exponent difference a bite at a time and reports
+//     C2, and leaves the quotient bits in C0/C3/C1 (section 12);
+//   - the transcendentals are evaluated in the emulator's own arithmetic
+//     rather than through the host's double libm, to a worst observed 4 ulp
+//     of a 64-bit significand (section 14; tests/f80_unit.cc measures it);
+//   - FNSTENV and FLDENV write and read all seven environment fields, in the
+//     layout the operand size and CR0.PE select, with the tag word in physical
+//     register order (section 17);
+//   - the denormal, unsupported, overflow and gradual-underflow classes exist
+//     at all, and section 21 is about nothing else.
+//
+// So there are two kinds of assertion left in this file, not three:
 //
 //   check()   — this implementation is right, and a plausible bug flips it.
-//   diverge() — this implementation provably differs from a real 387.  The
-//               assertion pins THIS implementation's value and the comment
-//               above it names the gap.  It documents the hole instead of
-//               hiding it; if the value ever changes the test fails and
-//               somebody has to re-read the comment.
-//   bug()     — a defect that is NOT explained by the double-precision design.
-//               The assertion states the CORRECT (real-387) behaviour.  It is
-//               expected to fail, is reported as "KNOWN BUG", and is held to a
-//               baseline count exactly the way tests/run_suites.sh holds
-//               SingleStepTests to SST_BASELINE: if a bug gets fixed the count
-//               drops, the harness FAILS, and KNOWN_BUGS_EXPECTED has to be
-//               lowered deliberately.  A known bug can therefore never quietly
-//               become "the way it works".
+//   bug()     — a defect this harness records deliberately.  The assertion
+//               states the CORRECT (real-387) behaviour, is expected to fail,
+//               is reported as "KNOWN BUG", and is held to a baseline count
+//               exactly the way tests/run_suites.sh holds SingleStepTests to
+//               SST_BASELINE: if a bug gets fixed the count drops, the harness
+//               FAILS, and KNOWN_BUGS_EXPECTED has to be lowered deliberately.
+//               A known bug can therefore never quietly become "the way it
+//               works".  THE LEDGER IS EMPTY: KNOWN_BUGS_EXPECTED is 0.
 //
-//               THE LEDGER IS EMPTY: KNOWN_BUGS_EXPECTED is 0.  All nine
-//               defects this harness was written to record — the m80real
-//               subnormal encode/decode, 0/0 taking the zero-divide path
-//               instead of #IA, the two integer divide-by-zero results that
-//               lost their sign, the stale C1 out of fpu_compare, FPREM1's
-//               half-away-from-zero quotient, the OF/SF/AF that FCOMI left
-//               alone, and the half-written 32-bit FNSAVE environment — are
-//               fixed, and each assertion stayed put as an ordinary check().
-//               The machinery is left here for the next defect.
+// diverge() is kept, unused, for the same reason bug() is: it is the shape a
+// future deliberate divergence should take.  What it must NOT be used for
+// again is a register format.
 //
-//               One gap this file used to name as UNTESTABLE is closed too.
-//               FIST/FISTP/FISTTP of an out-of-range value cast a double
-//               straight to int16_t/int32_t/int64_t, which is undefined
-//               behaviour rather than the 387's #IA-and-integer-indefinite, so
-//               a test there would have been testing the compiler.  All eight
-//               store paths go through one range check now and section 8
-//               asserts it at both boundaries of all three widths, across the
-//               rounding boundary, and for infinities and a NaN.
+// WHAT THIS FILE STILL DOES NOT COVER
+// -----------------------------------
+// The arithmetic itself.  This harness drives real opcode bytes through the
+// decoder and checks what lands in the register file; it does not grade
+// add/sub/mul/div/sqrt against anything.  tests/f80_unit.cc does that, against
+// the host's own x87.  The two are complementary and neither replaces the
+// other: this one owns the decode, the stack and the status word, that one
+// owns the numbers.
+//
+// Also still absent, and deliberately: unmasked exceptions.  There is no #MF
+// delivery and no FERR path in emu88 at all, so an unmasked exception latches
+// ES and B and is visible to a program that polls FNSTSW, and to nothing else.
 //
 // Exit code is non-zero if any check()/diverge() fails, or if the number of
 // known bugs still present is not exactly KNOWN_BUGS_EXPECTED.
@@ -100,7 +115,7 @@ static void check(bool cond, const char *what) {
 
 // A pinned divergence from real x87.  Same gate as check(): it asserts what
 // THIS implementation does.  Separate name so the divergences are greppable.
-static void diverge(bool cond, const char *what) {
+[[maybe_unused]] static void diverge(bool cond, const char *what) {
   g_checks++;
   if (!cond) {
     g_failures++;
@@ -223,10 +238,37 @@ static uint16_t rd80_exp(uint16_t off) { return rd16((uint16_t)(off + 8)); }
 //===========================================================================
 
 static int      ftop()        { return (cpu->fpu.sw >> 11) & 7; }
-static double   st(int i)     { return cpu->fpu.regs[(ftop() + i) & 7]; }
+static f80      stf(int i)    { return cpu->fpu.regs[(ftop() + i) & 7]; }
 static uint8_t  tg(int i)     { return cpu->fpu.tags[(ftop() + i) & 7]; }
 static uint16_t sw()          { return cpu->fpu.sw; }
 static uint16_t cw()          { return cpu->fpu.cw; }
+
+// The register file is 80-bit now.  Most of this file compares against
+// ordinary double literals - 13.0, 2.5, -7.0, 0.4 - and for those the
+// narrowing IS the right reading: each is the exact 64-bit result rounded to
+// 53 bits, so the assertion means the same thing it always did.  st() keeps
+// its name and its type; the assertions that need the extra eleven bits say so
+// by using st_is() instead.
+static double st(int i) {
+  f80_ctx t = f80_ctx_make(0x037F);
+  double d;
+  uint64_t b = f80_to_f64(stf(i), t);
+  std::memcpy(&d, &b, 8);
+  return d;
+}
+// Exact 80-bit compare against the stored significand and sign/exponent word.
+static bool st_is(int i, uint16_t se, uint64_t sig) {
+  f80 v = stf(i);
+  return v.se == se && v.sig == sig;
+}
+static bool reg_is(int p, uint16_t se, uint64_t sig) {
+  return cpu->fpu.regs[p].se == se && cpu->fpu.regs[p].sig == sig;
+}
+// The real indefinite QNaN: the masked #IA result everywhere it can occur.
+static bool st_indef(int i) { return st_is(i, 0xFFFF, 0xC000000000000000ULL); }
+// Seed an exact 80-bit value into ST(0) through a real FLD m80real.
+static const uint16_t SCRATCH80 = 0x0160;
+static void push80(uint16_t se, uint64_t sig);
 
 enum { TAG_VALID = 0, TAG_ZERO = 1, TAG_SPECIAL = 2, TAG_EMPTY = 3 };
 
@@ -241,7 +283,10 @@ static int cc() {
 #define CC_EQ      0x8                 // C3
 #define CC_UNORD   0xD                 // C3 C2 C0
 
-static const uint16_t SW_IE = 0x0001, SW_ZE = 0x0004, SW_SF = 0x0040;
+static const uint16_t SW_IE = 0x0001, SW_DE = 0x0002, SW_ZE = 0x0004,
+                     SW_OE = 0x0008, SW_UE = 0x0010, SW_PE = 0x0020,
+                     SW_SF = 0x0040, SW_ES = 0x0080, SW_B  = 0x8000;
+static const uint16_t SW_C1 = 0x0200, SW_C2 = 0x0400;
 
 // Mnemonic shorthands used a lot below.
 static void FNINIT()  { opr(0xDB, 0xE3); }
@@ -256,6 +301,10 @@ static void FSTPst0() { opr(0xDD, 0xD8); }            // FSTP ST(0) = pop
 // Push a double onto the guest FPU stack by executing a real FLD m64real.
 static const uint16_t SCRATCH64 = 0x0110;
 static void push(double v) { wrd(SCRATCH64, v); FLDm64(SCRATCH64); }
+static void push80(uint16_t se, uint64_t sig) {
+  wr80(SCRATCH80, sig, se);
+  FLDm80(SCRATCH80);
+}
 
 //===========================================================================
 
@@ -274,10 +323,20 @@ int main() {
     bool all_empty = true, all_zero = true;
     for (int i = 0; i < 8; i++) {
       if (cpu->fpu.tags[i] != TAG_EMPTY) all_empty = false;
-      if (cpu->fpu.regs[i] != 0.0) all_zero = false;
+      if (!reg_is(i, 0x0000, 0)) all_zero = false;
     }
-    check(all_empty, "fpu_init: all 8 tags are TAG_EMPTY");
-    check(all_zero, "fpu_init: all 8 registers are 0.0");
+    check(all_empty, "reset: all 8 tags are TAG_EMPTY");
+    check(all_zero, "reset: all 8 registers are +0.0");
+
+    // RESET and FNINIT are not the same thing.  RESET gives the data
+    // registers +0.0; FNINIT marks them empty and leaves their CONTENTS
+    // alone, which is visible through an FNSAVE taken afterwards.
+    push80(0x4000, 0xDEADBEEFDEADBEEFULL);
+    int phys = ftop();
+    FNINIT();
+    check(tg(0) == TAG_EMPTY, "FNINIT empties the tag");
+    check(reg_is(phys, 0x4000, 0xDEADBEEFDEADBEEFULL),
+          "...but leaves the register's contents where they were");
 
     // Dirty every field, then FNINIT must restore all of it.
     push(1.5); push(-2.5); push(3.5);
@@ -291,10 +350,10 @@ int main() {
 
     // FNCLEX clears the exception bits, leaves TOP and C3 alone.
     push(7.0);                       // TOP = 7
-    cpu->fpu.sw |= SW_ZE | SW_IE | SW_SF | 0x0080 /*ES*/ | 0x8000 /*B*/;
+    cpu->fpu.sw |= SW_ZE | SW_IE | SW_SF | SW_ES | SW_B;
     cpu->fpu.sw |= 0x4000;           // C3
     opr(0xDB, 0xE2);                 // FNCLEX
-    check((sw() & (SW_ZE | SW_IE | SW_SF | 0x0080 | 0x8000)) == 0,
+    check((sw() & (SW_ZE | SW_IE | SW_SF | SW_ES | SW_B)) == 0,
           "FNCLEX clears IE/ZE/SF/ES/B");
     check(ftop() == 7, "FNCLEX preserves TOP");
     check((sw() & 0x4000) != 0, "FNCLEX preserves C3 (this impl leaves C0-C3)");
@@ -316,17 +375,51 @@ int main() {
     check(top_ok, "8 pushes walk TOP 7,6,5,4,3,2,1,0 (wraps past 0)");
     check(tag_ok, "each push tags the new ST(0) TAG_VALID");
     check(st(0) == 8.0 && st(7) == 1.0, "full stack: ST(0)=8, ST(7)=1");
-    check(cpu->fpu.regs[0] == 8.0 && cpu->fpu.regs[7] == 1.0,
+    check(reg_is(0, 0x4002, 0x8000000000000000ULL) &&
+          reg_is(7, 0x3FFF, 0x8000000000000000ULL),
           "physical regs[0]=8 (last push), regs[7]=1 (first push)");
 
-    // Real 387: a 9th push is a stack overflow — IE|SF set, C1=1, the
-    // destination gets the "indefinite" QNaN and the old value survives.
-    // Here the push is unconditional: it just overwrites ST(7).
+    // A 9th push is a stack overflow.  TOP still decrements, but the
+    // destination receives the indefinite QNaN rather than the operand, and
+    // IE|SF are raised with C1 SET - C1 is what tells an overflow from an
+    // underflow, and the four assertions below pinned its absence until the
+    // register file was rewritten.
     push(99.0);
-    diverge(ftop() == 7, "9th push wraps TOP to 7 (no overflow detection)");
-    diverge(st(0) == 99.0, "9th push silently overwrites the oldest register");
-    diverge((sw() & (SW_IE | SW_SF)) == 0, "9th push sets neither IE nor SF");
-    diverge((sw() & 0x0200) == 0, "9th push leaves C1 clear (no overflow flag)");
+    check(ftop() == 7, "9th push still moves TOP to 7");
+    check(st_indef(0), "9th push writes the indefinite, not the operand");
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "9th push sets IE and SF");
+    check((sw() & SW_C1) != 0, "9th push sets C1: this is an OVERFLOW");
+
+    // And the other direction: reading an empty register is a stack
+    // underflow, which sets the same two flags and CLEARS C1.
+    FNINIT();
+    push(1.0);
+    opr(0xD8, 0xC1);                  // FADD ST(0), ST(1) — ST(1) is empty
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF), "reading an empty register sets IE and SF");
+    check((sw() & SW_C1) == 0, "stack underflow clears C1");
+    check(st_indef(0), "the underflowing operand delivers the indefinite");
+
+    // FCMOVcc reads BOTH operands whatever the condition says, so an empty
+    // source is a stack underflow even on the path that moves nothing.
+    FNINIT();
+    push(1.0);
+    cpu->flags |= 0x0001;                       // CF = 1
+    opr(0xDB, 0xC1);                            // FCMOVNB ST(0), ST(1): !CF, false
+    check((sw() & (SW_IE | SW_SF)) == (SW_IE | SW_SF),
+          "FCMOVcc reads its source even when the condition is false");
+    cpu->flags &= (uint16_t)~0x0001;
+
+    // The FCOMI family CLEARS C1 rather than leaving it alone.
+    FNINIT();
+    push(1.0); push(2.0);
+    cpu->fpu.sw |= SW_C1;
+    opr(0xDB, 0xF1);                            // FCOMI ST(0), ST(1)
+    check((sw() & SW_C1) == 0, "FCOMI clears C1");
+    FNINIT();
+    push(1.0); push(2.0);
+    cpu->fpu.sw |= SW_C1;
+    opr(0xDF, 0xF1);                            // FCOMIP ST(0), ST(1)
+    check((sw() & SW_C1) == 0, "FCOMIP clears C1 too");
 
     // Popping: FSTP ST(0) empties the slot and advances TOP.
     FNINIT();
@@ -382,10 +475,20 @@ int main() {
     push(dfrom(0x7FF8000000000000ULL));
     check(tg(0) == TAG_SPECIAL, "compute_tag(NaN) = TAG_SPECIAL");
     push(1e-300); check(tg(0) == TAG_VALID, "compute_tag(tiny normal) = TAG_VALID");
-    // Real 387 tags a denormal TAG_SPECIAL; a subnormal double is just "valid"
-    // here because compute_tag() only knows zero/NaN/inf.
-    push(5e-324);
-    diverge(tg(0) == TAG_VALID, "subnormal is tagged TAG_VALID, not TAG_SPECIAL");
+    // A subnormal DOUBLE is not a subnormal in the 80-bit file: FLD m64real
+    // normalises it into the wider exponent range, so TAG_VALID is the right
+    // answer and always was.  What is new is that the load reports #D, and
+    // that a genuine 80-bit denormal - which no double can express and which
+    // this harness could not previously construct - tags SPECIAL.
+    FNINIT(); push(5e-324);
+    check(tg(0) == TAG_VALID, "a subnormal double normalises to a VALID extended value");
+    check((sw() & SW_DE) != 0, "...and the load raises #D");
+    check(st_is(0, 0x3BCD, 0x8000000000000000ULL), "5e-324 normalises to 2^-1074");
+    FNINIT(); push80(0x0000, 0x0000000000000001ULL);
+    check(tg(0) == TAG_SPECIAL, "a true 80-bit denormal tags SPECIAL");
+    check(st_is(0, 0x0000, 0x0000000000000001ULL), "...and is held verbatim");
+    FNINIT(); push80(0x4000, 0x4000000000000000ULL);
+    check(tg(0) == TAG_SPECIAL, "an unnormal (J clear, exponent non-zero) tags SPECIAL");
   }
 
   //=========================================================================
@@ -440,16 +543,24 @@ int main() {
     check(st(1) == 22.0 && st(2) == 11.0, "FLD ST(1) left the stack below intact");
     check(tg(0) == TAG_VALID, "FLD ST(i) tags the new top valid");
 
-    // FLD ST(7) (D9 C7) — the far end of the D9 C0-C7 range.  With a full
-    // stack ST(7) is the slot the push lands in, so the source has to be read
-    // before TOP moves; both the value and the TOP change are asserted.
+    // FLD ST(7) (D9 C7) — the far end of the D9 C0-C7 range.  On a FULL
+    // stack this is a stack overflow, which is what it is on hardware and what
+    // this harness could not express while pushes were unconditional.
     FNINIT();
     for (int i = 1; i <= 8; i++) push((double)i);   // ST0=8 ... ST7=1
     opr(0xD9, 0xC7);                  // FLD ST(7)
     check(ftop() == 7, "FLD ST(7) pushed (TOP 0 -> 7)");
-    check(st(0) == 1.0, "FLD ST(7) copied the deepest register to the top");
+    check(st_indef(0), "FLD ST(7) onto a full stack overflows: indefinite");
+    check((sw() & (SW_IE | SW_SF | SW_C1)) == (SW_IE | SW_SF | SW_C1),
+          "FLD ST(7) onto a full stack sets IE, SF and C1");
     check(st(1) == 8.0, "FLD ST(7) left the old ST(0) directly below it");
-    check(tg(0) == TAG_VALID, "FLD ST(7) tags the new top valid");
+
+    // The same encoding with room on the stack does what it always did.
+    FNINIT();
+    for (int i = 1; i <= 7; i++) push((double)i);   // ST0=7 ... ST6=1, ST7 empty
+    opr(0xD9, 0xC6);                  // FLD ST(6)
+    check(st(0) == 1.0, "FLD ST(6) copied the deepest live register to the top");
+    check(tg(0) == TAG_VALID, "FLD ST(i) tags the new top valid");
 
     FNINIT();
     push(1.0); push(2.0); push(3.0);  // ST0=3 ST1=2 ST2=1
@@ -530,7 +641,7 @@ int main() {
   }
 
   //=========================================================================
-  // 5. m80real — the lossy path, tested honestly
+  // 5. m80real — the path that used to be lossy, and no longer is
   //=========================================================================
   {
     // Exact encodings out of fpu_write_m80real.
@@ -572,10 +683,12 @@ int main() {
     FNINIT();
     wr80(0x0120, 0x8000000000000400ULL, 0x3FFF);   // 1 + 2^-53
     FLDm80(0x0120);
-    diverge(st(0) == 1.0, "FLD m80real 1+2^-53 collapses to exactly 1.0 (53-bit stack)");
+    check(st_is(0, 0x3FFF, 0x8000000000000400ULL),
+          "FLD m80real 1+2^-53 is held exactly (64-bit significand)");
+    check(st(0) == 1.0, "...and still narrows to 1.0 when read back as a double");
     FSTPm80(0x0130);
-    diverge(rd80_mant(0x0130) == 0x8000000000000000ULL,
-            "storing it back yields 1.0's encoding — the low mantissa bits are gone");
+    check(rd80_mant(0x0130) == 0x8000000000000400ULL && rd80_exp(0x0130) == 0x3FFF,
+          "storing it back is byte-identical: the m80 path is a ten-byte move");
 
     // Specials.
     FNINIT();
@@ -594,16 +707,28 @@ int main() {
     wr80(0x0120, 0xC000000000000000ULL, 0x7FFF);   // QNaN
     FLDm80(0x0120);
     check(std::isnan(st(0)), "FLD m80real QNaN");
-    // A real 387 keeps the sign and the 62-bit payload of a NaN.  Here the
-    // reader returns the host NAN and the writer emits one fixed pattern.
+    // Sign and the 62-bit payload both survive, in both directions.
     FNINIT();
     wr80(0x0120, 0xC123456789ABCDEFULL, 0xFFFF);   // negative NaN, payload set
     FLDm80(0x0120);
-    diverge(std::isnan(st(0)) && !std::signbit(st(0)),
-            "FLD m80real of a NEGATIVE NaN loses the sign");
+    check(st_is(0, 0xFFFF, 0xC123456789ABCDEFULL),
+          "FLD m80real keeps a negative NaN's sign and payload");
+    check(std::signbit(st(0)), "...and it still narrows to a negative double NaN");
     FSTPm80(0x0130);
-    diverge(rd80_exp(0x0130) == 0x7FFF && rd80_mant(0x0130) == 0xC000000000000000ULL,
-            "FSTP m80real emits one canonical QNaN — payload not preserved");
+    check(rd80_exp(0x0130) == 0xFFFF && rd80_mant(0x0130) == 0xC123456789ABCDEFULL,
+          "FSTP m80real writes the same ten bytes back");
+
+    // A SIGNALLING NaN loads through m80real without raising anything - the
+    // load is a byte move, not a conversion - and is quieted, with #IA, by the
+    // first arithmetic that touches it.
+    FNINIT();
+    push80(0x7FFF, 0xA123456789ABCDEFULL);         // bit 62 clear: SNaN
+    check(st_is(0, 0x7FFF, 0xA123456789ABCDEFULL), "FLD m80real of an SNaN is verbatim");
+    check((sw() & SW_IE) == 0, "...and raises nothing");
+    push(1.0);
+    opr(0xDE, 0xC1);                               // FADDP ST(1), ST(0)
+    check((sw() & SW_IE) != 0, "arithmetic on an SNaN raises #IA");
+    check(st_is(0, 0x7FFF, 0xE123456789ABCDEFULL), "...and quiets it by setting bit 62");
 
     // Signed zero survives both ways.
     FNINIT();
@@ -634,8 +759,10 @@ int main() {
   // 6. FLD constants
   //=========================================================================
   {
-    // Real 387 loads these from an 80-bit ROM.  Here they are the host
-    // library's doubles, so only 53 mantissa bits ever reach the guest.
+    // A 387 loads these from an 80-bit ROM, and so does this: they are exact
+    // 64-bit constants now, not host-library doubles narrowed to 53 bits.
+    // The dbits() checks below are what those constants NARROW to, and the
+    // exact 80-bit patterns are asserted further down.
     FNINIT();
     FLD1();  check(dbits(st(0)) == 0x3FF0000000000000ULL, "FLD1 = 1.0");
     check(tg(0) == TAG_VALID, "FLD1 tags valid");
@@ -652,12 +779,27 @@ int main() {
     opr(0xD9, 0xEC); check(dbits(st(0)) == 0x3FD34413509F79FFULL, "FLDLG2 = log10(2)");
     FNINIT();
     opr(0xD9, 0xED); check(dbits(st(0)) == 0x3FE62E42FEFA39EFULL, "FLDLN2 = ln(2)");
-    // Pin the gap: pi is short by the 11 mantissa bits a 387 would supply.
-    FNINIT();
-    opr(0xD9, 0xEB);
-    FSTPm80(0x0120);
-    diverge(rd80_mant(0x0120) == 0xC90FDAA22168C000ULL,
-            "FLDPI stored as m80 has 11 zero low bits (387 ROM ends ...C235)");
+    // The constants are the 387's ROM values now, to all 64 bits.  Loading
+    // them as doubles cost the low eleven, which is what this pinned.
+    struct { uint8_t op; uint16_t se; uint64_t sig; const char *name; } romc[] = {
+      { 0xE8, 0x3FFF, 0x8000000000000000ULL, "FLD1" },
+      { 0xE9, 0x4000, 0xD49A784BCD1B8AFEULL, "FLDL2T" },
+      { 0xEA, 0x3FFF, 0xB8AA3B295C17F0BCULL, "FLDL2E" },
+      { 0xEB, 0x4000, 0xC90FDAA22168C235ULL, "FLDPI" },
+      { 0xEC, 0x3FFD, 0x9A209A84FBCFF799ULL, "FLDLG2" },
+      { 0xED, 0x3FFE, 0xB17217F7D1CF79ACULL, "FLDLN2" },
+      { 0xEE, 0x0000, 0x0000000000000000ULL, "FLDZ" },
+    };
+    bool rom_ok = true, rom_mem_ok = true;
+    for (auto &k : romc) {
+      FNINIT();
+      opr(0xD9, k.op);
+      if (!st_is(0, k.se, k.sig)) rom_ok = false;
+      FSTPm80(0x0120);
+      if (rd80_mant(0x0120) != k.sig || rd80_exp(0x0120) != k.se) rom_mem_ok = false;
+    }
+    check(rom_ok, "all seven FLD constants are the 387 ROM values to 64 bits");
+    check(rom_mem_ok, "...and store back through m80real unchanged");
 
     // All seven push, in order, without disturbing each other.
     FNINIT();
@@ -879,13 +1021,33 @@ int main() {
     opm(0xDD, 1, 0x0110);
     check((int64_t)rd64(0x0110) == -2 && ftop() == 0, "FISTTP m64int -2.9 -> -2, pops");
 
-    // 64-bit integers wider than 53 bits cannot survive the double stack.
+    // A 64-bit significand holds every 64-bit integer whose magnitude fits,
+    // so these round-trip exactly now.  2^53+1 is the value that used to fall
+    // off the double stack; INT64_MAX is the one that could not be tested at
+    // all, because the in-range boundary had to be approximated.
     FNINIT(); wr64(0x0110, 9007199254740993ULL);   // 2^53 + 1
     opm(0xDF, 5, 0x0110);
-    diverge(st(0) == 9007199254740992.0, "FILD m64int 2^53+1 rounds to 2^53");
+    check(st_is(0, 0x4034, 0x8000000000000400ULL), "FILD m64int 2^53+1 is exact");
     opm(0xDF, 7, 0x0118);
-    diverge((int64_t)rd64(0x0118) == 9007199254740992LL,
-            "FISTP m64int returns 2^53, not the 2^53+1 that went in");
+    check((int64_t)rd64(0x0118) == 9007199254740993LL, "FISTP m64int returns it unchanged");
+    check((sw() & SW_PE) == 0, "...with no precision loss to report");
+    FNINIT(); wr64(0x0110, 0x7FFFFFFFFFFFFFFFULL);  // INT64_MAX
+    opm(0xDF, 5, 0x0110);
+    check(st_is(0, 0x403D, 0xFFFFFFFFFFFFFFFEULL), "FILD m64int of INT64_MAX is exact");
+    opm(0xDF, 7, 0x0118);
+    check((int64_t)rd64(0x0118) == 0x7FFFFFFFFFFFFFFFLL, "FISTP m64int round-trips INT64_MAX");
+    check((sw() & SW_IE) == 0, "...and does not call it out of range");
+    // The other end.  -2^63 IS in range, and it is the one value whose
+    // negation cannot be done in a signed int64 - a UBSan report, not a wrong
+    // answer, which is exactly the class of defect the oracle cannot see.
+    FNINIT();
+    push80(0xC03E, 0x8000000000000000ULL);      // -2^63, exactly
+    opm(0xDF, 7, 0x0118);
+    check(rd64(0x0118) == 0x8000000000000000ULL, "FISTP m64int stores -2^63 exactly");
+    check((sw() & SW_IE) == 0, "...and does not call INT64_MIN out of range");
+    FNINIT(); wr64(0x0110, 0x8000000000000000ULL);
+    opm(0xDF, 5, 0x0110);
+    check(st_is(0, 0xC03E, 0x8000000000000000ULL), "FILD m64int loads INT64_MIN exactly");
 
     // Out of range, a NaN, an infinity.  A 387 raises #IA and, with #IA masked
     // (which is the only way this host runs one), stores the INTEGER INDEFINITE
@@ -1108,11 +1270,20 @@ int main() {
     FNINIT(); push(1.0);
     opr(0xDD, 0xC0);                            // FFREE ST(0)
     opr(0xD9, 0xE5); check(cc() == 0x9, "FXAM after FFREE ST(0) reports empty");
-    // Real 387 reports a denormal as C3=1 C2=1 C0=0.  compute_tag() has no
-    // denormal class, so FXAM calls a subnormal double "normal".
+    // A subnormal double is a normal once widened, so C2 alone is right for
+    // it.  The denormal and unsupported classes need genuine 80-bit operands.
     FNINIT(); push(5e-324);
     opr(0xD9, 0xE5);
-    diverge(cc() == 0x4, "FXAM on a subnormal reports normal (C2), not denormal (C3|C2)");
+    check(cc() == 0x4, "FXAM on a widened subnormal double reports normal (C2)");
+    FNINIT(); push80(0x0000, 0x0000000000000001ULL);
+    opr(0xD9, 0xE5);
+    check(cc() == 0xC, "FXAM on a true 80-bit denormal reports C3|C2");
+    FNINIT(); push80(0x8000, 0x0000000000000001ULL);
+    opr(0xD9, 0xE5);
+    check(cc() == 0xE, "...and C1 carries its sign");
+    FNINIT(); push80(0x4000, 0x4000000000000000ULL);
+    opr(0xD9, 0xE5);
+    check(cc() == 0x0, "FXAM on an unnormal reports the unsupported class (all clear)");
   }
 
   //=========================================================================
@@ -1142,12 +1313,19 @@ int main() {
     opr(0xD9, 0xFA); check(st(0) == 12.0, "FSQRT 144 = 12 exactly");
     FNINIT(); push(0.0);
     opr(0xD9, 0xFA); check(st(0) == 0.0 && tg(0) == TAG_ZERO, "FSQRT 0 = 0");
-    // Real 387 raises IE and returns the indefinite QNaN for sqrt of a
-    // negative; here the host NaN comes back with no flag set at all.
+    // sqrt of a negative is an invalid operation: #IA, and the indefinite.
     FNINIT(); push(-4.0);
     opr(0xD9, 0xFA);
-    check(std::isnan(st(0)), "FSQRT -4 = NaN");
-    diverge((sw() & SW_IE) == 0, "FSQRT of a negative sets no IE");
+    check(st_indef(0), "FSQRT -4 delivers the real indefinite");
+    check((sw() & SW_IE) != 0, "FSQRT of a negative raises #IA");
+    // sqrt of a negative ZERO is not: it is -0, exactly, with nothing raised.
+    FNINIT(); push(-0.0);
+    opr(0xD9, 0xFA);
+    check(st_is(0, 0x8000, 0) && (sw() & SW_IE) == 0, "FSQRT -0 = -0, no flag");
+    // And the significand really is 64 bits wide now.
+    FNINIT(); push(2.0);
+    opr(0xD9, 0xFA);
+    check(st_is(0, 0x3FFF, 0xB504F333F9DE6484ULL), "FSQRT 2 to all 64 significand bits");
 
     // FRNDINT under all four rounding modes (see section 13 for FLDCW).
     FNINIT(); push(2.5);
@@ -1178,13 +1356,19 @@ int main() {
     FNINIT(); push(-0.75);
     opr(0xD9, 0xF4);
     check(st(0) == -1.5 && st(1) == -1.0, "FXTRACT -0.75 = -1.5 * 2^-1");
-    // Real 387: FXTRACT(0) gives ST(1) = -infinity with ZE.  frexp(0) reports
-    // exponent 0, so this returns -1.
     FNINIT(); push(0.0);
     opr(0xD9, 0xF4);
-    diverge(st(1) == -1.0 && st(0) == 0.0,
-            "FXTRACT 0 gives exponent -1 (387 gives -inf and ZE)");
-    diverge((sw() & SW_ZE) == 0, "FXTRACT 0 sets no ZE");
+    check(std::isinf(st(1)) && st(1) < 0 && st(0) == 0.0,
+          "FXTRACT 0 gives exponent -infinity and significand 0");
+    check((sw() & SW_ZE) != 0, "FXTRACT 0 raises #Z");
+    FNINIT(); push80(0x7FFF, 0x8000000000000000ULL);   // +inf
+    opr(0xD9, 0xF4);
+    check(std::isinf(st(1)) && st(1) > 0 && std::isinf(st(0)) && st(0) > 0,
+          "FXTRACT of an infinity gives +inf and +inf");
+    FNINIT(); push80(0x0000, 0x0000000000000001ULL);   // the smallest denormal
+    opr(0xD9, 0xF4);
+    check(st(1) == -16445.0, "FXTRACT normalises a denormal: exponent -16445");
+    check((sw() & SW_DE) != 0, "...and reports #D");
   }
 
   //=========================================================================
@@ -1198,7 +1382,9 @@ int main() {
     FNINIT(); push(4.0); push(14.0);
     opr(0xD9, 0xF8); check(st(0) == 2.0, "FPREM 14 mod 4 = 2 (truncated quotient)");
     FNINIT(); push(0.0); push(5.0);
-    opr(0xD9, 0xF8); check(st(0) == 5.0, "FPREM guards a zero divisor: ST(0) untouched");
+    opr(0xD9, 0xF8);
+    check(st_indef(0) && (sw() & SW_IE) != 0,
+          "FPREM of a zero divisor is #IA and the indefinite");
 
     FNINIT(); push(4.0); push(13.0);
     opr(0xD9, 0xF5); check(st(0) == 1.0, "FPREM1 13 rem 4 = 1");
@@ -1212,18 +1398,29 @@ int main() {
     opr(0xD9, 0xF5);
     check(st(0) == 2.0, "FPREM1 10 rem 4 = 2 (q=2, ties-to-even)");
 
-    // Real 387 does the reduction 64 exponent-bits at a time and sets C2 when
-    // it did not finish.  This does the whole thing in one double divide and
-    // always reports "complete" — and for a huge ratio the answer is wrong.
+    // A large exponent difference is reduced a bite at a time, with C2 set to
+    // say "call me again".  Software is expected to loop on C2, and the
+    // converged answer is the exact remainder - which a single divide through
+    // a 53-bit quotient could never produce for 2^100 mod 3.
     FNINIT(); push(3.0); push(ldexp(1.0, 100));
     opr(0xD9, 0xF8);
-    diverge((sw() & 0x0400) == 0, "FPREM always clears C2 (never a partial reduction)");
-    diverge(st(0) != 1.0, "FPREM 2^100 mod 3 is not the true remainder 1.0");
-    // The quotient bits C0/C3/C1 that a 387 leaves behind are never written.
-    FNINIT(); push(4.0); push(13.0);
+    check((sw() & SW_C2) != 0, "FPREM 2^100 mod 3 reports a PARTIAL reduction (C2)");
+    int spins = 0;
+    while ((sw() & SW_C2) && spins < 64) { opr(0xD9, 0xF8); spins++; }
+    check((sw() & SW_C2) == 0, "FPREM converges");
+    check(st(0) == 1.0, "...to the true remainder 2^100 mod 3 = 1");
+
+    // The quotient bits a 387 leaves in C0, C3 and C1 (Q2, Q1, Q0).
+    FNINIT(); push(4.0); push(13.0);            // 13 = 3*4 + 1, so Q = 3
     cpu->fpu.sw &= (uint16_t)~0x4700;
     opr(0xD9, 0xF8);
-    diverge((sw() & 0x4700) == 0, "FPREM writes no quotient bits into C0/C1/C3");
+    check((sw() & 0x4700) == 0x4200,
+          "FPREM 13 mod 4 leaves Q = 3 in C0:C3:C1 (C3 and C1 set)");
+    FNINIT(); push(4.0); push(22.0);            // 22 = 5*4 + 2, so Q = 5
+    cpu->fpu.sw &= (uint16_t)~0x4700;
+    opr(0xD9, 0xF8);
+    check(st(0) == 2.0 && (sw() & 0x4700) == 0x0300,
+          "FPREM 22 mod 4 leaves Q = 5 (C0 and C1 set)");
   }
 
   //=========================================================================
@@ -1278,14 +1475,54 @@ int main() {
     wr16(0x0100, 0x0F7F); opm(0xD9, 5, 0x0100);
     check(st(0) == 6.0 && ftop() == 7, "FLDCW leaves the stack alone");
 
-    // The precision-control field is ignored: a 24-bit PC setting still gives
-    // full double results.  (A real 387 with PC=00 rounds to 24 bits.)
+    // Precision control rounds the SIGNIFICAND to 24 or 53 bits while leaving
+    // the exponent range at the full fifteen - which is why it needs a soft
+    // float and could not be done at all while the file was host doubles.
     FNINIT();
     wr16(0x0100, 0x003F);                       // PC = 00 (single), RC = nearest
     opm(0xD9, 5, 0x0100);
     push(1.0); wrd(0x0110, ldexp(1.0, -30)); opm(0xDC, 0, 0x0110);
-    diverge(st(0) == 1.0 + ldexp(1.0, -30),
-            "precision control is ignored: PC=24-bit still yields a full double");
+    check(st(0) == 1.0, "PC=24: 1 + 2^-30 rounds away entirely");
+    check((sw() & SW_PE) != 0, "...and reports #P");
+    // PC=53 keeps 2^-52 and loses 2^-60; PC=64 keeps both.
+    FNINIT();
+    wr16(0x0100, 0x023F); opm(0xD9, 5, 0x0100); // PC = 10 (double)
+    push(1.0); wrd(0x0110, ldexp(1.0, -60)); opm(0xDC, 0, 0x0110);
+    check(st(0) == 1.0, "PC=53: 1 + 2^-60 rounds to 1.0");
+    FNINIT();
+    wr16(0x0100, 0x023F); opm(0xD9, 5, 0x0100);
+    push(1.0); wrd(0x0110, ldexp(1.0, -52)); opm(0xDC, 0, 0x0110);
+    check(st_is(0, 0x3FFF, 0x8000000000000800ULL), "PC=53: 1 + 2^-52 survives");
+    FNINIT();
+    wr16(0x0100, 0x037F); opm(0xD9, 5, 0x0100); // PC = 11 (extended)
+    push(1.0); wrd(0x0110, ldexp(1.0, -60)); opm(0xDC, 0, 0x0110);
+    check(st_is(0, 0x3FFF, 0x8000000000000008ULL),
+          "PC=64: 1 + 2^-60 survives, which no double register could hold");
+    // Precision control reaches FADD/FSUB/FMUL/FDIV/FSQRT and NOTHING else.
+    // FSCALE only moves an exponent, so it keeps all 64 significand bits even
+    // at PC=24 - which is what the hardware does, and is not what this did
+    // until the oracle's FSCALE grid was widened past PC=64.
+    FNINIT();
+    wr16(0x0100, 0x003F); opm(0xD9, 5, 0x0100); // PC = 24
+    push(4.0);
+    push80(0x3FFF, 0xA71C3D5AAB33E088ULL);      // a full 64-bit significand
+    opr(0xD9, 0xFD);                            // FSCALE: ST(0) * 2^trunc(ST(1))
+    check(st_is(0, 0x4003, 0xA71C3D5AAB33E088ULL),
+          "FSCALE keeps all 64 significand bits under PC=24");
+    FNINIT();
+    wr16(0x0100, 0x003F); opm(0xD9, 5, 0x0100);
+    push80(0x3FFF, 0xA71C3D5AAB33E088ULL);
+    opr(0xD9, 0xFC);                            // FRNDINT
+    check(st_is(0, 0x3FFF, 0x8000000000000000ULL),
+          "FRNDINT ignores PC too: 1.30... rounds to 1, not to a 24-bit value");
+    FNINIT();
+
+    // The exponent range does NOT narrow with PC: 2^-200 is still a normal.
+    FNINIT();
+    wr16(0x0100, 0x003F); opm(0xD9, 5, 0x0100);
+    push(ldexp(1.0, -200)); push(ldexp(1.0, -200)); opr(0xDE, 0xC1);
+    check(st_is(0, 0x3F38, 0x8000000000000000ULL),
+          "PC=24 rounds the significand only: 2^-199 is still exact");
     FNINIT();
   }
 
@@ -1334,36 +1571,55 @@ int main() {
     opr(0xD9, 0xF3);
     check(st(0) == -M_PI / 2, "FPATAN is atan2(ST(1),ST(0)), not atan2(ST(0),ST(1))");
 
-    // Real 387 sets C2 and leaves the operand alone when |x| >= 2^63.  These
-    // hand the argument straight to the host libm and always clear C2.
+    // |x| >= 2^63 is out of range: C2 is SET and the operand is left alone.
+    // The fixtures pre-set C2 so a decode that does nothing cannot pass by
+    // accident; the assertions now want it still set for the opposite reason.
     FNINIT(); push(ldexp(1.0, 70));
-    cpu->fpu.sw |= 0x0400;
     opr(0xD9, 0xFE);
-    diverge((sw() & 0x0400) == 0, "FSIN of 2^70 clears C2 (no out-of-range check)");
-    diverge(st(0) != ldexp(1.0, 70), "FSIN of 2^70 replaced the argument anyway");
+    check((sw() & SW_C2) != 0, "FSIN of 2^70 sets C2: out of range");
+    check(st(0) == ldexp(1.0, 70), "FSIN of 2^70 leaves the argument alone");
     FNINIT(); push(ldexp(1.0, 70));
-    cpu->fpu.sw |= 0x0400;
     opr(0xD9, 0xFF);
-    diverge((sw() & 0x0400) == 0, "FCOS of 2^70 clears C2 as well");
+    check((sw() & SW_C2) != 0, "FCOS of 2^70 sets C2 as well");
+    check(st(0) == ldexp(1.0, 70), "FCOS of 2^70 leaves the argument alone");
+    FNINIT(); push(ldexp(1.0, 70));
+    opr(0xD9, 0xF2);
+    check((sw() & SW_C2) != 0 && ftop() == 7, "FPTAN of 2^70 sets C2 and does not push");
+    FNINIT(); push(ldexp(1.0, 70));
+    opr(0xD9, 0xFB);
+    check((sw() & SW_C2) != 0 && ftop() == 7, "FSINCOS of 2^70 sets C2 and does not push");
+    // Just inside the range the reduction has to be right to many more bits
+    // than the argument itself carries.
+    FNINIT(); push(ldexp(1.0, 62));
+    opr(0xD9, 0xFE);
+    check((sw() & SW_C2) == 0, "FSIN of 2^62 is in range");
+    check(std::fabs(st(0) - (-0.70292244361920888)) < 1e-15,
+          "...and reduces correctly: sin(2^62) = -0.702922443619209");
 
     // F2XM1 and FYL2XP1 exist on real hardware precisely to keep precision
-    // near zero.  Computing them as pow(2,x)-1 and log2(x+1) in double throws
-    // that away completely: for x = 2^-60 both return exactly zero, where the
-    // true answers are about 6.0e-19 and 8.7e-19.
+    // near zero.  Computed as pow(2,x)-1 and log2(x+1) in double they returned
+    // exactly zero for x = 2^-60; the answers below are correct to the last
+    // few bits of a 64-bit significand.
     const double tiny = ldexp(1.0, -60);
     FNINIT(); push(tiny);
     opr(0xD9, 0xF0);
-    diverge(st(0) == 0.0, "F2XM1 2^-60 returns exactly 0 (true value ~6.0e-19)");
-    check(std::expm1(tiny * M_LN2) != 0.0, "...and the true value really is non-zero");
+    check(st(0) != 0.0, "F2XM1 2^-60 is not zero");
+    check(std::fabs(st(0) / std::expm1(tiny * M_LN2) - 1.0) < 1e-15,
+          "F2XM1 2^-60 = 2^-60 * ln2, to within a double's resolution");
     FNINIT(); push(1.0); push(tiny);
     opr(0xD9, 0xF9);
-    diverge(st(0) == 0.0, "FYL2XP1 2^-60 returns exactly 0 (true value ~1.25e-18)");
+    check(st(0) != 0.0, "FYL2XP1 2^-60 is not zero");
+    check(std::fabs(st(0) / (tiny / M_LN2) - 1.0) < 1e-15,
+          "FYL2XP1 2^-60 = 2^-60 / ln2, to within a double's resolution");
 
     // FYL2X of zero: the value a 387 produces, but without the ZE flag.
     FNINIT(); push(2.0); push(0.0);
     opr(0xD9, 0xF1);
     check(std::isinf(st(0)) && st(0) < 0, "FYL2X 2*log2(0) = -infinity");
-    diverge((sw() & SW_ZE) == 0, "FYL2X of zero sets no ZE");
+    check((sw() & SW_ZE) != 0, "FYL2X of zero raises #Z");
+    FNINIT(); push(2.0); push(-1.0);
+    opr(0xD9, 0xF1);
+    check(st_indef(0) && (sw() & SW_IE) != 0, "FYL2X of a negative is #IA");
   }
 
   //=========================================================================
@@ -1479,10 +1735,28 @@ int main() {
     opm(0xDD, 6, SAVE);                         // FNSAVE (16-bit form)
     check(rd16(SAVE + 0) == 0x0B7F, "FNSAVE writes CW at +0");
     check(rd16(SAVE + 2) == saved_sw, "FNSAVE writes SW at +2");
-    check(rd16(SAVE + 4) == 0xFFCC, "FNSAVE tag word: valid,empty,valid then five empties");
-    bool zeroed = true;
-    for (int i = 6; i < 14; i++) if (rd8((uint16_t)(SAVE + i)) != 0) zeroed = false;
-    check(zeroed, "FNSAVE zeroes the FIP/FDP area (+6..+13) in the 16-bit form");
+    // The tag word is in PHYSICAL register order.  TOP is 5, so ST(0), ST(1)
+    // and ST(2) are FPR5, FPR6 and FPR7, and the FFREE hole is FPR6:
+    //   FPR0..4 empty(3), FPR5 valid(0), FPR6 empty(3), FPR7 valid(0)
+    check(rd16(SAVE + 4) == 0x33FF,
+          "FNSAVE tag word is in physical register order (0x33FF)");
+
+    // FIP and FDP are real now, not zeros.  The last pointer-updating
+    // instruction was the FFREE at CS:0000; the last memory operand was the
+    // FLD m64real that pushed 3.0 out of DS:SCRATCH64.  In real mode the
+    // environment carries 20-bit LINEAR addresses split across two words, with
+    // the 11-bit opcode sharing the second one.
+    {
+      uint32_t ilin = CS_LIN;                      // insn_ip is 0 for every run()
+      uint32_t dlin = DS_LIN + SCRATCH64;
+      uint16_t fop  = (uint16_t)(((0xDD & 7) << 8) | 0xC1);   // FFREE ST(1)
+      check(rd16(SAVE + 6) == (uint16_t)ilin, "FNSAVE writes FIP[15:0] at +6");
+      check(rd16(SAVE + 8) == (uint16_t)((((ilin >> 16) & 0x0F) << 12) | fop),
+            "FNSAVE writes FIP[19:16] and the 11-bit opcode at +8");
+      check(rd16(SAVE + 10) == (uint16_t)dlin, "FNSAVE writes FDP[15:0] at +10");
+      check(rd16(SAVE + 12) == (uint16_t)((((dlin >> 16) & 0x0F) << 12)),
+            "FNSAVE writes FDP[19:16] at +12");
+    }
     check(rd80_exp((uint16_t)(SAVE + 14)) == 0x4000 &&
           rd80_mant((uint16_t)(SAVE + 14)) == 0xC000000000000000ULL,
           "FNSAVE stores ST(0)=3.0 first, as an 80-bit real");
@@ -1496,10 +1770,8 @@ int main() {
     check(st(0) == 3.0 && st(2) == 1.5, "FRSTOR restored the register values");
     check(tg(0) == TAG_VALID && tg(1) == TAG_EMPTY && tg(2) == TAG_VALID,
           "FRSTOR restored the tags, hole included");
-    // The tag word here is written TOP-relative (ST(0) in bits 1:0).  A real
-    // 387 writes it in physical register order, so this image is only
-    // self-consistent, not interchangeable with hardware or another emulator.
-    diverge(rd16(SAVE + 4) == 0xFFCC, "FNSAVE tag word is TOP-relative, not physical order");
+    check(rd16(SAVE + 4) == 0x33FF,
+          "the restored image still carries the physical-order tag word");
 
     // The 32-bit (108-byte) form has 32-bit environment fields, so the whole
     // of each FIP/FDP field is cleared, not just its low word.
@@ -1522,8 +1794,7 @@ int main() {
     run({0x66, 0xDD, mrm_disp16(6), (uint8_t)(SAVE & 0xFF), (uint8_t)(SAVE >> 8)});
     check(rd16(SAVE + 0) == 0x0B7F, "FNSAVE32 writes CW at +0");
     check(rd16(SAVE + 4) == saved32_sw, "FNSAVE32 writes SW at +4 (32-bit stride)");
-    // Same TOP-relative tag word as the 16-bit form (see the note above), at +8.
-    diverge(rd16(SAVE + 8) == 0xFFCC, "FNSAVE32 writes the tag word at +8");
+    check(rd16(SAVE + 8) == 0x33FF, "FNSAVE32 writes the physical tag word at +8");
     check(rd80_exp((uint16_t)(SAVE + 28)) == 0x4000 &&
           rd80_mant((uint16_t)(SAVE + 28)) == 0xC000000000000000ULL,
           "FNSAVE32 stores ST(0)=3.0 at +28, where the register area begins");
@@ -1542,7 +1813,8 @@ int main() {
     check(tg(0) == TAG_VALID && tg(1) == TAG_EMPTY && tg(2) == TAG_VALID,
           "FRSTOR32 restored the tags from +8, hole included");
 
-    // FNSTENV / FLDENV are stubs: control word and status word, nothing else.
+    // FNSTENV / FLDENV: all seven environment fields, in the layout the
+    // operand size and the processor mode select.
     const uint16_t ENV = 0x0300;
     for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
     FNINIT();
@@ -1553,18 +1825,69 @@ int main() {
     opm(0xD9, 6, ENV);                          // FNSTENV
     check(rd16(ENV + 0) == 0x077F, "FNSTENV writes CW at +0");
     check(rd16(ENV + 2) == env_sw, "FNSTENV writes SW at +2");
-    diverge(rd16(ENV + 4) == 0xAAAA, "FNSTENV writes no tag word at +4 (stub)");
+    // TOP is 6 and two registers are live, so FPR6 and FPR7 are valid and the
+    // other six are empty: 0x0FFF.
+    check(rd16(ENV + 4) == 0x0FFF, "FNSTENV writes the tag word at +4");
     FNINIT();
     check(cw() == 0x037F && ftop() == 0, "FNINIT wiped the environment");
     opm(0xD9, 4, ENV);                          // FLDENV
     check(cw() == 0x077F, "FLDENV restores CW");
     check(sw() == env_sw && ftop() == 6, "FLDENV restores SW and TOP");
-    diverge(tg(0) == TAG_EMPTY, "FLDENV does not restore the tag word (stub)");
-    // Real FNSTENV masks all exceptions in the FPU afterwards; this does not.
+    check(tg(0) == TAG_VALID && tg(1) == TAG_VALID && tg(2) == TAG_EMPTY,
+          "FLDENV restores the tag word");
+    // Which of the four layouts is selected depends on the operand size AND on
+    // whether the processor is in protected mode - and virtual-8086 mode has
+    // CR0.PE set but uses the REAL-address-mode layout, which is the one case
+    // where testing CR0.PE alone gives the wrong answer.  In the real layout
+    // the word at +8 carries the 11-bit opcode; in the protected one it is the
+    // code selector.
+    FNINIT();
+    push(1.0);                                  // sets FIP/FCS/FOP
+    for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
+    opm(0xD9, 6, ENV);                          // real mode
+    uint16_t fop_fld = (uint16_t)(((0xDD & 7) << 8) | mrm_disp16(0));
+    check(rd16(ENV + 8) == (uint16_t)((((CS_LIN >> 16) & 0x0F) << 12) | fop_fld),
+          "FNSTENV in real mode writes the opcode at +8");
+    cpu->cr0 |= emu88::CR0_PE;
+    cpu->eflags_hi |= (uint16_t)(emu88::EFLAG_VM >> 16);
+    for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
+    opm(0xD9, 6, ENV);
+    check(rd16(ENV + 8) == (uint16_t)((((CS_LIN >> 16) & 0x0F) << 12) | fop_fld),
+          "V86 mode takes the REAL layout even though CR0.PE is set");
+    cpu->eflags_hi = 0;
+    for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
+    opm(0xD9, 6, ENV);
+    check(rd16(ENV + 8) == CS_SEL,
+          "protected mode writes the code selector at +8 instead");
+    cpu->cr0 &= (uint32_t)~emu88::CR0_PE;
+    setup();
+
+    // Real-mode pointers are twenty bits, and a real-mode linear address can
+    // need twenty-ONE: (0xFFFF << 4) + 0xFFFF is 0x10FFEF.  Only the low four
+    // bits above the word go in the high field; bits 16 and up of that dword
+    // are reserved.  The 16-bit form gets this free from its uint16 field, the
+    // 32-bit form does not, and nothing here reached it until this fixture -
+    // the harness's own CS puts every address comfortably under 2^20.
+    FNINIT();
+    cpu->fpu.fcs = 0xFFFF; cpu->fpu.fip = 0xFFFF;
+    cpu->fpu.fds = 0xFFFF; cpu->fpu.fdp = 0xFFFF;
+    for (int i = 0; i < 32; i++) wr8((uint16_t)(ENV + i), 0xAA);
+    run({0x66, 0xD9, mrm_disp16(6), (uint8_t)(ENV & 0xFF), (uint8_t)(ENV >> 8)});
+    check((rd32(ENV + 16) >> 16) == 0,
+          "FNSTENV32 in real mode leaves the reserved half of +16 zero");
+    check((rd32(ENV + 24) >> 16) == 0,
+          "...and the reserved half of +24");
+    check((rd32(ENV + 12) & 0xFFFF) == 0xFFEF,
+          "FNSTENV32 writes the low word of the 21-bit linear address at +12");
+    FNINIT();
+
+    // FNSTENV masks every exception afterwards, so the handler it is about to
+    // run cannot be re-entered by its own arithmetic.
     FNINIT();
     wr16(0x0100, 0x0000); opm(0xD9, 5, 0x0100); // all exceptions unmasked
     opm(0xD9, 6, ENV);
-    diverge(cw() == 0x0000, "FNSTENV does not mask exceptions afterwards");
+    check(cw() == 0x003F, "FNSTENV masks all six exceptions afterwards");
+    check(rd16(ENV + 0) == 0x0000, "...but writes the PRE-mask control word");
     FNINIT();
   }
 
@@ -1643,6 +1966,260 @@ int main() {
     check((cpu->get_reg16(emu88::reg_AX) & 0x4500) == 0x4000,
           "FUCOMPP + FSTSW AX reports equality in AH");
     check(ftop() == 0, "and the stack is empty again");
+  }
+
+
+  //=========================================================================
+  // 21. What the 80-bit register file makes reachable at all
+  //
+  // Everything in this section was impossible to express while ST(0) was a
+  // host double: there was no denormal class, no unsupported class, no
+  // rounding to a chosen number of significand bits, and no way to see an
+  // overflow or a gradual underflow because the double's own exponent range
+  // ran out first.
+  //=========================================================================
+  {
+    // --- Gradual underflow.  2^-16400 is below the smallest normal but above
+    // the smallest denormal, so it is representable only as a denormal, and
+    // arriving there costs #U and #P.
+    FNINIT();
+    push80(0x0001, 0x8000000000000000ULL);      // 2^-16382, the smallest normal
+    push80(0x0001, 0x8000000000000000ULL);
+    wrd(0x0110, ldexp(1.0, -20));
+    FNINIT();
+    push80(0x0001, 0xC000000000000000ULL);      // 1.5 * 2^-16382
+    push(0.5);
+    opr(0xDE, 0xC9);                            // FMULP ST(1), ST(0)
+    check(st_is(0, 0x0000, 0x6000000000000000ULL),
+          "a product below the normal range becomes a denormal");
+    check((sw() & SW_UE) == 0 && (sw() & SW_PE) == 0,
+          "...with no #U when the denormal is exact");
+    FNINIT();
+    push80(0x0000, 0x0000000000000003ULL);      // 3 * 2^-16445
+    push(0.5);
+    opr(0xDE, 0xC9);
+    check(st_is(0, 0x0000, 0x0000000000000002ULL),
+          "3 * 2^-16445 halved rounds to 2 * 2^-16445 (nearest-even)");
+    check((sw() & (SW_UE | SW_PE)) == (SW_UE | SW_PE),
+          "...and an INEXACT denormal result raises both #U and #P");
+    check((sw() & SW_DE) != 0, "the denormal operand raises #D as well");
+
+    // --- Overflow.  The largest finite value doubled leaves the range.
+    FNINIT();
+    push80(0x7FFE, 0xFFFFFFFFFFFFFFFFULL);
+    push(2.0);
+    opr(0xDE, 0xC9);
+    check(st_is(0, 0x7FFF, 0x8000000000000000ULL), "an overflow delivers +infinity");
+    check((sw() & (SW_OE | SW_PE)) == (SW_OE | SW_PE), "...with #O and #P");
+    // Under round-toward-zero the masked response is the largest finite value
+    // instead, and under PC=24 that value has only 24 significand bits.
+    FNINIT();
+    wr16(0x0100, 0x0F7F); opm(0xD9, 5, 0x0100); // RC = truncate, PC = 64
+    push80(0x7FFE, 0xFFFFFFFFFFFFFFFFULL);
+    push(2.0);
+    opr(0xDE, 0xC9);
+    check(st_is(0, 0x7FFE, 0xFFFFFFFFFFFFFFFFULL),
+          "round-to-zero overflow delivers the largest finite value");
+    FNINIT();
+    wr16(0x0100, 0x0C3F); opm(0xD9, 5, 0x0100); // RC = truncate, PC = 24
+    push80(0x7FFE, 0xFFFFFFFFFFFFFFFFULL);
+    push(2.0);
+    opr(0xDE, 0xC9);
+    check(st_is(0, 0x7FFE, 0xFFFFFF0000000000ULL),
+          "...and under PC=24 that is the largest finite 24-bit value");
+    FNINIT();
+
+    // --- Rounding control really does reach the arithmetic.  1/3 under each
+    // of the four modes; nearest and up agree here, down and truncate agree.
+    struct { uint16_t cw; uint64_t sig; const char *name; } rcs[] = {
+      { 0x037F, 0xAAAAAAAAAAAAAAABULL, "nearest"  },
+      { 0x077F, 0xAAAAAAAAAAAAAAAAULL, "down"     },
+      { 0x0B7F, 0xAAAAAAAAAAAAAAABULL, "up"       },
+      { 0x0F7F, 0xAAAAAAAAAAAAAAAAULL, "truncate" },
+    };
+    bool rc_ok = true;
+    for (auto &k : rcs) {
+      FNINIT();
+      wr16(0x0100, k.cw); opm(0xD9, 5, 0x0100);
+      push(1.0); push(3.0);
+      opr(0xDE, 0xF9);                          // FDIVP ST(1), ST(0) -> 1/3
+      if (!st_is(0, 0x3FFD, k.sig)) rc_ok = false;
+    }
+    check(rc_ok, "all four rounding modes reach FDIV's 64th significand bit");
+    FNINIT();
+
+    // --- Narrowing stores round under the guest's RC, not the host's.
+    wr16(0x0100, 0x077F); opm(0xD9, 5, 0x0100); // round down
+    push(1.0); wrd(0x0110, ldexp(1.0, -60)); opm(0xDC, 0, 0x0110);
+    FSTPm64(0x0118);
+    check(rd64(0x0118) == 0x3FF0000000000000ULL,
+          "FSTP m64real rounds 1+2^-60 DOWN to 1.0 under RC=down");
+    FNINIT();
+    wr16(0x0100, 0x0B7F); opm(0xD9, 5, 0x0100); // round up
+    push(1.0); wrd(0x0110, ldexp(1.0, -60)); opm(0xDC, 0, 0x0110);
+    FSTPm64(0x0118);
+    check(rd64(0x0118) == 0x3FF0000000000001ULL,
+          "...and UP to the next double under RC=up");
+    check((sw() & SW_PE) != 0, "a narrowing store that rounds reports #P");
+    FNINIT();
+
+    // --- A signalling NaN in a m32real or m64real source DOES raise on the
+    // load, unlike the m80real one, because that load is a conversion.
+    FNINIT();
+    wr32(0x0110, 0x7FA00000u);                  // single-precision SNaN
+    opm(0xD9, 0, 0x0110);                       // FLD m32real
+    check((sw() & SW_IE) != 0, "FLD m32real of an SNaN raises #IA");
+    check(st_is(0, 0x7FFF, 0xE000000000000000ULL), "...and delivers it quieted");
+    FNINIT();
+    wr64(0x0110, 0x7FF4000000000000ULL);        // double-precision SNaN
+    FLDm64(0x0110);
+    check((sw() & SW_IE) != 0, "FLD m64real of an SNaN raises #IA too");
+    // A denormal single or double raises #D on the load and normalises.
+    FNINIT();
+    wr32(0x0110, 0x00000001u);                  // the smallest single denormal
+    opm(0xD9, 0, 0x0110);
+    check((sw() & SW_DE) != 0, "FLD m32real of a denormal raises #D");
+    check(st_is(0, 0x3F6A, 0x8000000000000000ULL), "...and normalises it to 2^-149");
+
+    // --- NaN propagation picks the larger significand.
+    FNINIT();
+    push80(0x7FFF, 0xC000000000000001ULL);      // the smaller payload
+    push80(0x7FFF, 0xE000000000000000ULL);      // the larger
+    opr(0xDE, 0xC1);                            // FADDP ST(1), ST(0)
+    check(st_is(0, 0x7FFF, 0xE000000000000000ULL),
+          "with two NaNs the larger significand wins");
+
+    // --- FFREEP (DF C0+i), which GCC emits as a cheap pop and which used to
+    // be decoded as nothing at all, leaving the stack one deeper than the
+    // compiler believed.
+    FNINIT();
+    push(1.0); push(2.0);
+    opr(0xDF, 0xC0);                            // FFREEP ST(0)
+    check(ftop() == 7 && st(0) == 1.0, "FFREEP ST(0) frees and pops");
+    check(tg(1) == TAG_EMPTY, "...leaving the vacated slot empty");
+
+    // --- FNSAVE / FRSTOR are lossless for every encoding class now, which is
+    // the property that made a save/restore pair safe to use at all.
+    {
+      const uint16_t S2 = 0x0500;
+      struct { uint16_t se; uint64_t sig; } vals[8] = {
+        { 0x0000, 0x0000000000000001ULL },       // denormal
+        { 0x7FFF, 0x8000000000000000ULL },       // +infinity
+        { 0xFFFF, 0xA123456789ABCDEFULL },       // negative SNaN with a payload
+        { 0x7FFF, 0xDEADBEEFDEADBEEFULL },       // QNaN with a payload
+        { 0x4000, 0x4000000000000000ULL },       // unnormal (unsupported)
+        { 0x3FFF, 0xFFFFFFFFFFFFFFFFULL },       // a full 64-bit significand
+        { 0x8000, 0x0000000000000000ULL },       // negative zero
+        { 0x0001, 0x8000000000000000ULL },       // the smallest normal
+      };
+      FNINIT();
+      for (int i = 7; i >= 0; i--) push80(vals[i].se, vals[i].sig);
+      opm(0xDD, 6, S2);                          // FNSAVE
+      FNINIT();
+      opm(0xDD, 4, S2);                          // FRSTOR
+      bool lossless = true;
+      for (int i = 0; i < 8; i++)
+        if (!st_is(i, vals[i].se, vals[i].sig)) lossless = false;
+      check(lossless, "FNSAVE/FRSTOR round-trip all eight encoding classes exactly");
+    }
+  }
+
+
+  //=========================================================================
+  // 22. A faulting memory operand aborts the whole instruction
+  //
+  // #GP, #PF and #SS are FAULTS.  The handler returns to the same instruction
+  // and it runs again from the start, so the x87 state it re-enters with has
+  // to be the state it left.  Nothing enforced that until 2026-08-28: a
+  // faulting FLD still pushed, a faulting FSTP still popped, and the retag and
+  // the status word went with them, so a guest that page-faulted on an x87
+  // operand resumed with a register stack one deeper or one shallower than it
+  // had left.
+  //=========================================================================
+  {
+    // Real mode on a 286 or later enforces the 0xFFFF segment limit, so an
+    // eight-byte operand at DS:0xFFFE runs off the end and raises #GP.
+    const uint16_t OFF_LIMIT = 0xFFFE;
+    uint16_t sw_before;
+    int top_before;
+
+    setup(); FNINIT();
+    push(1.5); push(2.5);                       // TOP = 6, ST(0)=2.5, ST(1)=1.5
+    sw_before = sw(); top_before = ftop();
+    FLDm64(OFF_LIMIT);
+    check(cpu->exception_pending, "FLD m64real past the segment limit faults");
+    check(ftop() == top_before, "the faulting FLD pushed nothing");
+    check(st(0) == 2.5 && st(1) == 1.5, "...and the stack is untouched");
+    check(sw() == sw_before, "...and so is the status word");
+
+    setup(); FNINIT();
+    push(1.5); push(2.5);
+    sw_before = sw(); top_before = ftop();
+    FSTPm64(OFF_LIMIT);
+    check(cpu->exception_pending, "FSTP m64real past the limit faults");
+    check(ftop() == top_before && st(0) == 2.5, "the faulting FSTP popped nothing");
+    check(sw() == sw_before, "...and left no flags behind");
+
+    // The conversion path has its own state to leak: FISTP of 2.5 rounds, and
+    // rounding sets #P.  A faulting store must not leave that behind either.
+    setup(); FNINIT();
+    push(2.5);
+    sw_before = sw();
+    opm(0xDF, 7, OFF_LIMIT);                    // FISTP m64int
+    check(cpu->exception_pending, "FISTP m64int past the limit faults");
+    check(sw() == sw_before, "...and leaves no #P behind");
+    check(ftop() == 7 && st(0) == 2.5, "...and does not pop");
+
+    // FNSAVE re-initialises the FPU when it succeeds.  When it faults part way
+    // through the environment image, it must not.
+    setup(); FNINIT();
+    push(1.5); push(2.5);
+    top_before = ftop();
+    opm(0xDD, 6, OFF_LIMIT);
+    check(cpu->exception_pending, "FNSAVE past the limit faults");
+    check(ftop() == top_before && st(0) == 2.5 && st(1) == 1.5,
+          "...and does NOT re-initialise the FPU");
+    check(tg(0) == TAG_VALID, "...and does not empty the tags");
+
+    // And when it succeeds it resets the instruction pointers along with
+    // everything else, so the FNSTENV after it writes zeros rather than an
+    // address pointing back at the FNSAVE.
+    setup(); FNINIT();
+    push(1.0);
+    opm(0xDD, 6, 0x0200);                       // FNSAVE, in range
+    for (int i = 0; i < 32; i++) wr8((uint16_t)(0x0300 + i), 0xAA);
+    opm(0xD9, 6, 0x0300);                       // FNSTENV
+    check(rd16(0x0300 + 6) == 0 && rd16(0x0300 + 8) == 0,
+          "a successful FNSAVE resets FIP and the opcode, not just the registers");
+
+    // FBSTP writes ten bytes one at a time.  The first fits at 0xFFFF, the
+    // second runs off the end and faults - and the remaining eight must not be
+    // written, which is not automatic: check_segment_write LETS AN ACCESS
+    // THROUGH once an exception is already pending, so without an explicit
+    // guard the rest of the field lands at whatever the offset wrapped to.
+    // Where the suppressed writes WOULD have gone is the part worth knowing:
+    // a real-mode effective address masks the offset to sixteen bits, so an
+    // offset past the limit does not run off the end of the segment - it wraps
+    // to the START of it.  Without the guard, bytes 2..9 of the field land on
+    // DS:0001..DS:0008, silently overwriting whatever the guest kept there.
+    setup(); FNINIT();
+    push(12345.0);
+    for (int i = 0; i < 16; i++) wr8((uint16_t)i, 0xEE);
+    opm(0xDF, 6, 0xFFFF);                       // byte 0 fits at 0xFFFF, byte 1 faults
+    check(cpu->exception_pending, "FBSTP past the limit faults");
+    check(ftop() == 7 && st(0) == 12345.0, "...and does not pop");
+    check(rd8(0xFFFF) == 0x45, "...and the one byte that fitted was written");
+    bool unwrapped = true;
+    for (int i = 0; i < 16; i++) if (rd8((uint16_t)i) != 0xEE) unwrapped = false;
+    check(unwrapped, "...and nothing after the fault wrapped onto the low segment");
+
+    // The control: the same three instructions at an address that fits.
+    setup(); FNINIT();
+    push(1.5);
+    FSTPm64(0x0140);
+    check(!cpu->exception_pending && ftop() == 0,
+          "the same FSTP inside the limit pops normally");
+    setup();
   }
 
   //=========================================================================

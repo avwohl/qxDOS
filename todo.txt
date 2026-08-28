@@ -8,7 +8,10 @@ Everything below was measured on 2026-08-27 on a linux x86_64 box with g++
 (Ubuntu 15.2.0-16ubuntu1) 15.2.0, no clang, no Xcode, and the dosbox-staging
 submodule uninitialized, against HEAD 91963f6 plus the uncommitted work
 described under Unreleased in CHANGELOG.md.  Where something was read off a
-file rather than run, the entry says so.
+file rather than run, the entry says so.  The two FPU entries below were
+measured on 2026-08-28 instead, after the 80-bit rewrite, on the same box -
+which by then also had clang 21.1.8, so `tests/build.sh` prefers it and the
+zero-warning claim now covers both compilers.
 
 This file listed seventeen items on 2026-08-26.  Nine of them closed outright
 on 2026-08-27 and are in CHANGELOG.md: the zero-coverage halves of dos_bios.cc
@@ -20,6 +23,14 @@ inaccuracies.  Two more were narrowed rather than closed - the x87 entry lost
 its nine defects and kept its register format, and the dosiz entry gained a gate
 and kept its pin - and both are below with what is left of them.
 
+On 2026-08-28 the x87 register format closed too: it is 80-bit extended now,
+with the arithmetic in emu88/emu88_f80.h and a new harness, tests/f80_unit.cc,
+grading it against the host's own x87.  That entry is in CHANGELOG.md, and so
+is the fault-atomicity defect found while doing it - execute_fpu committing its
+register and status-word changes even when a memory operand had faulted - which
+was fixed in a second, separate pass on the owner's instruction.  What is left
+of the x87 entry here is the half neither pass covered: #MF delivery.
+
 Eleven items, then.  The first is the live one - a submodule bump that is
 statically clean and has never been compiled - and it is first because it is the
 only thing here that a Mac could finish today.
@@ -27,12 +38,12 @@ The clone-breaking pin it replaced is closed and is in CHANGELOG.md rather than
 here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
 need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
-a decision that is the owner's, which is the release tagging scheme.  Two are real work
-nobody has started: an 80-bit x87 register file, and the half of the dosiz
-dependency that lives on their side.  The last two were found on
-2026-08-27 while measuring the rest and are left open for the same kind of
-reason: closing either is a decision about what the product does, not a
-cleanup.
+a decision that is the owner's, which is the release tagging scheme.  Two are
+real work nobody has started: x87 exception delivery, and the half of the dosiz
+dependency that lives on their side.  The
+last two were found on 2026-08-27 while measuring the rest and are left open for
+the same kind of reason: closing either is a decision about what the product
+does, not a cleanup.
 
 - the v0.83.0 bump is statically clean and has never been compiled.  twelve
 build breaks were found by audit and all twelve are closed - the six lost fork
@@ -109,7 +120,7 @@ attached, because the scope is what went wrong last time.  re-measured
   not a corpus.
 
 - CI runs the suites, and what it does NOT cover is the thing to keep in view.
-.github/workflows/tests.yml builds all eleven harnesses and runs
+.github/workflows/tests.yml builds all twelve harnesses and runs
 tests/run_suites.sh on every push and pull request, with the corpora cached;
 run_suites.sh holds SingleStepTests to 1758402/1758699 and diffs test386's
 arithmetic output against the reference, which is the check that was missing.
@@ -131,28 +142,26 @@ forbidden to fix it.  Not attempted.  Also not in CI, deliberately: the ASAN=1
 build, because the sanitized SingleStepTests run costs minutes rather than
 seconds.
 
-- emu88's x87 register stack is host double, not 80-bit extended, and that is a
-rewrite rather than a defect.  emu88.h declares `double regs[8]' - 53 mantissa
-bits against a 387's 64 - so a whole class of results is not reproducible here.
-tests/fpu_test.cc pins 31 of those divergences exactly rather than leaving them
-implicit: FLD m80real of 1+2^-53 collapses to 1.0, there is no denormal class,
-no stack-overflow detection, precision control is ignored entirely,
-FLDENV/FNSTENV are control-word-and-status-word stubs, and F2XM1 is pow(2,x)-1
-and FYL2XP1 is log2(x+1), so both lose exactly the precision those instructions
-exist to preserve.
-  the nine conformance defects that were NOT explained by the double design are
-fixed as of 2026-08-27 and are in CHANGELOG.md.  the format is not.  fixing it
-means an 80-bit soft-float register file and every arithmetic path rewritten
-against it.  the harness that would grade the result exists now, which it did
-not before, but neither validation suite can help: none of the 941 opcode files
-in tests/data/80386/v1_ex_real_mode begins D8..DF, because the capture bench was
-an Intel 80386EX with no FPU per tests/data/80386/README.md, and the mnemonic
-column of test386-EE-reference.txt is 96 distinct entries with no x87 mnemonic
-among them.  the FPU is not idle in practice - FUCOMPP was one of the four fixes
-adopted from dosiz in e89af9c, found because GCC emits it for long-double
-comparisons.
-  README.md and docs/hardware-roadmap.md both say this now, in those words,
-rather than advertising "Full 386 CPU with FPU".
+- the x87 raises exceptions and does not DELIVER them.  the 80-bit register
+file landed on 2026-08-28 and is in CHANGELOG.md; what it did not bring is
+#MF.  emu88_fpu.cc now latches ES and B in the status word when a raised
+exception is not masked, so a program that polls FNSTSW sees it, but there is
+no vector 16 dispatch, no FERR pin, and CR0.NE is declared in emu88.h:70 and
+read nowhere.  a guest that UNMASKS an exception and waits for a trap waits
+forever.  in practice DOS software masks - DJGPP's startup does - which is why
+this has never been the thing that broke, and it is recorded rather than fixed
+because delivery needs an IRQ13 path and a decision about CR0.NE that nothing
+currently forces.
+  the transcendentals are the other half of the same entry.  they are accurate
+to a worst observed 4 ulp of a 64-bit significand (tests/f80_unit.cc prints a
+worst case per function and holds the set to a bound of 6; FSINCOS is not
+listed separately because it is the same code path as FSIN and FCOS), which
+is about what an 80387 delivers and some 500x better than the host-double
+implementation they replaced, but they
+are not correctly rounded and neither suite pretends they are.  a spot check
+against an exact reference showed part of the remaining difference is glibc's
+rather than ours, so the number is an upper bound on our error, not a
+measurement of it.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808
@@ -177,8 +186,12 @@ stays a deliberate act on their side, which is the intent, but it means a fix
 made here reaches them only when they ask for it.  everything changed in
 emu88_fpu.cc on 2026-08-27 - the nine x87 conformance fixes, the FIST/FISTP
 range check that replaced an undefined-behaviour cast, and the restored
-unhandled-opcode report - is in that position now.  the other twelve fixes are
-in dos_bios.cc, dos_dpmi.cc and ne2000.cc, which dosiz does not compile.
+unhandled-opcode report - is in that position now, and so is everything the
+80-bit rewrite changed on 2026-08-28, which is a far larger surface: the whole
+of emu88_fpu.cc, the FPUState struct in emu88.h, and a new header they now
+compile, emu88/emu88_f80.h.  tests/check_dosiz.sh was run against it.  the
+other twelve fixes are in dos_bios.cc, dos_dpmi.cc and ne2000.cc, which dosiz
+does not compile.
 
 - there are no version tags, so CHANGELOG.md cannot be sliced into releases and
 is written as one Unreleased block.  `git tag -l` returns exactly one tag,

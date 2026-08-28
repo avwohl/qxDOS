@@ -170,7 +170,7 @@ are *not* is bit-exact.
 | **8237 DMA** | `0x00–0x0F`, `0x80–0x8F`, `0xC0–0xDF` | 🟡 | P3 | Implemented, and no longer blocking anything, but it is **not a system DMA controller**. It lives inside `emu88/sound_blaster.cc` and the ports are only routed to it when a Sound Blaster is attached (`if (sb)` in both `port_out` and `port_in`). Only the card's two jumpered channels are driven — 8-bit ch 1 and 16-bit ch 5 by default; other channels are accepted and ignored so the dispatch stays mechanical. Address/count/page registers, the low and high flip-flops and the 16-bit word-addressing quirk are all modelled for those two. |
 | **CMOS / RTC** | `0x70/0x71`, INT 1Ah | ✅ | — | Clock/config. No periodic-interrupt path (see the PIC row). |
 | **A20 gate** | `0x92` / 8042 | ✅ | — | Real, unreal and protected mode. `tests/dpmi_test.cc` asserts A20 is forced on across the DPMI mode switch. |
-| **FPU (x87)** | — | ✅ | — | 387-class, in `emu88_fpu.cc`. `tests/fpu_test.cc` PASSes 470 assertions over ~74 mnemonics. **Scope, because "✅" oversells it:** the register stack is `double regs[8]`, 53 mantissa bits rather than 80-bit extended, so 31 assertions pin values that provably differ from a real 387 — no denormal class, precision control ignored entirely, `F2XM1` computed as `pow(2,x)-1`. Nine conformance defects this harness recorded were fixed on 2026-08-27 and the baseline is 0; the register format is not a defect and is not fixed. `tests/README.md` §4 lists both. |
+| **FPU (x87)** | — | ✅ | — | 387-class. Decode in `emu88_fpu.cc`, arithmetic in `emu88/emu88_f80.h` — an 80-bit double-extended soft float, integer-only, so it is bit-identical on x86-64 and ARM64. `tests/fpu_test.cc` passes 577 assertions over ~76 mnemonics and carries **no** pinned divergences; it had 31 while the register stack was `double regs[8]`. `tests/f80_unit.cc` grades the arithmetic against the HOST's x87 on x86-64, where `long double` is the same format: add, sub, mul, div, sqrt, every conversion, FRNDINT, FSCALE, FXTRACT, FPREM/FPREM1, the comparisons, FXAM and packed BCD all match bit for bit **including the six exception flags**, across all four rounding modes and all three precision-control settings. **Scope, because "✅" still oversells it:** the eight transcendentals are not correctly rounded — no 387 rounds them either — and are held to a bound of 6 ulp with a worst observed 4; and there is no `#MF` delivery and no FERR path, so an *unmasked* exception latches ES and B and is seen only by `FNSTSW` polling. `tests/README.md` §4 has the detail. |
 
 ## Storage
 
@@ -219,7 +219,7 @@ app.
 A gap named is worth more than a feature listed.
 
 - **The host side has no tests and cannot get any here.** `tests/build.sh`
-  builds eleven harnesses; none of them links a line of Objective-C or Swift.
+  builds twelve harnesses; none of them links a line of Objective-C or Swift.
   Every 🖥️ row is source review.
 - **Nothing compares emu88 against DOSBox.** The submodule is uninitialized on
   this machine, so "emu88 can replace DOSBox" is an argument from feature lists
@@ -254,8 +254,9 @@ sibling **dosiz** project (`/home/wohl/src/dosiz`) compiles six emu88 files
 straight out of this working tree by relative path — `EMU88_DIR` in
 `dosiz/src/CMakeLists.txt` defaults to `${CMAKE_SOURCE_DIR}/../../qxDOS/emu88`
 and the list is `emu88.cc`, `emu88_pmode.cc`, `emu88_fpu.cc`, `emu88_mem.cc`,
-**`opl.cc`** and **`sound_blaster.cc`**. No submodule, no vendored copy, no
-pinned SHA.
+**`opl.cc`** and **`sound_blaster.cc`** — a fixed list, not a glob, which is
+why `emu88_f80.h` is header-only. No submodule, no vendored copy, no pinned
+SHA.
 
 Two consequences for anyone working through the list above:
 

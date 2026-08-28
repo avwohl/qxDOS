@@ -32,7 +32,7 @@ SST_BASELINE=1758402
 [ -d "$DATA/80386" ]   || { echo "no $DATA/80386 - run tests/fetch_tests.sh first"; exit 2; }
 
 note "unit harnesses"
-for t in opl_unit sb_unit uart_unit vesa_test hardware_test; do
+for t in opl_unit sb_unit uart_unit vesa_test hardware_test f80_unit; do
   if "$BUILD/$t" >/dev/null 2>&1; then ok "$t"; else bad "$t (exit $?)"; fi
 done
 

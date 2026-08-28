@@ -74,6 +74,17 @@ $CXX $CXXFLAGS tests/ne2000_test.cc emu88/ne2000.cc       -o "$OUT/ne2000_test" 
 $CXX $CXXFLAGS tests/fpu_test.cc $CORE -o "$OUT/fpu_test"
 echo "built $OUT/fpu_test"
 
+# The 80-bit soft float underneath it, graded against the HOST's x87.  On
+# x86-64 `long double` is the same format with the same control word, so this
+# compares results and exception flags bit for bit against real hardware -
+# which is the only grading either suite here can give an FPU, since no opcode
+# file in the SingleStepTests corpus begins D8..DF.  It links no emu88 .cc at
+# all: emu88_f80.h is header-only, because dosiz compiles a fixed list of six
+# emu88 translation units and a seventh would not be on it.  Needs libm for the
+# long-double transcendentals it grades against.
+$CXX $CXXFLAGS tests/f80_unit.cc -lm -o "$OUT/f80_unit"
+echo "built $OUT/f80_unit"
+
 # The DPMI host. dos_dpmi.cc is linked into every harness that
 # pulls in $DOS, and was executed by none of them. This drives a client in
 # through the real INT 2Fh/1687h detection and the mode switch, then exercises

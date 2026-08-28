@@ -27,7 +27,7 @@ SwiftUI Views
   ├─ Emu88Emulator.h/.mm (Objective-C++ bridge, DEFAULT backend)
   │    ├─ emu88/ - the 386 core and the PC around it
   │    │    ├─ emu88.cc, emu88_pmode.cc, emu88_mem.cc - CPU, protected mode, memory
-  │    │    ├─ emu88_fpu.cc - x87 (host double register stack, not 80-bit)
+  │    │    ├─ emu88_fpu.cc, emu88_f80.h - x87 decode; 80-bit soft float
   │    │    ├─ dos_machine.cc, dos_bios.cc - machine, BIOS, VGA/VESA
   │    │    ├─ dos_dpmi.cc - DPMI host (INT 2Fh AX=1687h, INT 31h)
   │    │    └─ ne2000.cc, opl.cc, sound_blaster.cc, uart16550.cc - hardware
@@ -56,8 +56,12 @@ EMU88_DIR = ${CMAKE_SOURCE_DIR}/../../qxDOS/emu88
 ```
 
 and compiles six files from it: `emu88.cc`, `emu88_pmode.cc`, `emu88_fpu.cc`,
-`emu88_mem.cc`, `opl.cc`, `sound_blaster.cc` - 9,102 lines. No submodule, no
-copy, no version constant, no checksum, no build stamp. A local `make` there
+`emu88_mem.cc`, `opl.cc`, `sound_blaster.cc` - 9,065 lines, plus every header
+those six pull in, which since 2026-08-28 includes the 1,852-line
+`emu88_f80.h`.  **That six is a fixed list, not a glob.  A new emu88 `.cc`
+would compile here, pass every suite here, and fail to LINK there, with nothing
+in between to notice** - which is why the 80-bit soft float is a header.  No
+submodule, no copy, no version constant, no checksum, no build stamp. A local `make` there
 reads whatever is in this checkout at that moment. Their CI is pinned
 separately: `QXDOS_REF` in `dosiz/.github/workflows/ci.yml` is a full
 40-character qxDOS SHA, bumped by hand on their side. So CI moves when they
@@ -106,7 +110,7 @@ on. `todo.txt` carries what is still open about that pin.
 
 ```sh
 bash tests/fetch_tests.sh   # corpora into tests/data/ (gitignored, large)
-bash tests/build.sh         # eleven harnesses into tests/build/
+bash tests/build.sh         # twelve harnesses into tests/build/
 bash tests/run_suites.sh    # runs them, held to recorded scores
 ```
 
@@ -141,12 +145,15 @@ that can be exercised on a Linux machine.
 
 Sizes measured with `git ls-files <dir> | wc -l` and `| xargs wc -l`.
 
-- `emu88/` - the 386 core and the PC around it. **24 tracked files, 17,244
-  lines** - the largest thing in the repository, the default backend, and
-  shared with dosiz (see the rule above)
-- `tests/` - emu88's validation harnesses. 19 tracked files, 10,227 lines, of
-  which 7,728 are the eleven harness `.cc` files. `tests/README.md` is the
-  reference for what each suite covers and, as importantly, what it does not
+- `emu88/` - the 386 core and the PC around it. The largest thing in the
+  repository, the default backend, and shared with dosiz (see the rule above).
+  `emu88_f80.h` is header-only ON PURPOSE: dosiz compiles a fixed list of six
+  emu88 `.cc` files, so a seventh would build here and fail to link there
+- `tests/` - emu88's validation harnesses. 20 tracked files, of which 9,011
+  lines are the twelve harness `.cc` files. `tests/README.md` is the reference
+  for what each suite covers and, as importantly, what it does not.
+  `f80_unit.cc` is the one that grades the FPU's arithmetic, and it is the only
+  harness that links no emu88 `.cc` at all
 - `qxDOS/` - SwiftUI app (Views, Bridge, Assets). `Bridge/Emu88Emulator.mm` and
   `Bridge/Emu88SlirpNet.mm` are the emu88 side; `Bridge/DOSEmulator.mm` is the
   DOSBox side

@@ -1,13 +1,39 @@
-// emu88_fpu.cc — x87 FPU emulation using host double precision
+// emu88_fpu.cc — x87 FPU: the instruction decode and the register file's
+// bookkeeping.  The arithmetic itself is in emu88_f80.h.
 //
-// Implements the core x87 instruction set needed for DJGPP applications (DOOM).
-// Uses host 'double' (64-bit) for FPU registers — sufficient precision for DOS games.
+// WHAT CHANGED, AND WHY IT WAS WORTH CHANGING
+// -------------------------------------------
+// This file used to hold the register stack in host `double`.  That is 53
+// significand bits where an 80387 has 64, so a whole class of results was not
+// reproducible: FLD m80real of 1+2^-53 collapsed to 1.0, there was no denormal
+// class, no stack-overflow detection, precision control did nothing, FLDENV
+// and FNSTENV were control-word stubs, and F2XM1 was pow(2,x)-1 - which throws
+// away exactly the precision that encoding exists to keep.  tests/fpu_test.cc
+// pinned thirty-one of those divergences rather than leaving them implicit.
+//
+// The register file is f80 now (emu88/emu88_f80.h), and every arithmetic path
+// goes through it.  What that buys, beyond the obvious 11 bits:
+//
+//   - the m80real load and store are byte moves, so NaN payloads, signalling
+//     NaNs, denormals and the unsupported encodings survive a round trip;
+//   - precision control works, because rounding to 24 or 53 significand bits
+//     inside a 15-bit exponent range is something only a soft float can do;
+//   - the exception flags are real.  DE, OE, UE and PE were never set at all
+//     before; they are set now, in the order hardware sets them, and ES and B
+//     follow the mask.
+//
+// HOW THIS WAS VALIDATED
+// ----------------------
+// tests/f80_unit.cc runs the arithmetic against the HOST's x87 on x86-64,
+// where `long double` is this exact format, and compares the result AND the
+// exception flags bit for bit.  That is where the surprises came from: that
+// #IA and #Z suppress #D but an infinity operand does not, that a masked
+// overflow under PC=24 delivers 0xFFFFFF0000000000 rather than all ones, and
+// that two NaNs with equal significands are broken by the smaller
+// sign-exponent word rather than by "the destination".  None of those are in
+// the manual in those words.
 
 #include "emu88.h"
-#include <cmath>
-#include <cstring>
-#include <cfloat>
-#include <climits>
 
 // Status word bits
 static constexpr uint16_t SW_IE  = 0x0001;
@@ -23,6 +49,11 @@ static constexpr uint16_t SW_C1  = 0x0200;
 static constexpr uint16_t SW_C2  = 0x0400;
 static constexpr uint16_t SW_C3  = 0x4000;
 static constexpr uint16_t SW_B   = 0x8000;
+// The six exception bits as one mask.  Written out rather than as 0x003F so
+// the six named constants above are used rather than being decoration - clang
+// warns about an unused one and g++ does not, and tests/build.sh prefers
+// clang when it is installed.
+static constexpr uint16_t SW_EXC = SW_IE | SW_DE | SW_ZE | SW_OE | SW_UE | SW_PE;
 
 // Tag values
 static constexpr uint8_t TAG_VALID   = 0;
@@ -30,16 +61,28 @@ static constexpr uint8_t TAG_ZERO    = 1;
 static constexpr uint8_t TAG_SPECIAL = 2;
 static constexpr uint8_t TAG_EMPTY   = 3;
 
-// Helpers
-#define FPU_TOP       ((fpu.sw >> 11) & 7)
-#define FPU_SET_TOP(t) (fpu.sw = (fpu.sw & ~0x3800) | (((t) & 7) << 11))
-#define ST(i)         fpu.regs[(FPU_TOP + (i)) & 7]
-#define TAG(i)        fpu.tags[(FPU_TOP + (i)) & 7]
+#define FPU_TOP        ((fpu.sw >> 11) & 7)
+#define FPU_SET_TOP(t) (fpu.sw = (uint16_t)((fpu.sw & ~0x3800) | (((t) & 7) << 11)))
 
-static inline uint8_t compute_tag(double val) {
-  if (val == 0.0) return TAG_ZERO;
-  if (std::isnan(val) || std::isinf(val)) return TAG_SPECIAL;
-  return TAG_VALID;
+// Stack-fault kinds.  A stack fault owns C1 outright: it reports OVERFLOW with
+// C1 set and UNDERFLOW with C1 clear, and that meaning displaces the
+// "result was rounded up" one for the instruction that faulted.
+enum { SF_NONE = 0, SF_UNDER = 1, SF_OVER = 2 };
+
+//=============================================================================
+// Tagging
+//=============================================================================
+
+// The architectural two-bit tag.  SPECIAL covers everything that is neither a
+// zero nor an ordinary normal - denormals, infinities, NaNs, and the
+// unsupported encodings - which is what a 387 puts there and what FSTENV and
+// FSAVE write out.
+static inline uint8_t fpu_tag_of(f80 v) {
+  switch (f80_classify(v)) {
+    case F80_CLASS_ZERO:   return TAG_ZERO;
+    case F80_CLASS_NORMAL: return TAG_VALID;
+    default:               return TAG_SPECIAL;
+  }
 }
 
 //=============================================================================
@@ -49,183 +92,104 @@ static inline uint8_t compute_tag(double val) {
 void emu88::fpu_init() {
   fpu.cw = 0x037F;  // all exceptions masked, 64-bit precision, round nearest
   fpu.sw = 0;
-  for (int i = 0; i < 8; i++) {
-    fpu.regs[i] = 0.0;
-    fpu.tags[i] = TAG_EMPTY;
+  for (int i = 0; i < 8; i++) fpu.tags[i] = TAG_EMPTY;
+  fpu.fip = 0; fpu.fcs = 0; fpu.fop = 0; fpu.fdp = 0; fpu.fds = 0;
+}
+
+// RESET and power-up, which are NOT FNINIT: the SDM gives the data registers
+// as +0.0 after either, and unchanged after FNINIT.  Keeping the clear here
+// rather than in fpu_init() is the whole difference.
+void emu88::fpu_power_on() {
+  for (int i = 0; i < 8; i++) fpu.regs[i] = f80_make_zero(false);
+  fpu_init();
+}
+
+//=============================================================================
+// Register access, with the stack faults hardware raises
+//=============================================================================
+
+// Reading a register tagged EMPTY is a stack UNDERFLOW: #IS, which is reported
+// through IE with SF set, C1 clear, and the indefinite delivered in place of
+// the operand.  Nothing checked this before, so a desynchronised stack simply
+// carried on with whatever stale value was in the slot.
+static inline f80 fpu_get(emu88::FPUState &fpu, int i, f80_ctx &c, int &sf) {
+  int p = (((fpu.sw >> 11) & 7) + i) & 7;
+  if (fpu.tags[p] == TAG_EMPTY) {
+    c.flags |= F80_IE;
+    if (sf == SF_NONE) sf = SF_UNDER;
+    return f80_indefinite();
   }
+  return fpu.regs[p];
 }
 
-//=============================================================================
-// Stack operations
-//=============================================================================
-
-static inline void fpu_push(emu88::FPUState &fpu, double val) {
-  int top = (fpu.sw >> 11) & 7;
-  top = (top - 1) & 7;
-  fpu.sw = (fpu.sw & ~0x3800) | (top << 11);
-  fpu.regs[top] = val;
-  fpu.tags[top] = compute_tag(val);
+static inline void fpu_put(emu88::FPUState &fpu, int i, f80 v) {
+  int p = (((fpu.sw >> 11) & 7) + i) & 7;
+  fpu.regs[p] = v;
+  fpu.tags[p] = fpu_tag_of(v);
 }
 
-static inline double fpu_pop(emu88::FPUState &fpu) {
+// Pushing onto a register that is not EMPTY is a stack OVERFLOW: #IS with C1
+// SET, TOP still decrements, and the destination receives the indefinite - not
+// the value that was being pushed.
+static inline void fpu_push(emu88::FPUState &fpu, f80 v, f80_ctx &c, int &sf) {
+  int top = ((((fpu.sw >> 11) & 7)) - 1) & 7;
+  if (fpu.tags[top] != TAG_EMPTY) {
+    c.flags |= F80_IE;
+    sf = SF_OVER;
+    v = f80_indefinite();
+  }
+  fpu.sw = (uint16_t)((fpu.sw & ~0x3800) | (top << 11));
+  fpu.regs[top] = v;
+  fpu.tags[top] = fpu_tag_of(v);
+}
+
+static inline void fpu_pop(emu88::FPUState &fpu) {
   int top = (fpu.sw >> 11) & 7;
-  double val = fpu.regs[top];
   fpu.tags[top] = TAG_EMPTY;
-  top = (top + 1) & 7;
-  fpu.sw = (fpu.sw & ~0x3800) | (top << 11);
-  return val;
+  fpu.sw = (uint16_t)((fpu.sw & ~0x3800) | ((((top + 1) & 7)) << 11));
 }
 
 //=============================================================================
 // Memory access helpers for FPU operand types
 //=============================================================================
 
-double emu88::fpu_read_m32real(uint16_t seg, uint32_t off) {
-  uint32_t raw = fetch_dword(seg, off);
-  float f;
-  memcpy(&f, &raw, 4);
-  return (double)f;
+f80 emu88::fpu_read_m32real(uint16_t seg, uint32_t off, f80_ctx &c) {
+  return f80_from_f32(fetch_dword(seg, off), c);
 }
 
-double emu88::fpu_read_m64real(uint16_t seg, uint32_t off) {
+f80 emu88::fpu_read_m64real(uint16_t seg, uint32_t off, f80_ctx &c) {
   uint32_t lo = fetch_dword(seg, off);
   uint32_t hi = fetch_dword(seg, off + 4);
-  uint64_t raw = ((uint64_t)hi << 32) | lo;
-  double d;
-  memcpy(&d, &raw, 8);
-  return d;
+  return f80_from_f64(((uint64_t)hi << 32) | lo, c);
 }
 
-double emu88::fpu_read_m80real(uint16_t seg, uint32_t off) {
-  uint64_t mantissa = 0;
+// A ten-byte move.  The old version rebuilt a double out of the encoding with
+// ldexp() and lost the sign and payload of a NaN on the way; there is nothing
+// to rebuild now.
+f80 emu88::fpu_read_m80real(uint16_t seg, uint32_t off) {
+  f80 r;
+  uint64_t m = 0;
   for (int i = 0; i < 8; i++)
-    mantissa |= ((uint64_t)fetch_byte(seg, off + i)) << (i * 8);
-  uint16_t exp_sign = fetch_word(seg, off + 8);
-
-  bool sign = (exp_sign >> 15) & 1;
-  int exp = exp_sign & 0x7FFF;
-
-  if (exp == 0x7FFF) {
-    if ((mantissa & 0x7FFFFFFFFFFFFFFFULL) == 0)
-      return sign ? -INFINITY : INFINITY;
-    return NAN;
-  }
-  if (exp == 0 && mantissa == 0)
-    return sign ? -0.0 : 0.0;
-
-  // value = mantissa * 2^(exp - 16383 - 63); a denormal (exp == 0) has an
-  // effective exponent of 1, not 0.
-  double result = ldexp((double)mantissa, (exp == 0 ? 1 : exp) - 16383 - 63);
-  return sign ? -result : result;
+    m |= ((uint64_t)fetch_byte(seg, off + i)) << (i * 8);
+  r.sig = m;
+  r.se  = fetch_word(seg, off + 8);
+  return r;
 }
 
-void emu88::fpu_write_m32real(uint16_t seg, uint32_t off, double val) {
-  float f = (float)val;
-  uint32_t raw;
-  memcpy(&raw, &f, 4);
-  store_dword(seg, off, raw);
+void emu88::fpu_write_m32real(uint16_t seg, uint32_t off, f80 v, f80_ctx &c) {
+  store_dword(seg, off, f80_to_f32(v, c));
 }
 
-void emu88::fpu_write_m64real(uint16_t seg, uint32_t off, double val) {
-  uint64_t raw;
-  memcpy(&raw, &val, 8);
+void emu88::fpu_write_m64real(uint16_t seg, uint32_t off, f80 v, f80_ctx &c) {
+  uint64_t raw = f80_to_f64(v, c);
   store_dword(seg, off, (uint32_t)raw);
   store_dword(seg, off + 4, (uint32_t)(raw >> 32));
 }
 
-void emu88::fpu_write_m80real(uint16_t seg, uint32_t off, double val) {
-  uint16_t exp_sign = 0;
-  uint64_t mant80 = 0;
-
-  if (val == 0.0) {
-    if (std::signbit(val)) exp_sign = 0x8000;
-  } else if (std::isinf(val)) {
-    exp_sign = 0x7FFF | (val < 0 ? 0x8000 : 0);
-    mant80 = 0x8000000000000000ULL;
-  } else if (std::isnan(val)) {
-    exp_sign = 0x7FFF;
-    mant80 = 0xC000000000000000ULL;
-  } else {
-    bool sign = val < 0;
-    if (sign) val = -val;
-    // Extract from double: sign(1) + exp(11, bias 1023) + frac(52)
-    uint64_t raw;
-    memcpy(&raw, &val, 8);
-    int dexp = (raw >> 52) & 0x7FF;
-    uint64_t dfrac = raw & ((1ULL << 52) - 1);
-    int exp80;
-    if (dexp == 0) {
-      // Subnormal double: the value is dfrac * 2^-1074, with no implied 1.
-      // With k the index of the highest set bit of dfrac (dfrac != 0 here —
-      // dfrac == 0 is the zero case handled above) that is 2^(k-1074) * (1+f),
-      // so the 80-bit form is normalised: exp80 = k - 1074 + 16383 and the
-      // fraction shifts up until bit k lands on the J bit.
-      int k = 51;
-      while (k > 0 && !((dfrac >> k) & 1)) k--;
-      exp80 = k - 1074 + 16383;
-      mant80 = dfrac << (63 - k);
-    } else {
-      // Rebias: 80-bit exp = double_exp - 1023 + 16383
-      exp80 = dexp - 1023 + 16383;
-      if (exp80 > 0x7FFE) { exp80 = 0x7FFF; mant80 = 0x8000000000000000ULL; }
-      else {
-        // Set J bit (bit 63) and shift 52-bit fraction to 62:11
-        mant80 = 0x8000000000000000ULL | (dfrac << 11);
-      }
-    }
-    exp_sign = exp80 | (sign ? 0x8000 : 0);
-  }
-
+void emu88::fpu_write_m80real(uint16_t seg, uint32_t off, f80 v) {
   for (int i = 0; i < 8; i++)
-    store_byte(seg, off + i, (uint8_t)(mant80 >> (i * 8)));
-  store_word(seg, off + 8, exp_sign);
-}
-
-//=============================================================================
-// Rounding helper
-//=============================================================================
-
-double emu88::fpu_round(double val) {
-  int rc = (fpu.cw >> 10) & 3;
-  switch (rc) {
-    case 0: return rint(val);   // round to nearest (even)
-    case 1: return floor(val);  // round down
-    case 2: return ceil(val);   // round up
-    case 3: return trunc(val);  // truncate
-  }
-  return val;
-}
-
-//=============================================================================
-// Integer store range check — #IA and the integer indefinite value
-//=============================================================================
-
-// FIST/FISTP/FISTTP of a value that will not fit the destination, or of a NaN
-// or an infinity, is an INVALID OPERATION on a 387: it raises #IA and, with #IA
-// masked, stores the "integer indefinite" value, which is the most negative
-// integer of the destination width.
-//
-// Every one of these paths used to cast the double straight to int16_t/int32_t/
-// int64_t.  That is UNDEFINED BEHAVIOUR in C++ rather than a defined emulator
-// result, which is why tests/README.md recorded the out-of-range case as
-// deliberately untested: a test there would have been testing the compiler.  It
-// is a defined result now, and asserted.
-//
-// The bounds are computed rather than written out because every one of them is
-// exactly representable as a double: 2^(bits-1) and its negation are powers of
-// two.  A half-open interval is the right test AFTER rounding - 32767.6 rounds
-// to 32768, which does not fit.
-//
-// This host masks every FPU exception, so #IA always stores rather than
-// trapping; there is no FPU exception delivery here at all.
-static int64_t fpu_to_int(emu88::FPUState &fpu, double v, int bits) {
-  const double hi = std::ldexp(1.0, bits - 1);   // 2^(bits-1)
-  const double lo = -hi;                         // -2^(bits-1), the indefinite value
-  if (std::isnan(v) || v < lo || v >= hi) {
-    fpu.sw |= SW_IE;
-    return (int64_t)lo;
-  }
-  return (int64_t)v;
+    store_byte(seg, off + i, (uint8_t)(v.sig >> (i * 8)));
+  store_word(seg, off + 8, v.se);
 }
 
 //=============================================================================
@@ -234,7 +198,7 @@ static int64_t fpu_to_int(emu88::FPUState &fpu, double v, int bits) {
 
 // 073605d printed one of these from every branch that decoded nothing.  The
 // fprintf was deleted and the `else { }` was left behind, so an x87 encoding
-// this file does not implement became a silent no-op — the worst way to fail,
+// this file does not implement became a silent no-op - the worst way to fail,
 // because the program carries on with a stale ST(0).  Restored with a cap: an
 // unhandled opcode inside a game's inner loop would otherwise write to stderr
 // faster than the loop runs.
@@ -247,35 +211,142 @@ static void fpu_unhandled(const char *escape, uint8_t op2) {
 }
 
 //=============================================================================
-// Divide-by-zero helper — 0/0 is #IA, x/0 is #Z
+// Condition codes
 //=============================================================================
 
-// Every divide path funnels its zero-divisor case through here so they all
-// agree: a real x87 raises #IA and returns the indefinite QNaN for 0/0, and
-// only raises #Z for a non-zero numerator, where the result takes the XOR of
-// the two operand signs.
-static inline double fpu_div_zero(emu88::FPUState &fpu, double num, double den) {
-  if (std::isnan(num)) return num;                   // propagate, no flag
-  if (num == 0.0) { fpu.sw |= SW_IE; return NAN; }   // 0/0 -> #IA
-  fpu.sw |= SW_ZE;                                   // x/0 -> #Z
-  return (std::signbit(num) != std::signbit(den)) ? -INFINITY : INFINITY;
+static inline void fpu_set_cc(emu88::FPUState &fpu, f80_cmp_r r) {
+  fpu.sw &= (uint16_t)~(SW_C0 | SW_C2 | SW_C3);
+  switch (r) {
+    case F80_CMP_GT:    break;                                  // 0 0 0
+    case F80_CMP_LT:    fpu.sw |= SW_C0; break;                 // 0 0 1
+    case F80_CMP_EQ:    fpu.sw |= SW_C3; break;                 // 1 0 0
+    default:            fpu.sw |= SW_C0 | SW_C2 | SW_C3; break; // unordered
+  }
+}
+
+// The FCOMI family reports into EFLAGS instead, and clears OF/SF/AF while it
+// is there.
+void emu88::fpu_cmp_eflags(f80_cmp_r r) {
+  clear_flag(FLAG_CF); clear_flag(FLAG_PF); clear_flag(FLAG_ZF);
+  clear_flag(FLAG_OF); clear_flag(FLAG_SF); clear_flag(FLAG_AF);
+  switch (r) {
+    case F80_CMP_GT: break;
+    case F80_CMP_LT: set_flag(FLAG_CF); break;
+    case F80_CMP_EQ: set_flag(FLAG_ZF); break;
+    default: set_flag(FLAG_CF); set_flag(FLAG_PF); set_flag(FLAG_ZF); break;
+  }
 }
 
 //=============================================================================
-// Comparison helper — sets C3,C2,C1,C0
+// The environment and full-state images
 //=============================================================================
 
-void emu88::fpu_compare(double a, double b) {
-  fpu.sw &= ~(SW_C0 | SW_C1 | SW_C2 | SW_C3);
-  if (std::isnan(a) || std::isnan(b)) {
-    fpu.sw |= SW_C0 | SW_C2 | SW_C3;  // unordered
-  } else if (a > b) {
-    // C3=0, C2=0, C0=0 — already cleared
-  } else if (a < b) {
-    fpu.sw |= SW_C0;  // C3=0, C2=0, C0=1
-  } else {
-    fpu.sw |= SW_C3;  // C3=1, C2=0, C0=0 — equal
+// The tag word FSTENV and FSAVE write is in PHYSICAL register order - bit pair
+// i describes FPR i, not ST(i).  This file used to write it TOP-relative,
+// which a 387 does not, and FRSTOR read it back the same wrong way so the
+// round trip inside the emulator looked right.
+static inline uint16_t fpu_tag_word(const emu88::FPUState &fpu) {
+  uint16_t tw = 0;
+  for (int i = 0; i < 8; i++) tw |= (uint16_t)((fpu.tags[i] & 3) << (i * 2));
+  return tw;
+}
+
+// The environment is seven fields, and which seven bytes they occupy depends
+// on BOTH the operand size and whether the processor is in protected mode.
+// All four layouts are below; the old code wrote two of the seven and read
+// two, which is why tests/fpu_test.cc had FNSTENV pinned as a stub.
+void emu88::fpu_store_env(uint16_t seg, uint32_t base, bool op32) {
+  uint16_t tw = fpu_tag_word(fpu);
+  // Virtual-8086 mode has CR0.PE set and uses the REAL-address-mode layout,
+  // which is the one place `protected_mode()` alone gives the wrong answer.
+  bool prot = protected_mode() && !v86_mode();
+  if (!op32) {
+    store_word(seg, base + 0,  fpu.cw);
+    store_word(seg, base + 2,  fpu.sw);
+    store_word(seg, base + 4,  tw);
+    if (prot) {
+      store_word(seg, base + 6,  (uint16_t)fpu.fip);
+      store_word(seg, base + 8,  fpu.fcs);
+      store_word(seg, base + 10, (uint16_t)fpu.fdp);
+      store_word(seg, base + 12, fpu.fds);
+    } else {
+      uint32_t ilin = ((uint32_t)fpu.fcs << 4) + fpu.fip;
+      uint32_t dlin = ((uint32_t)fpu.fds << 4) + fpu.fdp;
+      store_word(seg, base + 6,  (uint16_t)ilin);
+      store_word(seg, base + 8,  (uint16_t)((((ilin >> 16) & 0x0F) << 12) | (fpu.fop & 0x07FF)));
+      store_word(seg, base + 10, (uint16_t)dlin);
+      store_word(seg, base + 12, (uint16_t)(((dlin >> 16) & 0x0F) << 12));
+    }
+    return;
   }
+  store_dword(seg, base + 0, fpu.cw);
+  store_dword(seg, base + 4, fpu.sw);
+  store_dword(seg, base + 8, tw);
+  if (prot) {
+    store_dword(seg, base + 12, fpu.fip);
+    store_dword(seg, base + 16, (uint32_t)fpu.fcs | ((uint32_t)(fpu.fop & 0x07FF) << 16));
+    store_dword(seg, base + 20, fpu.fdp);
+    store_dword(seg, base + 24, fpu.fds);
+  } else {
+    // Real-mode addresses are twenty bits, so only FOUR bits of each pointer
+    // go in the high field - bits 16 and up of these dwords are reserved and
+    // must stay zero.  The 16-bit branch above masks because its field is a
+    // uint16 and truncates for free; this one has to say so.
+    uint32_t ilin = ((uint32_t)fpu.fcs << 4) + fpu.fip;
+    uint32_t dlin = ((uint32_t)fpu.fds << 4) + fpu.fdp;
+    store_dword(seg, base + 12, ilin & 0xFFFF);
+    store_dword(seg, base + 16, (((ilin >> 16) & 0x0F) << 12) | (fpu.fop & 0x07FF));
+    store_dword(seg, base + 20, dlin & 0xFFFF);
+    store_dword(seg, base + 24, ((dlin >> 16) & 0x0F) << 12);
+  }
+}
+
+void emu88::fpu_load_env(uint16_t seg, uint32_t base, bool op32) {
+  bool prot = protected_mode() && !v86_mode();
+  uint16_t tw;
+  if (!op32) {
+    fpu.cw = fetch_word(seg, base + 0);
+    fpu.sw = fetch_word(seg, base + 2);
+    tw     = fetch_word(seg, base + 4);
+    if (prot) {
+      fpu.fip = fetch_word(seg, base + 6);
+      fpu.fcs = fetch_word(seg, base + 8);
+      fpu.fdp = fetch_word(seg, base + 10);
+      fpu.fds = fetch_word(seg, base + 12);
+      fpu.fop = 0;
+    } else {
+      uint16_t w8 = fetch_word(seg, base + 8);
+      uint16_t wc = fetch_word(seg, base + 12);
+      fpu.fip = (uint32_t)fetch_word(seg, base + 6) | ((uint32_t)(w8 >> 12) << 16);
+      fpu.fop = (uint16_t)(w8 & 0x07FF);
+      fpu.fdp = (uint32_t)fetch_word(seg, base + 10) | ((uint32_t)(wc >> 12) << 16);
+      fpu.fcs = 0; fpu.fds = 0;
+    }
+  } else {
+    fpu.cw = (uint16_t)fetch_dword(seg, base + 0);
+    fpu.sw = (uint16_t)fetch_dword(seg, base + 4);
+    tw     = (uint16_t)fetch_dword(seg, base + 8);
+    if (prot) {
+      fpu.fip = fetch_dword(seg, base + 12);
+      uint32_t d16 = fetch_dword(seg, base + 16);
+      fpu.fcs = (uint16_t)d16;
+      fpu.fop = (uint16_t)((d16 >> 16) & 0x07FF);
+      fpu.fdp = fetch_dword(seg, base + 20);
+      fpu.fds = (uint16_t)fetch_dword(seg, base + 24);
+    } else {
+      uint32_t d12 = fetch_dword(seg, base + 12);
+      uint32_t d16 = fetch_dword(seg, base + 16);
+      uint32_t d20 = fetch_dword(seg, base + 20);
+      uint32_t d24 = fetch_dword(seg, base + 24);
+      // Same four bits on the way back in: the reserved half of the dword is
+      // not part of the pointer.
+      fpu.fip = (d12 & 0xFFFF) | ((((d16 >> 12) & 0x0F)) << 16);
+      fpu.fop = (uint16_t)(d16 & 0x07FF);
+      fpu.fdp = (d20 & 0xFFFF) | ((((d24 >> 12) & 0x0F)) << 16);
+      fpu.fcs = 0; fpu.fds = 0;
+    }
+  }
+  for (int i = 0; i < 8; i++) fpu.tags[i] = (uint8_t)((tw >> (i * 2)) & 3);
 }
 
 //=============================================================================
@@ -284,12 +355,41 @@ void emu88::fpu_compare(double a, double b) {
 
 void emu88::execute_fpu(emu88_uint8 opcode) {
   emu88_uint8 modrm_byte = fetch_ip_byte();
+  if (fault_abort()) return;              // the modrm byte's own fetch faulted
   modrm_result mr = decode_modrm(modrm_byte);
+  if (fault_abort()) return;              // the address computation faulted
 
   uint8_t esc = opcode - 0xD8;  // 0-7
   uint8_t reg = (modrm_byte >> 3) & 7;
   uint8_t rm  = modrm_byte & 7;
   bool is_mem = !mr.is_register;
+
+  // A memory operand that faults ABORTS the instruction.  #GP, #PF and #SS are
+  // faults, not traps: the handler returns to the same instruction and it runs
+  // again from the start, so the x87 state it sees has to be the state it
+  // started with.  Nothing enforced that before - a faulting FLD still pushed,
+  // a faulting FSTP still popped, and the retag and the status word went with
+  // them - so a guest that page-faulted on an x87 operand resumed with a
+  // register stack one deeper or one shallower than it had left.
+  //
+  // The snapshot is taken only for the memory forms.  A register form cannot
+  // fault past the two checks above, and the copy is 152 bytes that the hot
+  // instructions - FADD ST,ST(i), FMUL, FXCH, the transcendentals - should not
+  // have to pay for.
+  FPUState saved;
+  if (is_mem) saved = fpu;
+
+  f80_ctx c = f80_ctx_make(fpu.cw);
+  int  sf = SF_NONE;
+  bool c1_own = false;          // the instruction placed C1 itself
+  bool track  = true;           // the control forms do not move FIP/FDP
+  bool reinit = false;          // FNINIT and FNSAVE leave the FPU reset
+
+  // Shorthands.  ST(i) reads go through fpu_get so an empty register raises
+  // the stack underflow instead of handing back a stale value.
+  #define RD(i)     fpu_get(fpu, (i), c, sf)
+  #define WR(i, v)  fpu_put(fpu, (i), (v))
+  #define TAGP(i)   fpu.tags[(FPU_TOP + (i)) & 7]
 
   switch (esc) {
 
@@ -297,29 +397,17 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   // D8: FADD/FMUL/FCOM/FCOMP/FSUB/FSUBR/FDIV/FDIVR — m32real or ST(i)
   //=========================================================================
   case 0: {
-    double val;
-    if (is_mem) {
-      val = fpu_read_m32real(mr.seg, mr.offset);
-    } else {
-      val = ST(rm);
-    }
+    f80 val = is_mem ? fpu_read_m32real(mr.seg, mr.offset, c) : RD(rm);
+    f80 st0 = RD(0);
     switch (reg) {
-      case 0: ST(0) += val; TAG(0) = compute_tag(ST(0)); break;  // FADD
-      case 1: ST(0) *= val; TAG(0) = compute_tag(ST(0)); break;  // FMUL
-      case 2: fpu_compare(ST(0), val); break;                     // FCOM
-      case 3: fpu_compare(ST(0), val); fpu_pop(fpu); break;       // FCOMP
-      case 4: ST(0) -= val; TAG(0) = compute_tag(ST(0)); break;  // FSUB
-      case 5: ST(0) = val - ST(0); TAG(0) = compute_tag(ST(0)); break; // FSUBR
-      case 6: // FDIV
-        if (val == 0.0) ST(0) = fpu_div_zero(fpu, ST(0), val);
-        else ST(0) /= val;
-        TAG(0) = compute_tag(ST(0));
-        break;
-      case 7: // FDIVR
-        if (ST(0) == 0.0) ST(0) = fpu_div_zero(fpu, val, ST(0));
-        else ST(0) = val / ST(0);
-        TAG(0) = compute_tag(ST(0));
-        break;
+      case 0: WR(0, f80_add(st0, val, c)); break;                 // FADD
+      case 1: WR(0, f80_mul(st0, val, c)); break;                 // FMUL
+      case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;  // FCOM
+      case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
+      case 4: WR(0, f80_sub(st0, val, c)); break;                 // FSUB
+      case 5: WR(0, f80_sub(val, st0, c)); break;                 // FSUBR
+      case 6: WR(0, f80_div(st0, val, c)); break;                 // FDIV
+      case 7: WR(0, f80_div(val, st0, c)); break;                 // FDIVR
     }
     break;
   }
@@ -330,172 +418,127 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   case 1: {
     if (is_mem) {
       switch (reg) {
-        case 0: { // FLD m32real
-          double val = fpu_read_m32real(mr.seg, mr.offset);
-          fpu_push(fpu, val);
-          break;
-        }
-        case 2: // FST m32real
-          fpu_write_m32real(mr.seg, mr.offset, ST(0));
-          break;
-        case 3: // FSTP m32real
-          fpu_write_m32real(mr.seg, mr.offset, ST(0));
-          fpu_pop(fpu);
-          break;
-        case 4: // FLDENV (14/28 bytes) — stub
-          fpu.cw = fetch_word(mr.seg, mr.offset);
-          fpu.sw = fetch_word(mr.seg, mr.offset + (op_size_32 ? 4 : 2));
-          break;
-        case 5: // FLDCW m16
-          fpu.cw = fetch_word(mr.seg, mr.offset);
-          break;
-        case 6: // FNSTENV — stub: write cw, sw, tw
-          store_word(mr.seg, mr.offset, fpu.cw);
-          store_word(mr.seg, mr.offset + (op_size_32 ? 4 : 2), fpu.sw);
-          break;
-        case 7: // FNSTCW m16
-          store_word(mr.seg, mr.offset, fpu.cw);
-          break;
-        default:
-          break;
+        case 0: fpu_push(fpu, fpu_read_m32real(mr.seg, mr.offset, c), c, sf); break;
+        case 2: fpu_write_m32real(mr.seg, mr.offset, RD(0), c); break;   // FST
+        case 3: fpu_write_m32real(mr.seg, mr.offset, RD(0), c);          // FSTP
+                fpu_pop(fpu); break;
+        case 4: fpu_load_env(mr.seg, mr.offset, op_size_32);             // FLDENV
+                track = false; c1_own = true; break;
+        case 5: fpu.cw = fetch_word(mr.seg, mr.offset);                  // FLDCW
+                track = false; c1_own = true; break;
+        case 6: fpu_store_env(mr.seg, mr.offset, op_size_32);            // FNSTENV
+                // A 387 masks every exception after writing the environment,
+                // so the handler it is about to run cannot be re-entered.
+                fpu.cw |= 0x003F;
+                track = false; c1_own = true; break;
+        case 7: store_word(mr.seg, mr.offset, fpu.cw);                   // FNSTCW
+                track = false; c1_own = true; break;
+        default: fpu_unhandled("D9", modrm_byte); break;
       }
     } else {
-      // Register-register: modrm >= 0xC0
       uint8_t op2 = modrm_byte;
-      if (op2 >= 0xC0 && op2 <= 0xC7) {
-        // FLD ST(i) — push copy of ST(i)
-        double val = ST(rm);
-        fpu_push(fpu, val);
-      } else if (op2 >= 0xC8 && op2 <= 0xCF) {
-        // FXCH ST(i)
-        double tmp = ST(0);
-        ST(0) = ST(rm);
-        ST(rm) = tmp;
-        uint8_t ttmp = TAG(0);
-        TAG(0) = TAG(rm);
-        TAG(rm) = ttmp;
+      if (op2 >= 0xC0 && op2 <= 0xC7) {                    // FLD ST(i)
+        f80 v = RD(rm);
+        fpu_push(fpu, v, c, sf);
+      } else if (op2 >= 0xC8 && op2 <= 0xCF) {             // FXCH ST(i)
+        f80 a = RD(0), b = RD(rm);
+        WR(0, b); WR(rm, a);
       } else switch (op2) {
-        case 0xD0: break;  // FNOP
-        case 0xE0: ST(0) = -ST(0); TAG(0) = compute_tag(ST(0)); break;  // FCHS
-        case 0xE1: ST(0) = fabs(ST(0)); TAG(0) = compute_tag(ST(0)); break;  // FABS
-        case 0xE4: fpu_compare(ST(0), 0.0); break;  // FTST
-        case 0xE5: { // FXAM
-          fpu.sw &= ~(SW_C0 | SW_C1 | SW_C2 | SW_C3);
-          if (std::signbit(ST(0))) fpu.sw |= SW_C1;
-          if (TAG(0) == TAG_EMPTY) {
-            fpu.sw |= SW_C0 | SW_C3;  // empty
-          } else if (std::isnan(ST(0))) {
-            fpu.sw |= SW_C0;  // NaN
-          } else if (std::isinf(ST(0))) {
-            fpu.sw |= SW_C0 | SW_C2;  // infinity
-          } else if (ST(0) == 0.0) {
-            fpu.sw |= SW_C3;  // zero
-          } else {
-            fpu.sw |= SW_C2;  // normal
+        case 0xD0: break;                                  // FNOP
+        case 0xE0: WR(0, f80_chs(RD(0))); break;           // FCHS
+        case 0xE1: WR(0, f80_abs(RD(0))); break;           // FABS
+        case 0xE4:                                         // FTST
+          fpu_set_cc(fpu, f80_compare(RD(0), f80_make_zero(false), false, c));
+          break;
+        case 0xE5: {                                       // FXAM
+          fpu.sw &= (uint16_t)~(SW_C0 | SW_C1 | SW_C2 | SW_C3);
+          f80 v = fpu.regs[FPU_TOP];                       // no underflow check
+          if (f80_neg(v)) fpu.sw |= SW_C1;
+          if (TAGP(0) == TAG_EMPTY) fpu.sw |= SW_C0 | SW_C3;
+          else switch (f80_classify(v)) {
+            case F80_CLASS_UNSUPPORTED: break;                          // 0 0 0
+            case F80_CLASS_SNAN:
+            case F80_CLASS_QNAN:     fpu.sw |= SW_C0; break;            // 0 0 1
+            case F80_CLASS_NORMAL:   fpu.sw |= SW_C2; break;            // 0 1 0
+            case F80_CLASS_INF:      fpu.sw |= SW_C0 | SW_C2; break;    // 0 1 1
+            case F80_CLASS_ZERO:     fpu.sw |= SW_C3; break;            // 1 0 0
+            default:                 fpu.sw |= SW_C2 | SW_C3; break;    // denormal
           }
+          c1_own = true;
           break;
         }
-        case 0xE8: fpu_push(fpu, 1.0); break;                    // FLD1
-        case 0xE9: fpu_push(fpu, log2(10.0)); break;             // FLDL2T
-        case 0xEA: fpu_push(fpu, 1.0 / log(2.0)); break;        // FLDL2E = log2(e)
-        case 0xEB: fpu_push(fpu, M_PI); break;                   // FLDPI
-        case 0xEC: fpu_push(fpu, log10(2.0)); break;             // FLDLG2
-        case 0xED: fpu_push(fpu, log(2.0)); break;               // FLDLN2
-        case 0xEE: fpu_push(fpu, 0.0); break;                    // FLDZ
-        case 0xF0: // F2XM1: ST(0) = 2^ST(0) - 1
-          ST(0) = pow(2.0, ST(0)) - 1.0;
-          TAG(0) = compute_tag(ST(0));
-          break;
-        case 0xF1: // FYL2X: ST(1) = ST(1) * log2(ST(0)), pop
-          ST(1) = ST(1) * log2(ST(0));
-          TAG(1) = compute_tag(ST(1));
+        case 0xE8: fpu_push(fpu, F80_ONE, c, sf); break;   // FLD1
+        case 0xE9: fpu_push(fpu, F80_L2T, c, sf); break;   // FLDL2T
+        case 0xEA: fpu_push(fpu, F80_L2E, c, sf); break;   // FLDL2E
+        case 0xEB: fpu_push(fpu, F80_PI,  c, sf); break;   // FLDPI
+        case 0xEC: fpu_push(fpu, F80_LG2, c, sf); break;   // FLDLG2
+        case 0xED: fpu_push(fpu, F80_LN2, c, sf); break;   // FLDLN2
+        case 0xEE: fpu_push(fpu, f80_make_zero(false), c, sf); break;   // FLDZ
+        case 0xF0: WR(0, f80_2xm1(RD(0), c)); break;       // F2XM1
+        case 0xF1:                                         // FYL2X
+          WR(1, f80_yl2x(RD(1), RD(0), c));
           fpu_pop(fpu);
           break;
-        case 0xF2: // FPTAN: ST(0) = tan(ST(0)), push 1.0
-          ST(0) = tan(ST(0));
-          TAG(0) = compute_tag(ST(0));
-          fpu_push(fpu, 1.0);
-          fpu.sw &= ~SW_C2;  // reduction complete
+        case 0xF2: {                                       // FPTAN
+          f80 t;
+          if (!f80_ptan(RD(0), &t, c)) { fpu.sw |= SW_C2; c1_own = true; break; }
+          WR(0, t);
+          fpu_push(fpu, F80_ONE, c, sf);
+          fpu.sw &= (uint16_t)~SW_C2;
           break;
-        case 0xF3: // FPATAN: ST(1) = atan2(ST(1), ST(0)), pop
-          ST(1) = atan2(ST(1), ST(0));
-          TAG(1) = compute_tag(ST(1));
+        }
+        case 0xF3:                                         // FPATAN
+          WR(1, f80_patan(RD(1), RD(0), c));
           fpu_pop(fpu);
           break;
-        case 0xF4: { // FXTRACT: extract exponent and significand
-          int exp;
-          double sig = frexp(ST(0), &exp);
-          ST(0) = (double)(exp - 1);  // exponent (unbiased)
-          TAG(0) = compute_tag(ST(0));
-          fpu_push(fpu, ldexp(sig, 1));  // significand in [1,2)
+        case 0xF4: {                                       // FXTRACT
+          f80 e, m;
+          f80_extract(RD(0), &e, &m, c);
+          WR(0, e);
+          fpu_push(fpu, m, c, sf);
           break;
         }
-        case 0xF5: { // FPREM1 (IEEE remainder)
-          // The quotient rounds to nearest EVEN: round() is half-away-from-zero
-          // and rint()/nearbyint() would follow the host's rounding mode, so
-          // use std::remainder(), which is the IEEE remainder by definition.
-          ST(0) = std::remainder(ST(0), ST(1));
-          TAG(0) = compute_tag(ST(0));
-          fpu.sw &= ~SW_C2;  // reduction complete
+        case 0xF5: case 0xF8: {                            // FPREM1 / FPREM
+          int q = 0; bool part = false;
+          f80 r = (op2 == 0xF5) ? f80_prem1(RD(0), RD(1), c, &q, &part)
+                                : f80_prem (RD(0), RD(1), c, &q, &part);
+          WR(0, r);
+          fpu.sw &= (uint16_t)~(SW_C0 | SW_C1 | SW_C2 | SW_C3);
+          if (part) fpu.sw |= SW_C2;
+          // C0, C3 and C1 carry quotient bits 2, 1 and 0.
+          if (q & 4) fpu.sw |= SW_C0;
+          if (q & 2) fpu.sw |= SW_C3;
+          if (q & 1) fpu.sw |= SW_C1;
+          c1_own = true;
           break;
         }
-        case 0xF6: { // FDECSTP
-          int top = FPU_TOP;
-          FPU_SET_TOP((top - 1) & 7);
-          break;
-        }
-        case 0xF7: { // FINCSTP
-          int top = FPU_TOP;
-          FPU_SET_TOP((top + 1) & 7);
-          break;
-        }
-        case 0xF8: { // FPREM (8087-compatible remainder)
-          if (ST(1) != 0.0) {
-            double q = trunc(ST(0) / ST(1));
-            ST(0) = ST(0) - q * ST(1);
-            TAG(0) = compute_tag(ST(0));
-          }
-          fpu.sw &= ~SW_C2;  // reduction complete
-          break;
-        }
-        case 0xF9: // FYL2XP1: ST(1) = ST(1) * log2(ST(0) + 1), pop
-          ST(1) = ST(1) * log2(ST(0) + 1.0);
-          TAG(1) = compute_tag(ST(1));
+        case 0xF6: FPU_SET_TOP(FPU_TOP - 1); break;                  // FDECSTP
+        case 0xF7: FPU_SET_TOP(FPU_TOP + 1); break;                  // FINCSTP
+        case 0xF9:                                         // FYL2XP1
+          WR(1, f80_yl2xp1(RD(1), RD(0), c));
           fpu_pop(fpu);
           break;
-        case 0xFA: // FSQRT
-          ST(0) = sqrt(ST(0));
-          TAG(0) = compute_tag(ST(0));
-          break;
-        case 0xFB: { // FSINCOS: push cos, ST(1) = sin (original ST(0))
-          double v = ST(0);
-          ST(0) = sin(v);
-          TAG(0) = compute_tag(ST(0));
-          fpu_push(fpu, cos(v));
-          fpu.sw &= ~SW_C2;
+        case 0xFA: WR(0, f80_sqrt(RD(0), c)); break;       // FSQRT
+        case 0xFB: {                                       // FSINCOS
+          f80 s, co;
+          if (!f80_sincos(RD(0), &s, &co, c)) { fpu.sw |= SW_C2; c1_own = true; break; }
+          WR(0, s);
+          fpu_push(fpu, co, c, sf);
+          fpu.sw &= (uint16_t)~SW_C2;
           break;
         }
-        case 0xFC: // FRNDINT
-          ST(0) = fpu_round(ST(0));
-          TAG(0) = compute_tag(ST(0));
-          break;
-        case 0xFD: { // FSCALE: ST(0) = ST(0) * 2^trunc(ST(1))
-          double exp = trunc(ST(1));
-          ST(0) = ldexp(ST(0), (int)exp);
-          TAG(0) = compute_tag(ST(0));
+        case 0xFC: WR(0, f80_rndint(RD(0), c)); break;     // FRNDINT
+        case 0xFD: WR(0, f80_scale(RD(0), RD(1), c)); break;  // FSCALE
+        case 0xFE: case 0xFF: {                            // FSIN / FCOS
+          f80 v;
+          bool ok = (op2 == 0xFE) ? f80_sin(RD(0), &v, c) : f80_cos(RD(0), &v, c);
+          if (!ok) { fpu.sw |= SW_C2; c1_own = true; break; }
+          WR(0, v);
+          fpu.sw &= (uint16_t)~SW_C2;
           break;
         }
-        case 0xFE: // FSIN
-          ST(0) = sin(ST(0));
-          TAG(0) = compute_tag(ST(0));
-          fpu.sw &= ~SW_C2;
-          break;
-        case 0xFF: // FCOS
-          ST(0) = cos(ST(0));
-          TAG(0) = compute_tag(ST(0));
-          fpu.sw &= ~SW_C2;
-          break;
         default:
+          fpu_unhandled("D9", op2);
           break;
       }
     }
@@ -507,40 +550,39 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   //=========================================================================
   case 2: {
     if (is_mem) {
-      double val = (double)(int32_t)fetch_dword(mr.seg, mr.offset);
+      f80 val = f80_from_i32((int32_t)fetch_dword(mr.seg, mr.offset));
+      f80 st0 = RD(0);
       switch (reg) {
-        case 0: ST(0) += val; break;  // FIADD
-        case 1: ST(0) *= val; break;  // FIMUL
-        case 2: fpu_compare(ST(0), val); break;  // FICOM
-        case 3: fpu_compare(ST(0), val); fpu_pop(fpu); break;  // FICOMP
-        case 4: ST(0) -= val; break;  // FISUB
-        case 5: ST(0) = val - ST(0); break;  // FISUBR
-        case 6: if (val != 0.0) ST(0) /= val; else ST(0) = fpu_div_zero(fpu, ST(0), val); break;
-        case 7: if (ST(0) != 0.0) ST(0) = val / ST(0); else ST(0) = fpu_div_zero(fpu, val, ST(0)); break;
+        case 0: WR(0, f80_add(st0, val, c)); break;
+        case 1: WR(0, f80_mul(st0, val, c)); break;
+        case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;
+        case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
+        case 4: WR(0, f80_sub(st0, val, c)); break;
+        case 5: WR(0, f80_sub(val, st0, c)); break;
+        case 6: WR(0, f80_div(st0, val, c)); break;
+        case 7: WR(0, f80_div(val, st0, c)); break;
       }
-      if (reg <= 1 || reg >= 4) TAG(0) = compute_tag(ST(0));
     } else if (modrm_byte == 0xE9) {
-      // FUCOMPP (DA E9) — unordered compare ST(0) with ST(1), then pop both.
-      // The only register-form DA opcode that is NOT an FCMOV. GCC emits this
-      // for long-double relational operators; without it the comparison is a
-      // no-op (stale C0..C3) and the two pops are skipped, desyncing the stack.
-      fpu_compare(ST(0), ST(1));
+      // FUCOMPP (DA E9) — the only register-form DA opcode that is not an
+      // FCMOV.  GCC emits it for long-double relational operators; without it
+      // the comparison is a no-op and the two pops are skipped, desyncing the
+      // stack.
+      fpu_set_cc(fpu, f80_compare(RD(0), RD(1), true, c));
       fpu_pop(fpu);
       fpu_pop(fpu);
     } else {
-      // FCMOV — conditional moves based on EFLAGS
       bool cond = false;
       switch (reg) {
-        case 0: cond = get_flag(FLAG_CF); break;  // FCMOVB (CF=1)
-        case 1: cond = get_flag(FLAG_ZF); break;  // FCMOVE (ZF=1)
-        case 2: cond = get_flag(FLAG_CF) || get_flag(FLAG_ZF); break;  // FCMOVBE
-        case 3: cond = get_flag(FLAG_PF); break;  // FCMOVU (PF=1)
-        default: break;
+        case 0: cond = get_flag(FLAG_CF); break;                        // FCMOVB
+        case 1: cond = get_flag(FLAG_ZF); break;                        // FCMOVE
+        case 2: cond = get_flag(FLAG_CF) || get_flag(FLAG_ZF); break;   // FCMOVBE
+        case 3: cond = get_flag(FLAG_PF); break;                        // FCMOVU
+        default: fpu_unhandled("DA", modrm_byte); break;
       }
-      if (cond) {
-        ST(0) = ST(rm);
-        TAG(0) = TAG(rm);
-      }
+      // Both operands are read whatever the condition says, so an empty
+      // register is a stack underflow on the paths that move nothing too.
+      f80 src = RD(rm), dst = RD(0);
+      WR(0, cond ? src : dst);
     }
     break;
   }
@@ -551,85 +593,59 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   case 3: {
     if (is_mem) {
       switch (reg) {
-        case 0: { // FILD m32int
-          int32_t val = (int32_t)fetch_dword(mr.seg, mr.offset);
-          fpu_push(fpu, (double)val);
+        case 0:                                                     // FILD m32int
+          fpu_push(fpu, f80_from_i32((int32_t)fetch_dword(mr.seg, mr.offset)), c, sf);
           break;
-        }
-        case 1: { // FISTTP m32int (SSE3 — round toward zero and pop)
-          int32_t val = (int32_t)fpu_to_int(fpu, trunc(ST(0)), 32);
-          store_dword(mr.seg, mr.offset, (uint32_t)val);
+        case 1:                                                     // FISTTP m32int
+          store_dword(mr.seg, mr.offset, (uint32_t)(int32_t)f80_to_int(RD(0), 32, true, c));
           fpu_pop(fpu);
           break;
-        }
-        case 2: { // FIST m32int
-          int32_t val = (int32_t)fpu_to_int(fpu, fpu_round(ST(0)), 32);
-          store_dword(mr.seg, mr.offset, (uint32_t)val);
+        case 2:                                                     // FIST m32int
+          store_dword(mr.seg, mr.offset, (uint32_t)(int32_t)f80_to_int(RD(0), 32, false, c));
           break;
-        }
-        case 3: { // FISTP m32int
-          int32_t val = (int32_t)fpu_to_int(fpu, fpu_round(ST(0)), 32);
-          store_dword(mr.seg, mr.offset, (uint32_t)val);
+        case 3:                                                     // FISTP m32int
+          store_dword(mr.seg, mr.offset, (uint32_t)(int32_t)f80_to_int(RD(0), 32, false, c));
           fpu_pop(fpu);
           break;
-        }
-        case 5: { // FLD m80real
-          double val = fpu_read_m80real(mr.seg, mr.offset);
-          fpu_push(fpu, val);
+        case 5:                                                     // FLD m80real
+          fpu_push(fpu, fpu_read_m80real(mr.seg, mr.offset), c, sf);
           break;
-        }
-        case 7: { // FSTP m80real
-          fpu_write_m80real(mr.seg, mr.offset, ST(0));
+        case 7:                                                     // FSTP m80real
+          fpu_write_m80real(mr.seg, mr.offset, RD(0));
           fpu_pop(fpu);
           break;
-        }
         default:
+          fpu_unhandled("DB", modrm_byte);
           break;
       }
     } else {
       uint8_t op2 = modrm_byte;
-      if (op2 == 0xE2) {
-        // FNCLEX — clear exceptions
-        fpu.sw &= ~(SW_IE | SW_DE | SW_ZE | SW_OE | SW_UE | SW_PE | SW_SF | SW_ES | SW_B);
-      } else if (op2 == 0xE3) {
-        // FNINIT
+      if (op2 == 0xE0 || op2 == 0xE1 || op2 == 0xE4) {
+        // FNENI, FNDISI, FSETPM — 287 control instructions that a 387 and
+        // everything after it decode as no-ops.  They used to be reported as
+        // unhandled, which is noisier than the truth.
+        track = false;
+        c1_own = true;
+      } else if (op2 == 0xE2) {                                     // FNCLEX
+        fpu.sw &= (uint16_t)~(SW_EXC | SW_SF | SW_ES | SW_B);
+        track = false; c1_own = true;
+      } else if (op2 == 0xE3) {                                     // FNINIT
         fpu_init();
-      } else if (op2 >= 0xC0 && op2 <= 0xC7) {
-        // FCMOVNB (CF=0)
-        if (!get_flag(FLAG_CF)) { ST(0) = ST(rm); TAG(0) = TAG(rm); }
-      } else if (op2 >= 0xC8 && op2 <= 0xCF) {
-        // FCMOVNE (ZF=0)
-        if (!get_flag(FLAG_ZF)) { ST(0) = ST(rm); TAG(0) = TAG(rm); }
-      } else if (op2 >= 0xD0 && op2 <= 0xD7) {
-        // FCMOVNBE (CF=0 and ZF=0)
-        if (!get_flag(FLAG_CF) && !get_flag(FLAG_ZF)) { ST(0) = ST(rm); TAG(0) = TAG(rm); }
-      } else if (op2 >= 0xD8 && op2 <= 0xDF) {
-        // FCMOVNU (PF=0)
-        if (!get_flag(FLAG_PF)) { ST(0) = ST(rm); TAG(0) = TAG(rm); }
-      } else if (op2 >= 0xE8 && op2 <= 0xEF) {
-        // FUCOMI ST(0), ST(i) — compare, set EFLAGS
-        double a = ST(0), b = ST(rm);
-        clear_flag(FLAG_CF); clear_flag(FLAG_PF); clear_flag(FLAG_ZF);
-        clear_flag(FLAG_OF); clear_flag(FLAG_SF); clear_flag(FLAG_AF);
-        if (std::isnan(a) || std::isnan(b)) {
-          set_flag(FLAG_CF); set_flag(FLAG_PF); set_flag(FLAG_ZF);
-        } else if (a < b) {
-          set_flag(FLAG_CF);
-        } else if (a == b) {
-          set_flag(FLAG_ZF);
-        }
-      } else if (op2 >= 0xF0 && op2 <= 0xF7) {
-        // FCOMI ST(0), ST(i) — compare, set EFLAGS
-        double a = ST(0), b = ST(rm);
-        clear_flag(FLAG_CF); clear_flag(FLAG_PF); clear_flag(FLAG_ZF);
-        clear_flag(FLAG_OF); clear_flag(FLAG_SF); clear_flag(FLAG_AF);
-        if (std::isnan(a) || std::isnan(b)) {
-          set_flag(FLAG_CF); set_flag(FLAG_PF); set_flag(FLAG_ZF);
-        } else if (a < b) {
-          set_flag(FLAG_CF);
-        } else if (a == b) {
-          set_flag(FLAG_ZF);
-        }
+        reinit = true;                                              // nothing to commit
+      } else if (op2 >= 0xC0 && op2 <= 0xDF) {
+        bool cond;
+        if      (op2 <= 0xC7) cond = !get_flag(FLAG_CF);                          // FCMOVNB
+        else if (op2 <= 0xCF) cond = !get_flag(FLAG_ZF);                          // FCMOVNE
+        else if (op2 <= 0xD7) cond = !get_flag(FLAG_CF) && !get_flag(FLAG_ZF);    // FCMOVNBE
+        else                  cond = !get_flag(FLAG_PF);                          // FCMOVNU
+        f80 src = RD(rm), dst = RD(0);
+        WR(0, cond ? src : dst);
+      } else if (op2 >= 0xE8 && op2 <= 0xEF) {                      // FUCOMI
+        // C1 is cleared, not left alone: it reports the stack-fault direction
+        // and nothing else here, which the commit below does for free.
+        fpu_cmp_eflags(f80_compare(RD(0), RD(rm), true, c));
+      } else if (op2 >= 0xF0 && op2 <= 0xF7) {                      // FCOMI
+        fpu_cmp_eflags(f80_compare(RD(0), RD(rm), false, c));
       } else {
         fpu_unhandled("DB", op2);
       }
@@ -642,47 +658,31 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   //=========================================================================
   case 4: {
     if (is_mem) {
-      double val = fpu_read_m64real(mr.seg, mr.offset);
+      f80 val = fpu_read_m64real(mr.seg, mr.offset, c);
+      f80 st0 = RD(0);
       switch (reg) {
-        case 0: ST(0) += val; TAG(0) = compute_tag(ST(0)); break;
-        case 1: ST(0) *= val; TAG(0) = compute_tag(ST(0)); break;
-        case 2: fpu_compare(ST(0), val); break;
-        case 3: fpu_compare(ST(0), val); fpu_pop(fpu); break;
-        case 4: ST(0) -= val; TAG(0) = compute_tag(ST(0)); break;
-        case 5: ST(0) = val - ST(0); TAG(0) = compute_tag(ST(0)); break;
-        case 6:
-          if (val == 0.0) ST(0) = fpu_div_zero(fpu, ST(0), val);
-          else ST(0) /= val;
-          TAG(0) = compute_tag(ST(0));
-          break;
-        case 7:
-          if (ST(0) == 0.0) ST(0) = fpu_div_zero(fpu, val, ST(0));
-          else ST(0) = val / ST(0);
-          TAG(0) = compute_tag(ST(0));
-          break;
+        case 0: WR(0, f80_add(st0, val, c)); break;
+        case 1: WR(0, f80_mul(st0, val, c)); break;
+        case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;
+        case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
+        case 4: WR(0, f80_sub(st0, val, c)); break;
+        case 5: WR(0, f80_sub(val, st0, c)); break;
+        case 6: WR(0, f80_div(st0, val, c)); break;
+        case 7: WR(0, f80_div(val, st0, c)); break;
       }
     } else {
-      // Register: destination is ST(i), source is ST(0)
-      // Note: FSUB/FSUBR and FDIV/FDIVR are swapped for DC vs D8
+      // Destination is ST(i), source ST(0).  FSUB/FSUBR and FDIV/FDIVR carry
+      // the opposite reg encodings here from the ones they carry in D8.
+      f80 sti = RD(rm), st0 = RD(0);
       switch (reg) {
-        case 0: ST(rm) += ST(0); TAG(rm) = compute_tag(ST(rm)); break;  // FADD
-        case 1: ST(rm) *= ST(0); TAG(rm) = compute_tag(ST(rm)); break;  // FMUL
-        case 2: fpu_compare(ST(0), ST(rm)); break;  // FCOM (undocumented)
-        case 3: fpu_compare(ST(0), ST(rm)); fpu_pop(fpu); break;  // FCOMP (undocumented)
-        case 4: // FSUBR ST(i), ST(0) => ST(i) = ST(0) - ST(i)
-          ST(rm) = ST(0) - ST(rm); TAG(rm) = compute_tag(ST(rm)); break;
-        case 5: // FSUB ST(i), ST(0) => ST(i) = ST(i) - ST(0)
-          ST(rm) -= ST(0); TAG(rm) = compute_tag(ST(rm)); break;
-        case 6: // FDIVR ST(i), ST(0) => ST(i) = ST(0) / ST(i)
-          if (ST(rm) == 0.0) ST(rm) = fpu_div_zero(fpu, ST(0), ST(rm));
-          else ST(rm) = ST(0) / ST(rm);
-          TAG(rm) = compute_tag(ST(rm));
-          break;
-        case 7: // FDIV ST(i), ST(0) => ST(i) = ST(i) / ST(0)
-          if (ST(0) == 0.0) ST(rm) = fpu_div_zero(fpu, ST(rm), ST(0));
-          else ST(rm) /= ST(0);
-          TAG(rm) = compute_tag(ST(rm));
-          break;
+        case 0: WR(rm, f80_add(sti, st0, c)); break;                    // FADD
+        case 1: WR(rm, f80_mul(sti, st0, c)); break;                    // FMUL
+        case 2: fpu_set_cc(fpu, f80_compare(st0, sti, false, c)); break;
+        case 3: fpu_set_cc(fpu, f80_compare(st0, sti, false, c)); fpu_pop(fpu); break;
+        case 4: WR(rm, f80_sub(st0, sti, c)); break;                    // FSUBR
+        case 5: WR(rm, f80_sub(sti, st0, c)); break;                    // FSUB
+        case 6: WR(rm, f80_div(st0, sti, c)); break;                    // FDIVR
+        case 7: WR(rm, f80_div(sti, st0, c)); break;                    // FDIV
       }
     }
     break;
@@ -694,98 +694,64 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   case 5: {
     if (is_mem) {
       switch (reg) {
-        case 0: { // FLD m64real
-          double val = fpu_read_m64real(mr.seg, mr.offset);
-          fpu_push(fpu, val);
+        case 0:                                                    // FLD m64real
+          fpu_push(fpu, fpu_read_m64real(mr.seg, mr.offset, c), c, sf);
           break;
-        }
-        case 1: { // FISTTP m64int (SSE3)
-          int64_t val = fpu_to_int(fpu, trunc(ST(0)), 64);
-          uint64_t raw = (uint64_t)val;
+        case 1: {                                                  // FISTTP m64int
+          uint64_t raw = (uint64_t)f80_to_int(RD(0), 64, true, c);
           store_dword(mr.seg, mr.offset, (uint32_t)raw);
           store_dword(mr.seg, mr.offset + 4, (uint32_t)(raw >> 32));
           fpu_pop(fpu);
           break;
         }
-        case 2: // FST m64real
-          fpu_write_m64real(mr.seg, mr.offset, ST(0));
-          break;
-        case 3: // FSTP m64real
-          fpu_write_m64real(mr.seg, mr.offset, ST(0));
-          fpu_pop(fpu);
-          break;
-        case 4: { // FRSTOR — restore FPU state (94/108 bytes)
-          // Simplified: restore CW, SW, TW, then 8 registers
-          uint32_t base = mr.offset;
-          int step = op_size_32 ? 4 : 2;
-          fpu.cw = fetch_word(mr.seg, base);
-          fpu.sw = fetch_word(mr.seg, base + step);
-          uint16_t tw = fetch_word(mr.seg, base + step * 2);
-          // Skip IP/DP fields, jump to register area
-          uint32_t reg_off = base + (op_size_32 ? 28 : 14);
-          for (int i = 0; i < 8; i++) {
-            fpu.regs[(FPU_TOP + i) & 7] = fpu_read_m80real(mr.seg, reg_off + i * 10);
-            fpu.tags[(FPU_TOP + i) & 7] = (tw >> (i * 2)) & 3;
-          }
+        case 2: fpu_write_m64real(mr.seg, mr.offset, RD(0), c); break;
+        case 3: fpu_write_m64real(mr.seg, mr.offset, RD(0), c); fpu_pop(fpu); break;
+        case 4: {                                                  // FRSTOR
+          fpu_load_env(mr.seg, mr.offset, op_size_32);
+          uint32_t roff = mr.offset + (op_size_32 ? 28u : 14u);
+          // The register area is ST(0)-first; the tag word is not.  The tags
+          // are whatever fpu_load_env just put there, in physical order, and
+          // must NOT be recomputed from the values - a saved EMPTY slot holds
+          // an arbitrary bit pattern and re-tagging it would resurrect it.
+          for (int i = 0; i < 8 && !fault_abort(); i++)
+            fpu.regs[(FPU_TOP + i) & 7] = fpu_read_m80real(mr.seg, roff + i * 10);
+          track = false; c1_own = true;
           break;
         }
-        case 6: { // FNSAVE — save FPU state (94/108 bytes)
-          uint32_t base = mr.offset;
-          int step = op_size_32 ? 4 : 2;
-          store_word(mr.seg, base, fpu.cw);
-          store_word(mr.seg, base + step, fpu.sw);
-          // Compute tag word
-          uint16_t tw = 0;
-          for (int i = 0; i < 8; i++)
-            tw |= (fpu.tags[(FPU_TOP + i) & 7] & 3) << (i * 2);
-          store_word(mr.seg, base + step * 2, tw);
-          // Zero the FIP/FCS/opcode/FDP/FDS fields — +6..+13 in the 94-byte
-          // image, +12..+27 in the 108-byte one, where the reserved high
-          // halves of CW/SW/TW at +2/+6/+10 have to be cleared as well.
-          if (op_size_32) {
-            store_word(mr.seg, base + 2, 0);
-            store_word(mr.seg, base + 6, 0);
-            store_word(mr.seg, base + 10, 0);
-            for (uint32_t o = 12; o < 28; o += 2)
-              store_word(mr.seg, base + o, 0);
-          } else {
-            for (uint32_t o = 6; o < 14; o += 2)
-              store_word(mr.seg, base + o, 0);
-          }
-          // Save registers
-          uint32_t reg_off = base + (op_size_32 ? 28 : 14);
-          for (int i = 0; i < 8; i++)
-            fpu_write_m80real(mr.seg, reg_off + i * 10, fpu.regs[(FPU_TOP + i) & 7]);
-          // Re-initialize FPU after save
+        case 6: {                                                  // FNSAVE
+          fpu_store_env(mr.seg, mr.offset, op_size_32);
+          uint32_t roff = mr.offset + (op_size_32 ? 28u : 14u);
+          // Stop at the first fault rather than writing the remaining eighty
+          // bytes: check_segment_write lets an access through once an
+          // exception is already pending, so without this the rest of the
+          // image lands wherever the address wrapped to.
+          for (int i = 0; i < 8 && !fault_abort(); i++)
+            fpu_write_m80real(mr.seg, roff + i * 10, fpu.regs[(FPU_TOP + i) & 7]);
           fpu_init();
+          track = false;                                            // a control form
+          reinit = true;                                            // state is reset
           break;
         }
-        case 7: // FNSTSW m16
-          store_word(mr.seg, mr.offset, fpu.sw);
-          break;
-        default:
-          break;
+        case 7: store_word(mr.seg, mr.offset, fpu.sw);             // FNSTSW m16
+                track = false; c1_own = true; break;
+        default: fpu_unhandled("DD", modrm_byte); break;
       }
     } else {
       uint8_t op2 = modrm_byte;
-      if (op2 >= 0xC0 && op2 <= 0xC7) {
-        // FFREE ST(i)
-        TAG(rm) = TAG_EMPTY;
-      } else if (op2 >= 0xD0 && op2 <= 0xD7) {
-        // FST ST(i)
-        ST(rm) = ST(0);
-        TAG(rm) = TAG(0);
-      } else if (op2 >= 0xD8 && op2 <= 0xDF) {
-        // FSTP ST(i)
-        ST(rm) = ST(0);
-        TAG(rm) = TAG(0);
+      if (op2 >= 0xC0 && op2 <= 0xC7) {                            // FFREE ST(i)
+        TAGP(rm) = TAG_EMPTY;
+      } else if (op2 >= 0xC8 && op2 <= 0xCF) {                     // FXCH (alias)
+        f80 a = RD(0), b = RD(rm);
+        WR(0, b); WR(rm, a);
+      } else if (op2 >= 0xD0 && op2 <= 0xD7) {                     // FST ST(i)
+        WR(rm, RD(0));
+      } else if (op2 >= 0xD8 && op2 <= 0xDF) {                     // FSTP ST(i)
+        WR(rm, RD(0));
         fpu_pop(fpu);
-      } else if (op2 >= 0xE0 && op2 <= 0xE7) {
-        // FUCOM ST(i) — unordered compare
-        fpu_compare(ST(0), ST(rm));
-      } else if (op2 >= 0xE8 && op2 <= 0xEF) {
-        // FUCOMP ST(i)
-        fpu_compare(ST(0), ST(rm));
+      } else if (op2 >= 0xE0 && op2 <= 0xE7) {                     // FUCOM ST(i)
+        fpu_set_cc(fpu, f80_compare(RD(0), RD(rm), true, c));
+      } else if (op2 >= 0xE8 && op2 <= 0xEF) {                     // FUCOMP ST(i)
+        fpu_set_cc(fpu, f80_compare(RD(0), RD(rm), true, c));
         fpu_pop(fpu);
       } else {
         fpu_unhandled("DD", op2);
@@ -799,54 +765,39 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   //=========================================================================
   case 6: {
     if (is_mem) {
-      double val = (double)(int16_t)fetch_word(mr.seg, mr.offset);
+      f80 val = f80_from_i16((int16_t)fetch_word(mr.seg, mr.offset));
+      f80 st0 = RD(0);
       switch (reg) {
-        case 0: ST(0) += val; break;
-        case 1: ST(0) *= val; break;
-        case 2: fpu_compare(ST(0), val); break;
-        case 3: fpu_compare(ST(0), val); fpu_pop(fpu); break;
-        case 4: ST(0) -= val; break;
-        case 5: ST(0) = val - ST(0); break;
-        case 6: if (val != 0.0) ST(0) /= val; else ST(0) = fpu_div_zero(fpu, ST(0), val); break;
-        case 7: if (ST(0) != 0.0) ST(0) = val / ST(0); else ST(0) = fpu_div_zero(fpu, val, ST(0)); break;
+        case 0: WR(0, f80_add(st0, val, c)); break;
+        case 1: WR(0, f80_mul(st0, val, c)); break;
+        case 2: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); break;
+        case 3: fpu_set_cc(fpu, f80_compare(st0, val, false, c)); fpu_pop(fpu); break;
+        case 4: WR(0, f80_sub(st0, val, c)); break;
+        case 5: WR(0, f80_sub(val, st0, c)); break;
+        case 6: WR(0, f80_div(st0, val, c)); break;
+        case 7: WR(0, f80_div(val, st0, c)); break;
       }
-      if (reg <= 1 || reg >= 4) TAG(0) = compute_tag(ST(0));
     } else {
-      // Register: op and pop
+      f80 sti = RD(rm), st0 = RD(0);
       switch (reg) {
-        case 0: ST(rm) += ST(0); TAG(rm) = compute_tag(ST(rm)); fpu_pop(fpu); break;  // FADDP
-        case 1: ST(rm) *= ST(0); TAG(rm) = compute_tag(ST(rm)); fpu_pop(fpu); break;  // FMULP
-        case 2: // FCOMP (undocumented alias)
-          fpu_compare(ST(0), ST(rm)); fpu_pop(fpu);
-          break;
-        case 3: // FCOMPP (only DE D9)
+        case 0: WR(rm, f80_add(sti, st0, c)); fpu_pop(fpu); break;      // FADDP
+        case 1: WR(rm, f80_mul(sti, st0, c)); fpu_pop(fpu); break;      // FMULP
+        case 2: fpu_set_cc(fpu, f80_compare(st0, sti, false, c));       // FCOMP alias
+                fpu_pop(fpu); break;
+        case 3:                                                          // FCOMPP
           if (rm == 1) {
-            fpu_compare(ST(0), ST(1));
+            fpu_set_cc(fpu, f80_compare(st0, sti, false, c));
             fpu_pop(fpu); fpu_pop(fpu);
+          } else {
+            // DE D8 and DE DA..DF are not FCOMPP and are not anything else.
+            // They used to fall through as silent no-ops.
+            fpu_unhandled("DE", modrm_byte);
           }
           break;
-        case 4: // FSUBRP ST(i), ST(0) => ST(i) = ST(0) - ST(i), pop
-          ST(rm) = ST(0) - ST(rm);
-          TAG(rm) = compute_tag(ST(rm));
-          fpu_pop(fpu);
-          break;
-        case 5: // FSUBP ST(i), ST(0) => ST(i) = ST(i) - ST(0), pop
-          ST(rm) -= ST(0);
-          TAG(rm) = compute_tag(ST(rm));
-          fpu_pop(fpu);
-          break;
-        case 6: // FDIVRP ST(i), ST(0) => ST(i) = ST(0) / ST(i), pop
-          if (ST(rm) == 0.0) ST(rm) = fpu_div_zero(fpu, ST(0), ST(rm));
-          else ST(rm) = ST(0) / ST(rm);
-          TAG(rm) = compute_tag(ST(rm));
-          fpu_pop(fpu);
-          break;
-        case 7: // FDIVP ST(i), ST(0) => ST(i) = ST(i) / ST(0), pop
-          if (ST(0) == 0.0) ST(rm) = fpu_div_zero(fpu, ST(rm), ST(0));
-          else ST(rm) /= ST(0);
-          TAG(rm) = compute_tag(ST(rm));
-          fpu_pop(fpu);
-          break;
+        case 4: WR(rm, f80_sub(st0, sti, c)); fpu_pop(fpu); break;      // FSUBRP
+        case 5: WR(rm, f80_sub(sti, st0, c)); fpu_pop(fpu); break;      // FSUBP
+        case 6: WR(rm, f80_div(st0, sti, c)); fpu_pop(fpu); break;      // FDIVRP
+        case 7: WR(rm, f80_div(sti, st0, c)); fpu_pop(fpu); break;      // FDIVP
       }
     }
     break;
@@ -858,65 +809,43 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   case 7: {
     if (is_mem) {
       switch (reg) {
-        case 0: { // FILD m16int
-          int16_t val = (int16_t)fetch_word(mr.seg, mr.offset);
-          fpu_push(fpu, (double)val);
+        case 0:                                                    // FILD m16int
+          fpu_push(fpu, f80_from_i16((int16_t)fetch_word(mr.seg, mr.offset)), c, sf);
           break;
-        }
-        case 1: { // FISTTP m16int (SSE3)
-          int16_t val = (int16_t)fpu_to_int(fpu, trunc(ST(0)), 16);
-          store_word(mr.seg, mr.offset, (uint16_t)val);
+        case 1:                                                    // FISTTP m16int
+          store_word(mr.seg, mr.offset, (uint16_t)(int16_t)f80_to_int(RD(0), 16, true, c));
           fpu_pop(fpu);
           break;
-        }
-        case 2: { // FIST m16int
-          int16_t val = (int16_t)fpu_to_int(fpu, fpu_round(ST(0)), 16);
-          store_word(mr.seg, mr.offset, (uint16_t)val);
+        case 2:                                                    // FIST m16int
+          store_word(mr.seg, mr.offset, (uint16_t)(int16_t)f80_to_int(RD(0), 16, false, c));
           break;
-        }
-        case 3: { // FISTP m16int
-          int16_t val = (int16_t)fpu_to_int(fpu, fpu_round(ST(0)), 16);
-          store_word(mr.seg, mr.offset, (uint16_t)val);
+        case 3:                                                    // FISTP m16int
+          store_word(mr.seg, mr.offset, (uint16_t)(int16_t)f80_to_int(RD(0), 16, false, c));
           fpu_pop(fpu);
           break;
-        }
-        case 4: { // FBLD m80bcd — load packed BCD
-          uint64_t mantissa = 0;
-          for (int i = 0; i < 9; i++) {
-            uint8_t b = fetch_byte(mr.seg, mr.offset + i);
-            mantissa += ((uint64_t)(b & 0x0F) + (uint64_t)((b >> 4) & 0x0F) * 10) *
-                        (uint64_t)pow(100.0, i);
-          }
-          uint8_t sign_byte = fetch_byte(mr.seg, mr.offset + 9);
-          double val = (double)mantissa;
-          if (sign_byte & 0x80) val = -val;
-          fpu_push(fpu, val);
+        case 4: {                                                  // FBLD m80bcd
+          uint8_t d[10];
+          for (int i = 0; i < 10; i++) d[i] = fetch_byte(mr.seg, mr.offset + i);
+          if (fault_abort()) break;
+          fpu_push(fpu, f80_from_bcd(d), c, sf);
           break;
         }
-        case 5: { // FILD m64int
+        case 5: {                                                  // FILD m64int
           uint32_t lo = fetch_dword(mr.seg, mr.offset);
           uint32_t hi = fetch_dword(mr.seg, mr.offset + 4);
-          int64_t val = (int64_t)(((uint64_t)hi << 32) | lo);
-          fpu_push(fpu, (double)val);
+          fpu_push(fpu, f80_from_i64((int64_t)(((uint64_t)hi << 32) | lo)), c, sf);
           break;
         }
-        case 6: { // FBSTP m80bcd — store packed BCD and pop
-          double val = ST(0);
-          bool sign = val < 0;
-          if (sign) val = -val;
-          uint64_t intval = (uint64_t)fpu_round(val);
-          for (int i = 0; i < 9; i++) {
-            uint8_t lo_nib = intval % 10; intval /= 10;
-            uint8_t hi_nib = intval % 10; intval /= 10;
-            store_byte(mr.seg, mr.offset + i, (hi_nib << 4) | lo_nib);
-          }
-          store_byte(mr.seg, mr.offset + 9, sign ? 0x80 : 0x00);
+        case 6: {                                                  // FBSTP m80bcd
+          uint8_t d[10];
+          f80_to_bcd(RD(0), d, c);
+          for (int i = 0; i < 10 && !fault_abort(); i++)
+            store_byte(mr.seg, mr.offset + i, d[i]);
           fpu_pop(fpu);
           break;
         }
-        case 7: { // FISTP m64int
-          int64_t val = fpu_to_int(fpu, fpu_round(ST(0)), 64);
-          uint64_t raw = (uint64_t)val;
+        case 7: {                                                  // FISTP m64int
+          uint64_t raw = (uint64_t)f80_to_int(RD(0), 64, false, c);
           store_dword(mr.seg, mr.offset, (uint32_t)raw);
           store_dword(mr.seg, mr.offset + 4, (uint32_t)(raw >> 32));
           fpu_pop(fpu);
@@ -925,34 +854,25 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
       }
     } else {
       uint8_t op2 = modrm_byte;
-      if (op2 == 0xE0) {
-        // FNSTSW AX
-        regs[reg_AX] = fpu.sw;
-      } else if (op2 >= 0xE8 && op2 <= 0xEF) {
-        // FUCOMIP ST(0), ST(i) — unordered compare, set EFLAGS, pop
-        double a = ST(0), b = ST(rm);
-        clear_flag(FLAG_CF); clear_flag(FLAG_PF); clear_flag(FLAG_ZF);
-        clear_flag(FLAG_OF); clear_flag(FLAG_SF); clear_flag(FLAG_AF);
-        if (std::isnan(a) || std::isnan(b)) {
-          set_flag(FLAG_CF); set_flag(FLAG_PF); set_flag(FLAG_ZF);
-        } else if (a < b) {
-          set_flag(FLAG_CF);
-        } else if (a == b) {
-          set_flag(FLAG_ZF);
-        }
+      if (op2 == 0xE0) {                                           // FNSTSW AX
+        // Through set_reg16, which carries the same fault_abort() guard every
+        // other integer-register write in this core has; the direct
+        // `regs[reg_AX] = ...` this replaced was the one FPU site that wrote a
+        // general-purpose register without it.
+        set_reg16(reg_AX, fpu.sw);
+        track = false; c1_own = true;
+      } else if (op2 >= 0xC0 && op2 <= 0xC7) {
+        // FFREEP ST(i): free, then pop.  Undocumented, and emitted by GCC and
+        // DJGPP as a one-byte-cheaper way to discard ST(0); it used to be
+        // reported as unhandled and did nothing, which left the stack one
+        // deeper than the compiler believed.
+        TAGP(rm) = TAG_EMPTY;
         fpu_pop(fpu);
-      } else if (op2 >= 0xF0 && op2 <= 0xF7) {
-        // FCOMIP ST(0), ST(i)
-        double a = ST(0), b = ST(rm);
-        clear_flag(FLAG_CF); clear_flag(FLAG_PF); clear_flag(FLAG_ZF);
-        clear_flag(FLAG_OF); clear_flag(FLAG_SF); clear_flag(FLAG_AF);
-        if (std::isnan(a) || std::isnan(b)) {
-          set_flag(FLAG_CF); set_flag(FLAG_PF); set_flag(FLAG_ZF);
-        } else if (a < b) {
-          set_flag(FLAG_CF);
-        } else if (a == b) {
-          set_flag(FLAG_ZF);
-        }
+      } else if (op2 >= 0xE8 && op2 <= 0xEF) {                     // FUCOMIP
+        fpu_cmp_eflags(f80_compare(RD(0), RD(rm), true, c));
+        fpu_pop(fpu);
+      } else if (op2 >= 0xF0 && op2 <= 0xF7) {                     // FCOMIP
+        fpu_cmp_eflags(f80_compare(RD(0), RD(rm), false, c));
         fpu_pop(fpu);
       } else {
         fpu_unhandled("DF", op2);
@@ -964,4 +884,47 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   default:
     break;
   }
+
+  //=========================================================================
+  // Commit: the exception flags, C1, and the last-instruction pointers
+  //=========================================================================
+
+  // Nothing above this line is allowed to stand if a memory operand faulted.
+  // What this does NOT undo is the memory the instruction had already written
+  // before the faulting access - a multi-dword store that faults halfway
+  // leaves its first half behind, here as on the integer side of this core.
+  if (is_mem && fault_abort()) { fpu = saved; return; }
+  if (reinit) return;
+
+  if (track) {
+    fpu.fip = insn_ip;
+    fpu.fcs = sregs[seg_CS];
+    fpu.fop = (uint16_t)(((opcode & 7) << 8) | modrm_byte);
+    if (is_mem) { fpu.fdp = mr.offset; fpu.fds = mr.seg; }
+  }
+
+  // A stack fault owns C1 whatever else the instruction wanted to put there:
+  // set means overflow, clear means underflow.  Otherwise C1 is the
+  // "result was rounded up" report, and it is CLEARED when nothing rounded -
+  // which is most instructions, most of the time.
+  if (sf != SF_NONE) {
+    fpu.sw |= SW_SF;
+    fpu.sw &= (uint16_t)~SW_C1;
+    if (sf == SF_OVER) fpu.sw |= SW_C1;
+  } else if (!c1_own) {
+    fpu.sw &= (uint16_t)~SW_C1;
+    if (c.c1) fpu.sw |= SW_C1;
+  }
+
+  fpu.sw |= (uint16_t)(c.flags & SW_EXC);
+
+  // ES latches when a raised exception is NOT masked, and B follows ES on a
+  // 387.  Neither was ever set before.  Note what this still does not do:
+  // there is no #MF delivery and no FERR pin here, so an unmasked exception
+  // is visible to a program that polls FNSTSW and to nothing else.
+  if ((fpu.sw & SW_EXC) & (uint16_t)~(fpu.cw & 0x003F)) fpu.sw |= SW_ES | SW_B;
+
+  #undef RD
+  #undef WR
+  #undef TAGP
 }

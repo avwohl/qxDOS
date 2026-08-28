@@ -54,7 +54,10 @@ and not for what comes after it.
   behaviour that is correct, `diverge()` (31 sites) pinning a value that
   provably differs from real hardware with a comment naming the gap, and
   `bug()` asserting the correct 387 answer against a defect the double design
-  does not explain - nine of those, all since fixed.
+  does not explain - nine of those, all since fixed. *(The 31 divergences are
+  also gone now, and so is the `double` design that caused them - see the
+  80-bit register-file entry under Changed. This paragraph describes the
+  harness as it was added, which is what a changelog entry is for.)*
 
   `dpmi_test` arrives the way a client does -
   `INT 2Fh AX=1687h`, a `FAR CALL` to the returned entry, then `INT 31h` from a
@@ -473,6 +476,168 @@ and not for what comes after it.
   still separate.
 
 ### Changed
+
+- **The x87 register stack is 80-bit extended precision, and every arithmetic
+  path is rewritten against it.** `emu88.h` declared `double regs[8]` - 53
+  mantissa bits against a 387's 64 - so a whole class of real-hardware results
+  was not reproducible, and `tests/fpu_test.cc` carried **31 `diverge()`
+  assertions** pinning exactly where the design showed through. There are none
+  left. The register file is `f80 regs[8]`, and the arithmetic underneath it is
+  a new header, `emu88/emu88_f80.h`.
+
+  **This moves the core, and dosiz compiles it.** Changed: `emu88/emu88_fpu.cc`
+  (rewritten), `emu88/emu88.h` (the `FPUState` struct, plus the six memory
+  helpers whose types changed, two removed - `fpu_round` and `fpu_compare`, both
+  of which took and returned `double` - and three added), one line of
+  `emu88/emu88.cc` (`reset()` calls `fpu_power_on()` rather than `fpu_init()`,
+  because RESET gives the data registers +0.0 and FNINIT leaves their contents
+  alone - two different things that used to be one function), and one new
+  header, `emu88/emu88_f80.h`. dosiz compiles
+  `emu88_fpu.cc` as one of exactly six emu88 translation units, which is why
+  the soft float is a HEADER: a seventh `.cc` would build here, pass everything
+  here, and fail to link there with nothing in between to notice. Both gates
+  were run - `tests/run_suites.sh` and `tests/check_dosiz.sh`.
+
+  What the format change buys, beyond the eleven bits:
+
+  - `FLD`/`FSTP m80real` are ten-byte moves, so NaN payloads, signalling NaNs,
+    denormals and the unsupported encodings survive a round trip. The old
+    reader rebuilt a `double` with `ldexp()` and lost the sign and payload of
+    every NaN on the way in.
+  - The seven `FLD` constants are the 387's ROM values to all 64 bits.
+    `FLDPI` was `M_PI` widened - `C90FDAA22168C000`, the low eleven bits gone -
+    and is `C90FDAA22168C235` now. The six that are not zero were computed by
+    integer arithmetic to 800 bits and rounded; that they came out
+    bit-identical to the published ROM values is the check that the generator
+    was right.
+  - Precision control works. Rounding a significand to 24 or 53 bits inside a
+    15-bit exponent range is a thing only a soft float can do, and `CW` bits
+    9:8 were read nowhere at all before.
+  - `DE`, `OE`, `UE` and `PE` are set, in the order hardware sets them; none of
+    the four was ever set before. `ES` and `B` latch when a raised exception is
+    unmasked.
+  - Pushing onto a live register is a stack overflow and reading an empty one
+    is a stack underflow, each with the `IE`, `SF` and `C1` a 387 reports.
+    Neither was detected before, so a desynchronised stack carried on with
+    whatever stale value was in the slot.
+  - `FPREM`/`FPREM1` reduce a large exponent difference a bite at a time and
+    report `C2`, and leave the quotient bits in `C0`/`C3`/`C1`. The old code
+    did one `double` divide and always reported "complete", which for
+    `2^100 mod 3` is simply the wrong answer.
+  - The 32-bit real-mode environment images mask their pointer fields. A
+    real-mode linear address can need twenty-ONE bits - `(0xFFFF << 4) + 0xFFFF`
+    is `0x10FFEF` - and only four of them belong in the high field; the rest of
+    that dword is reserved. The 16-bit form got this free from its `uint16`
+    field and the 32-bit one did not.
+  - `FNSTENV`/`FLDENV` write and read all seven environment fields in the
+    layout the operand size and the processor mode select - four layouts, and
+    virtual-8086 mode takes the real-address one even though `CR0.PE` is set,
+    which is the case testing `CR0.PE` alone gets wrong. They wrote two of the
+    seven before. Separately, `FNSAVE` wrote its tag word TOP-relative where a
+    387 writes it in **physical** register order, and `FRSTOR` read it back the
+    same wrong way, so the image was self-consistent and interchangeable with
+    nothing; both are fixed together.
+  - The eight transcendentals are evaluated in this file's own arithmetic
+    rather than through the host's `double` libm. `F2XM1` was `pow(2,x)-1` and
+    `FYL2XP1` was `log2(x+1)`, which throws away precisely the precision those
+    two encodings exist to keep: both returned exactly zero for `x = 2^-60`.
+  - Encodings that did nothing are decoded. Three used to be *reported* as
+    unhandled and then ignored: `FFREEP` (`DF C0+i`), which GCC and DJGPP emit
+    as a cheap pop and whose absence left the stack one deeper than the
+    compiler believed; the undocumented `FXCH` alias at `DD C8-CF`; and
+    `FSETPM`/`FNENI`/`FNDISI`, which are 287 control instructions and no-ops on
+    a 387 rather than errors. `DE D8` and `DE DA`-`DE DF` were worse - silent
+    no-ops, with no report at all - and now reach the unhandled-opcode path.
+
+  **The validation is the part worth reading.** Neither suite here can grade an
+  FPU: no opcode file in the SingleStepTests corpus begins `D8`..`DF`, because
+  the capture bench had no coprocessor, and `test386`'s reference output has no
+  x87 mnemonic in it. So a new harness, `tests/f80_unit.cc`, drives the HOST's
+  x87 as an oracle - on x86-64 `long double` is this exact format, with the
+  same control word - and compares results **and exception flags** bit for bit
+  across all four rounding modes and all three precision-control settings.
+  Add, sub, mul, div, sqrt, every conversion, `FRNDINT`, `FSCALE`, `FXTRACT`,
+  `FPREM`, `FPREM1`, the comparisons, `FXAM` and packed BCD all match exactly.
+  The transcendentals cannot - no 387 rounds those correctly either. They are
+  compared against the host's long-double libm and held to a bound of 6 ulp of
+  a 64-bit significand; the worst actually observed is 4, and only at fifty
+  times the default sample, with `FSIN` of arguments up to `2^62` at 2. The
+  harness prints a figure per function on every run, so a regression shows up
+  as a number changing rather than as a check still passing. A sweep of all 100
+  zero/infinity/NaN quadrants of `FPATAN` is graded exactly.
+
+  Two more defects came out of checks the oracle could not make. A sanitized
+  build (`ASAN=1 bash tests/build.sh`) reported undefined behaviour in
+  `f80_to_int`: `FISTP m64int` of exactly -2^63 is in range, and negating it as
+  a signed `int64_t` is undefined - the answer was right, which is precisely
+  why a differential oracle cannot see it. And feeding the transcendentals
+  operands from the ENDS of the exponent range rather than the middle found
+  `F2XM1` of 2^-16382 coming out at exactly twice the right value, because the
+  helper that builds an `f80` from a significand and an exponent had no
+  subnormal path and truncated a negative biased exponent into a `uint16_t`.
+  Both are fixed and both now have assertions.
+
+  Five things came out of the oracle itself that are not in the manual in those
+  words, and each was a real defect when it was found: `#D` is reported for a
+  denormal operand even against an infinity, but `#IA` and `#Z` suppress it;
+  the masked-overflow "largest finite value" is the largest finite value *at
+  the current precision*, so `0xFFFFFF0000000000` under `PC=24`; two NaNs with
+  equal significands are separated by the smaller sign-exponent word, not by
+  "the destination"; a narrowing store does not raise `#D` for a denormal
+  source, because a store is not an arithmetic operation; and `FSCALE` does not
+  honour precision control at all - PC reaches add, sub, mul, div and sqrt and
+  nothing else - which this got wrong until the oracle's grid for the
+  non-arithmetic operations was widened past `PC=64`. That last one is the
+  argument for running the whole grid everywhere rather than only where the
+  control word obviously applies.
+
+  Two more things this pass turned up that are not about the FPU at all. A
+  `clang++` appeared on the machine, and `tests/build.sh` prefers it over
+  `g++` - so the "zero warnings under `-Wall -Wextra`" claim, which had only
+  ever been checked with `g++`, was silently a claim about a compiler that was
+  no longer being used. Clang produced 44 `-Wunused-const-variable` warnings
+  that `g++` does not raise at all; they are fixed, and the tree is clean under
+  both compilers now. And 29 single-point mutations of `emu88_f80.h` and
+  `emu88_fpu.cc` were applied one at a time and all 29 died - five of them only
+  to `f80_unit`, twelve only to `fpu_test`, which is the argument for there
+  being two harnesses rather than one. Two of them survived the first run and
+  both were real holes; `tests/README.md` §4 has the table and what they were.
+
+  `tests/fpu_test.cc` goes from 473 assertions to 577, with its 31 divergences
+  converted to ordinary checks and a new section for the classes the 80-bit
+  file makes reachable at all - gradual underflow, overflow, denormals,
+  unsupported encodings, signalling NaNs, and a `FNSAVE`/`FRSTOR` round trip
+  over all eight of them. The suites are otherwise unchanged: SingleStepTests
+  still at 1,758,402, `test386` still matching its reference line for line.
+
+  **A faulting memory operand now aborts the instruction.** `#GP`, `#PF` and
+  `#SS` are faults, not traps: the handler returns to the same instruction and
+  it runs again from the start, so the x87 state it re-enters with has to be
+  the state it left. Nothing enforced that - a faulting `FLD` still pushed, a
+  faulting `FSTP` still popped, a faulting `FISTP` still left `#P` in the
+  status word, and a faulting `FNSAVE` still re-initialised the whole FPU - so
+  a guest that page-faulted on an x87 operand resumed with a register stack one
+  deeper or one shallower than it had left. `execute_fpu` snapshots the state
+  before a memory form runs and restores it if the instruction faulted; the
+  snapshot is skipped entirely for the register forms, which cannot fault past
+  the two checks now made before it. `FNSTSW AX` also went straight to
+  `regs[reg_AX]`, the one FPU site writing a general-purpose register without
+  the `fault_abort()` guard every other integer write in this core has; it goes
+  through `set_reg16` now.
+
+  There is a second half to that. `check_segment_write` deliberately lets an
+  access through once an exception is already pending, so the loops that write
+  a field a byte or a register at a time - `FNSAVE`'s eighty-byte register
+  area, `FRSTOR`'s, `FBSTP`'s ten bytes - would keep writing *past* the fault,
+  to wherever the offset had wrapped to. They stop at the first fault now, and
+  `tests/fpu_test.cc` section 22 asserts that the bytes after it are untouched.
+  What is still not undone is memory the instruction had already written
+  *before* the faulting access: a multi-dword store that faults halfway leaves
+  its first half behind, here as on the integer side of this core.
+
+  What this still does **not** do: deliver `#MF`. There is no exception
+  delivery and no FERR path anywhere in emu88, so an unmasked exception is
+  visible to a program that polls `FNSTSW`, and to nothing else.
 
 - **The warning sweep** (ad01cd0): 20 warnings to none under `-Wall -Wextra`,
   with nothing suppressed - no `-Wno-*`, no pragma, no `[[maybe_unused]]`, no
