@@ -163,7 +163,8 @@ the opposite (0x2F, bit 1 set), and INT 11h returns the BDA word verbatim - so
 a guest probing the documented way was told there was no x87, chose its
 software emulator, and never executed an x87 instruction at all.  emu88 has
 always emulated a complete 80-bit x87 whatever config.cpu says, so "absent" was
-the lie.  three sources agree now: the equipment word (bit 1 set, default reads
+the lie.  four sources agree now, three of them because they moved: CMOS 0x14,
+which always said so, plus the equipment word (bit 1 set, default reads
 0x0027), CPUID leaf 1 EDX bit 0, and DPMI INT 31h AX=0E00h, which used to
 report 8001h "unsupported function" and now answers 0x35 - present, enabled,
 type 3, nobody emulating.  0x35 and NOT 0x31, which is what this first
