@@ -102,7 +102,10 @@ any warning out of `emu88/`**, reads the fixture list out of dosiz's own
 when there is no dosiz checkout - "not checked" is a different answer from a
 failure - so it is safe to run unconditionally. It is not in CI here on
 purpose: it needs a checkout this repository does not carry and must not depend
-on. `todo.txt` carries what is still open about that pin.
+on. `todo.txt` carries what is still open about that pin, and
+[`docs/emu88-downstream.md`](docs/emu88-downstream.md) is the standing note of
+what their pin is currently missing - written per-pin rather than per-commit,
+because the changelog is per-commit and the drift is not.
 
 ## Build
 
