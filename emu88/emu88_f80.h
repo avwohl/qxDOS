@@ -1392,6 +1392,29 @@ static const f80 F80_ATAN_TBL[17] = {
   { 0xC90FDAA22168C235ULL, 0x3FFE },  // atan(16/16)
 };
 
+// The exact remainder of each of those, atan(k/16) - F80_ATAN_TBL[k].  Each
+// fits a single f80 exactly - a 113-bit value minus its own 64-bit head has at
+// most 49 significant bits - so the pair is atan(k/16) to about 128 bits.
+static const f80 F80_ATAN_TBL_LO[17] = {
+  { 0x0000000000000000ULL, 0x0000 },
+  { 0xD361B48FC7480000ULL, 0xBFB8 },
+  { 0xDDA19D8305DE0000ULL, 0xBFB9 },
+  { 0xF6169F1039390000ULL, 0x3FBB },
+  { 0xDB8F3DEBEF440000ULL, 0x3FBB },
+  { 0xE9512D9CB6140000ULL, 0xBFBB },
+  { 0xEAB9BDBA46030000ULL, 0xBFBC },
+  { 0x84F92BD2003D0000ULL, 0x3FBC },
+  { 0xDFC88BD978750000ULL, 0x3FBC },
+  { 0x96D41396C34A0000ULL, 0x3FBD },
+  { 0xB906BC2CCB880000ULL, 0x3FBD },
+  { 0x844DF1C440A00000ULL, 0x3FBD },
+  { 0xCD43F9522BEC0000ULL, 0x3FBB },
+  { 0xA392F179F2900000ULL, 0x3FBB },
+  { 0xD3496AB7BD6E0000ULL, 0xBFBC },
+  { 0xEC453A7722DA0000ULL, 0xBFBD },
+  { 0xECE675D1FC8F8CBBULL, 0xBFBC },
+};
+
 //===========================================================================
 // Transcendentals
 //===========================================================================
@@ -1551,6 +1574,33 @@ static inline void f80_merge_final(f80_ctx &c, const f80_ctx &t) {
   c.c1 = t.c1;
 }
 
+// Tininess is a property of the delivered RESULT, and none of the eight can
+// see it from where its last rounding happens.  By then the value has already
+// been denormalised in a throwaway - and measured, that step raises nothing at
+// all: F2XM1's x*F80_LN2_HI for x = 2^-16382 ends in two zero bits, so the one
+// shift onto the denormal grid is exact.  There is no flag to forward and no
+// context to merge.  What is left is to ask the result: a subnormal or zero
+// delivered by a computation that has just reported #P IS the masked underflow
+// response, and #U is what a 387 reports alongside it.
+//
+// The #P guard is load-bearing, not decoration.  Without it every exact zero
+// these return - FSIN(+-0), FCOS(+-0), F2XM1(+-0), FYL2X(+-0, 1.0) - would
+// raise #U.  And this ORs #U and NOTHING else: adding #D would recreate the
+// defect f80_merge_final exists to avoid.
+//
+// With #U unmasked f80_round_pack has already raised it and biased the
+// exponent by +24576, so the test does not fire and that path is unchanged.
+static inline void f80_flag_tiny(f80_ctx &c, f80 r) {
+  // #U UNMASKED is f80_round_pack's business and nobody else's: it delivers the
+  // result at full precision with the exponent biased by +24576, and this test
+  // would fire on a denormal that a THROWAWAY step produced - flagging #U on a
+  // value that is not the unmasked response.  With #MF delivery live that is a
+  // trap with the wrong ST(0) in it, and the host traps too, so it cannot be
+  // measured either way.  Confine the change to the case that was measured.
+  if ((c.cw & 0x0010) == 0) return;
+  if ((c.flags & F80_PE) && (r.se & 0x7FFF) == 0) c.flags |= F80_UE;
+}
+
 // 2^x - 1 = expm1(u) with u = x*ln2, and expm1(u) = u + u^2*Q(u) with
 // Q(u) = sum_{n>=2} u^(n-2)/n!.  Writing it that way keeps the leading term
 // exact: an error in Q is scaled by u^2 and cannot move the result by more
@@ -1586,6 +1636,7 @@ static inline f80 f80_2xm1(f80 x, f80_ctx &c) {
     f80 rr = f80_addsub_p(sc, F80_ONE, true, fc, 64);
     f80_merge_final(c, fc);
     c.flags |= F80_PE;                 // 2^x - 1 is not exact on this path
+    f80_flag_tiny(c, rr);
     return rr;
   }
   // For |x| below 2^-66 the whole series past the first term is under half an
@@ -1599,6 +1650,7 @@ static inline f80 f80_2xm1(f80 x, f80_ctx &c) {
     f80 rr = f80_addsub_p(uh, ul, false, fc, 64);
     f80_merge_final(c, fc);
     c.flags |= F80_PE;                 // x*ln2 is irrational
+    f80_flag_tiny(c, rr);
     return rr;
   }
   f80 u  = f80x_add(uh, ul);
@@ -1608,6 +1660,7 @@ static inline f80 f80_2xm1(f80 x, f80_ctx &c) {
   f80 rr = f80_addsub_p(uh, f80x_add(ul, corr), false, fc, 64);
   f80_merge_final(c, fc);
   c.flags |= F80_PE;
+  f80_flag_tiny(c, rr);
   return rr;
 }
 
@@ -1622,7 +1675,7 @@ static inline f80 f80_2xm1(f80 x, f80_ctx &c) {
 // t arrives as a head and a tail, because a relative error there lands on the
 // answer one for one - it was the whole of the 3-ulp error this had before the
 // argument was carried in double length.
-static inline f80 f80_log2_atanh(f80 th, f80 tl) {
+static inline void f80_log2_atanh2(f80 th, f80 tl, f80 *hi_out, f80 *lo_out) {
   f80 t2 = f80x_mul(th, th);
   // atanh(t)/t - 1, so the leading t stays exactly what it was handed.
   f80 s  = f80x_sub(f80_poly_even(F80_ATANH_C, 20, t2), F80_ONE);
@@ -1637,8 +1690,17 @@ static inline f80 f80_log2_atanh(f80 th, f80 tl) {
   f80_mul2(hi, F80_L2E_HI, &ph, &pl);
   f80 acc = f80x_add(f80x_add(pl, f80x_mul(hi, F80_L2E_LO)),
                      f80x_mul(tail, F80_L2E_HI));
-  f80 r = f80x_add(ph, acc);
-  return f80x_add(r, r);
+  // ph + acc as a pair, doubled.  The doubling is exact.
+  f80 rh, rl;
+  f80_add2(ph, acc, &rh, &rl);
+  *hi_out = f80x_add(rh, rh);
+  *lo_out = f80x_add(rl, rl);
+}
+
+static inline f80 f80_log2_atanh(f80 th, f80 tl) {
+  f80 h, l;
+  f80_log2_atanh2(th, tl, &h, &l);
+  return f80x_add(h, l);
 }
 
 static inline f80 f80_yl2x(f80 y, f80 x, f80_ctx &c) {
@@ -1679,24 +1741,48 @@ static inline f80 f80_yl2x(f80 y, f80 x, f80_ctx &c) {
   m.sig = (uint64_t)(w.sig >> 64);
   m.se  = 0x3FFF;                                  // m in [1,2)
   // Move to [sqrt(1/2), sqrt(2)) so the series argument stays small.
-  // log2(x) is exact exactly when x is a power of two - the significand is
-  // 1.000... and the answer is the exponent.  That is the one case where this
-  // instruction must NOT report #P, and it is reachable: FYL2X(3.0, 1.0) is
-  // zero, and hardware raises nothing for it.  Everywhere else the logarithm
-  // is irrational and #P stands regardless of what the final rounding did.
-  bool exact_log = (m.sig == 0x8000000000000000ULL);
+  // The one case where this instruction must NOT report #P is x == 1.0, where
+  // log2(x) is ZERO - not every power of two.  Measured with a live FSQRT
+  // control: the host reports #P for FYL2X(1.0, 2.0) = 1.0, for
+  // FYL2X(3.0, 0.5) = -3.0 and for all 48 power-of-two cases probed except
+  // the six with x == 1.0.  Its #P is not "the result is unrepresentable" -
+  // every one of those results is exact - it is "my log2 was computed
+  // inexactly", and a 387 computes log2(2^e) inexactly for every e but 0.
+  bool exact_log = (m.sig == 0x8000000000000000ULL && e == 0);
   if (m.sig > 0xB504F333F9DE6484ULL) { m.se = 0x3FFE; e += 1; }
   // m - 1 is exact by Sterbenz for every m in [1/2, 2); m + 1 is not, so it is
   // carried as a pair and the division with it.
   f80 dh, dl, th, tl;
   f80_add2(m, F80_ONE, &dh, &dl);
   f80_div2(f80x_sub(m, F80_ONE), dh, dl, &th, &tl);
-  f80 l = f80_log2_atanh(th, tl);
-  f80 total = f80x_add(f80_from_i32(e), l);
+  f80 lh, ll;
+  f80_log2_atanh2(th, tl, &lh, &ll);
+  f80 eh, el;
+  f80_add2(f80_from_i32(e), lh, &eh, &el);
+  f80 tot_lo = f80x_add(el, ll);
+  // f80_mul2 splits an EXACT product, and it has no exponent range to do that
+  // in: the head is packed with f80_from_sig, which cannot represent an
+  // overflowed or denormal result, so the two-word form silently loses both
+  // #O and #U.  Anywhere near either end of the range, fall back to the single
+  // rounded multiply and give up the tail - the flag is worth more than the
+  // ulp, and this is the path "an overflowing FYL2X reports #O" grades.
+  int32_t pe = (int32_t)(y.se & 0x7FFF) + (int32_t)(eh.se & 0x7FFF) - 16383;
+  if (pe >= 32700 || pe <= 80) {
+    f80_ctx fcx = f80_ctx_make(c.cw);
+    f80 rrx = f80_mul_p(y, f80x_add(eh, tot_lo), fcx, 64);
+    f80_merge_final(c, fcx);
+    if (!exact_log) c.flags |= F80_PE;
+    f80_flag_tiny(c, rrx);
+    return rrx;
+  }
+  f80 ph2, pl2;
+  f80_mul2(y, eh, &ph2, &pl2);
+  f80 corr = f80x_add(pl2, f80x_mul(y, tot_lo));
   f80_ctx fc = f80_ctx_make(c.cw);
-  f80 rr = f80_mul_p(y, total, fc, 64);
+  f80 rr = f80_addsub_p(ph2, corr, false, fc, 64);
   f80_merge_final(c, fc);
   if (!exact_log) c.flags |= F80_PE;
+  f80_flag_tiny(c, rr);
   return rr;
 }
 
@@ -1735,6 +1821,7 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
       f80 rr = f80_mul_p(t1, F80_L2E, fc, 64);
       f80_merge_final(c, fc);
       c.flags |= F80_PE;
+      f80_flag_tiny(c, rr);
       return rr;
     }
   }
@@ -1761,11 +1848,25 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
   f80 dh, dl, th, tl;
   f80_add2(x, two, &dh, &dl);
   f80_div2(x, dh, dl, &th, &tl);
-  f80 l = f80_log2_atanh(th, tl);
+  f80 lh, ll;
+  f80_log2_atanh2(th, tl, &lh, &ll);
+  int32_t pe1 = (int32_t)(y.se & 0x7FFF) + (int32_t)(lh.se & 0x7FFF) - 16383;
+  if (pe1 >= 32700 || pe1 <= 80) {
+    f80_ctx fcx = f80_ctx_make(c.cw);
+    f80 rrx = f80_mul_p(y, f80x_add(lh, ll), fcx, 64);
+    f80_merge_final(c, fcx);
+    c.flags |= F80_PE;
+    f80_flag_tiny(c, rrx);
+    return rrx;
+  }
+  f80 ph2, pl2;
+  f80_mul2(y, lh, &ph2, &pl2);
+  f80 corr = f80x_add(pl2, f80x_mul(y, ll));
   f80_ctx fc = f80_ctx_make(c.cw);
-  f80 rr = f80_mul_p(y, l, fc, 64);
+  f80 rr = f80_addsub_p(ph2, corr, false, fc, 64);
   f80_merge_final(c, fc);
   c.flags |= F80_PE;
+  f80_flag_tiny(c, rr);
   return rr;
 }
 
@@ -1779,7 +1880,7 @@ static inline f80 f80_yl2xp1(f80 y, f80 x, f80_ctx &c) {
 // how RC, #U, #O and C1 reach an FPATAN whose last step is this one.  The
 // intermediate steps stay at nearest-even in their own throwaway contexts, so
 // nothing here rounds twice.
-static inline f80 f80_atan_unit(f80 z, f80_ctx *fin) {
+static inline void f80_atan_unit2(f80 z, f80 *hi, f80 *lo) {
   f80 sixteen = f80_from_i32(16);
   f80 zs = f80x_mul(z, sixteen);
   f80_ctx rt = f80_ctx_make(0x037F);
@@ -1790,9 +1891,12 @@ static inline f80 f80_atan_unit(f80 z, f80_ctx *fin) {
   f80 t  = f80x_div(f80x_sub(z, z0), f80x_add(F80_ONE, f80x_mul(z, z0)));
   f80 t2 = f80x_mul(t, t);
   f80 s  = f80_poly_even(F80_ATAN_C, 9, t2);
-  f80 last = f80x_mul(t, s);
-  return fin ? f80_addsub_p(F80_ATAN_TBL[k], last, false, *fin, 64)
-             : f80x_add(F80_ATAN_TBL[k], last);
+  f80 mh, ml;
+  f80_mul2(t, s, &mh, &ml);
+  f80 h, l;
+  f80_add2(F80_ATAN_TBL[k], mh, &h, &l);
+  *hi = h;
+  *lo = f80x_add(f80x_add(l, ml), F80_ATAN_TBL_LO[k]);
 }
 
 static inline f80 f80_patan(f80 y, f80 x, f80_ctx &c) {
@@ -1809,28 +1913,34 @@ static inline f80 f80_patan(f80 y, f80 x, f80_ctx &c) {
   // The eight degenerate quadrants, which are all exact multiples of pi/4.
   if (kx == F80_CLASS_INF && ky == F80_CLASS_INF) {
     f80 v = sx ? f80x_add(pio2, pio4) : pio4;      // 3pi/4 or pi/4
+    // Every constant this hands back - pi/4, pi/2, pi and 3pi/4 - is the
+    // round-UP of its true value at 64 bits (+0.15, +0.15, +0.15 and +0.36 of
+    // an ulp, measured in __float128), so C1 is 1 by derivation rather than by
+    // imitation.  The host sets it on all seven of these shortcuts.
     c.flags |= F80_PE;
+    c.c1 = true;
     return sy ? f80_chs(v) : v;
   }
   if (ky == F80_CLASS_ZERO) {
     if (!sx && kx != F80_CLASS_ZERO) { c.c1 = false; return f80_make_zero(sy); }
-    if (sx) { c.flags |= F80_PE; return sy ? f80_chs(pi) : pi; }
+    if (sx) { c.flags |= F80_PE; c.c1 = true; return sy ? f80_chs(pi) : pi; }
     // x is a zero too: atan2(+-0, +-0) is still defined by the signs.
-    if (f80_neg(x)) { c.flags |= F80_PE; return sy ? f80_chs(pi) : pi; }
+    if (f80_neg(x)) { c.flags |= F80_PE; c.c1 = true; return sy ? f80_chs(pi) : pi; }
     c.c1 = false;
     return f80_make_zero(sy);
   }
   if (kx == F80_CLASS_ZERO || ky == F80_CLASS_INF) {
     if (kx == F80_CLASS_INF) {                     // |y| finite, |x| infinite
-      if (sx) { c.flags |= F80_PE; return sy ? f80_chs(pi) : pi; }
+      if (sx) { c.flags |= F80_PE; c.c1 = true; return sy ? f80_chs(pi) : pi; }
       c.c1 = false;
       return f80_make_zero(sy);
     }
     c.flags |= F80_PE;
+    c.c1 = true;
     return sy ? f80_chs(pio2) : pio2;
   }
   if (kx == F80_CLASS_INF) {
-    if (sx) { c.flags |= F80_PE; return sy ? f80_chs(pi) : pi; }
+    if (sx) { c.flags |= F80_PE; c.c1 = true; return sy ? f80_chs(pi) : pi; }
     c.c1 = false;
     return f80_make_zero(sy);
   }
@@ -1842,20 +1952,37 @@ static inline f80 f80_patan(f80 y, f80 x, f80_ctx &c) {
   f80 ay = f80_abs(y), ax = f80_abs(x);
   f80 a;
   f80_ctx fc = f80_ctx_make(c.cw);
+  f80 pio2_lo = F80_PIO2_LO;
+  f80 pi_lo = pio2_lo; pi_lo.se = (uint16_t)(pi_lo.se + 1);   // pi = 2*(pi/2)
+  f80 uh, ul, dh, dl, tail;
   if (f80_compare(ay, ax, true, c) != F80_CMP_GT) {
-    f80 u = f80_atan_unit(f80x_div(ay, ax), sx ? 0 : &fc);
-    a = sx ? f80_addsub_p(pi, u, true, fc, 64) : u;
-  } else {
-    f80 u = f80_atan_unit(f80x_div(ax, ay), 0);
-    if (sx) {
-      // pi - (pi/2 - u); the outer subtraction is the one that rounds.
-      a = f80_addsub_p(pi, f80x_sub(pio2, u), true, fc, 64);
+    f80_atan_unit2(f80x_div(ay, ax), &uh, &ul);
+    if (sx) {                                    // pi - u
+      f80_add2(pi, f80_chs(uh), &dh, &dl);
+      tail = f80x_add(f80x_sub(dl, ul), pi_lo);
+      a = f80_addsub_p(dh, tail, false, fc, 64);
     } else {
-      a = f80_addsub_p(pio2, u, true, fc, 64);
+      a = f80_addsub_p(uh, ul, false, fc, 64);
+    }
+  } else {
+    f80_atan_unit2(f80x_div(ax, ay), &uh, &ul);
+    if (sx) {
+      // pi - (pi/2 - u) IS pi/2 + u: F80_PI is exactly twice F80_PIO2_HI, so
+      // the two constants cancel with nothing left over.  Computing it as the
+      // difference of two differences rounded twice and INVERTED the sign of
+      // the pre-rounding error, which is exactly what C1 reports.
+      f80_add2(pio2, uh, &dh, &dl);
+      tail = f80x_add(f80x_add(dl, ul), pio2_lo);
+      a = f80_addsub_p(dh, tail, false, fc, 64);
+    } else {                                     // pi/2 - u
+      f80_add2(pio2, f80_chs(uh), &dh, &dl);
+      tail = f80x_add(f80x_sub(dl, ul), pio2_lo);
+      a = f80_addsub_p(dh, tail, false, fc, 64);
     }
   }
   f80_merge_final(c, fc);
   c.flags |= F80_PE;
+  f80_flag_tiny(c, a);
   return sy ? f80_chs(a) : a;
 }
 
@@ -2055,8 +2182,8 @@ static inline bool f80_sincos(f80 x, f80 *sin_out, f80 *cos_out, f80_ctx &c) {
     default: sv = f80_chs(cr);   cv = sr;            break;
   }
   if (neg) sv = f80_chs(sv);                       // sin is odd, cos is even
-  if (sin_out) *sin_out = sv;
-  if (cos_out) *cos_out = cv;
+  if (sin_out) { *sin_out = sv; f80_flag_tiny(c, sv); }
+  if (cos_out) { *cos_out = cv; f80_flag_tiny(c, cv); }
   return true;
 }
 
@@ -2075,10 +2202,19 @@ static inline bool f80_ptan(f80 x, f80 *out, f80_ctx &c) {
     c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE));
     return false;
   }
-  c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE));
+  // #P comes out of the inner context too.  The tangent is irrational for
+  // every argument this reaches, but the DIVIDE is exact whenever |x| is small
+  // enough that the sine IS x and the cosine IS 1 - every argument below
+  // 2^-63 - so deriving #P from the final rounding loses it there.  Measured:
+  // the host reports #P for FPTAN(2^-63) and emu88 reported nothing, on all
+  // 336 bottom-of-range cases probed.  f80_sincos sets F80_PE exactly for a
+  // NORMAL or DENORMAL argument, which is the condition wanted; a NaN or an
+  // infinity has already returned by here with its own flags.
+  c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE | F80_PE));
   f80_ctx fc = f80_ctx_make(c.cw);
   *out = f80_div_p(s, co, fc, 64);
   f80_merge_final(c, fc);
+  f80_flag_tiny(c, *out);
   return true;
 }
 

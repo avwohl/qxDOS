@@ -714,9 +714,14 @@ static void oracle_boundaries() {
   //
   //    These are held exactly, unlike the values, because a flag is a flag.
   {
-    // FYL2X of a power of two is EXACT - log2(1.0) is 0 - and must raise
-    // nothing.  This is the one case where #P has to be suppressed, and the
-    // hard-coded #P these functions used to carry got it wrong.
+    // FYL2X of x == 1.0 is EXACT - log2(1) is 0 - and must raise nothing.
+    //
+    // This check was named "FYL2X of an exact power of two raises what the
+    // host raises (nothing)" and tested this one input.  The name was a false
+    // generalisation and T1 below is what disproved it: the host raises #P for
+    // EVERY power of two except 1.0, because y*log2(x) is a multiplication
+    // whose result is not generally representable.  Only x == 1.0 short-cuts
+    // to an exact zero.  Renamed to say what it tests.
     f80_ctx c = f80_ctx_make(0x037F);
     f80 g = f80_yl2x(f80_of(3.0L), f80_of(1.0L), c);
     volatile long double vy = 3.0L, vx = 1.0L;
@@ -727,7 +732,7 @@ static void oracle_boundaries() {
     (void)xr; setcw(0x037F);
     check((uint16_t)(c.flags & 0x3F) == (uint16_t)(hsw & 0x3F) &&
           f80_classify(g) == F80_CLASS_ZERO,
-          "FYL2X of an exact power of two raises what the host raises (nothing)");
+          "FYL2X of x == 1.0 raises what the host raises (nothing)");
 
     // And an overflowing one has to report #O, which no transcendental did.
     f80 big; big.sig = 0xFFFFFFFFFFFFFFFFULL; big.se = 0x7FFE;
@@ -758,6 +763,131 @@ static void oracle_boundaries() {
     for (int i = 1; i < 4; i++)
       if (sines[i].sig != sines[0].sig || sines[i].se != sines[0].se) all_same = false;
     check(!all_same, "FSIN answers to the guest's rounding-control field");
+
+    //---------------------------------------------------------------------
+    // 4b. #U at the bottom of the range, and C1.  The two counts todo.txt
+    //     carried as open until 2026-08-29.
+    //---------------------------------------------------------------------
+    // A LIVE CONTROL runs first, and it is not decoration: two probe bugs were
+    // found writing these, and this assertion catches both.  Reading FNSTSW
+    // after storing the result reports C1=0 for EVERYTHING, and reading C1 as
+    // "moved toward +infinity" rather than "grew in magnitude" makes every
+    // signed-result function score exactly chance.  FSQRT is specified for
+    // both, so if this check fails the probe is broken, not the core.
+    {
+      long double one = 1.0L, two = 2.0L, three = 3.0L, xr3;
+      uint16_t sw1, sw2, sw3;
+      setcw(0x037F); clex();
+      __asm__ volatile("fsqrt\n\tfnstsw %1" : "=t"(xr3), "=a"(sw1) : "0"(one));
+      setcw(0x037F); clex();
+      __asm__ volatile("fsqrt\n\tfnstsw %1" : "=t"(xr3), "=a"(sw2) : "0"(two));
+      setcw(0x037F); clex();
+      __asm__ volatile("fsqrt\n\tfnstsw %1" : "=t"(xr3), "=a"(sw3) : "0"(three));
+      setcw(0x037F); (void)xr3;
+      check((sw1 & 0x20) == 0 && (sw2 & 0x20) != 0 &&
+            ((sw2 ^ sw3) & 0x200) != 0,
+            "control: FSQRT raises #P only when inexact, and its C1 varies");
+    }
+
+    // T1.  The host raises #P for FYL2X of EVERY power of two except 1.0 -
+    // y*log2(x) is a multiplication and its result is not generally
+    // representable.  The check above tests the one exception; this tests the
+    // rule, and the two together are why that check had to be renamed.
+    {
+      int bad = 0, n = 0;
+      for (int k = -4; k <= 4; k++) {
+        if (k == 0) continue;
+        long double xv = 1.0L, yv = 3.0L, xr4;
+        for (int i = 0; i < (k < 0 ? -k : k); i++) xv = (k < 0) ? xv / 2 : xv * 2;
+        f80_ctx cc = f80_ctx_make(0x037F);
+        f80 gg = f80_yl2x(f80_of(yv), f80_of(xv), cc);
+        (void)gg;
+        uint16_t hs;
+        setcw(0x037F); clex();
+        __asm__ volatile("fyl2x\n\tfnstsw %1"
+                         : "=t"(xr4), "=a"(hs) : "0"(xv), "u"(yv) : "st(1)");
+        setcw(0x037F); (void)xr4;
+        n++;
+        if ((uint16_t)(cc.flags & 0x3F) != (uint16_t)(hs & 0x3F)) bad++;
+      }
+      std::snprintf(msg, sizeof msg,
+                    "FYL2X of a power of two OTHER than 1.0 reports #P, as the "
+                    "host does (%d cases)", n);
+      check(bad == 0, msg);
+    }
+
+    // T2.  The input the changelog named: 2^-16382, the smallest normal.
+    {
+      f80 tiny; tiny.sig = 0x8000000000000000ULL; tiny.se = 0x0001;
+      f80_ctx cc = f80_ctx_make(0x037F);
+      f80 gg = f80_2xm1(tiny, cc);
+      (void)gg;
+      check((cc.flags & 0x10) != 0 && (cc.flags & 0x20) != 0,
+            "F2XM1 of 2^-16382 reports #U|#P, as the host does");
+    }
+
+    // T3.  The same miss covers seven forms, not one.  Enumerated across the
+    // bottom of the exponent range rather than sampled.  FCOS is absent
+    // because the host raises no #U for it, and one FPATAN class is excluded
+    // by name in T3's comment below rather than quietly dropped.
+    {
+      int bad = 0, n = 0;
+      for (int e = 1; e <= 3; e++) {
+        for (int b = 0; b < 4; b++) {
+          f80 a; a.sig = 0x8000000000000000ULL | ((uint64_t)b << 60); a.se = (uint16_t)e;
+          long double av = ld_of(a), xr5;
+          uint16_t hs;
+          f80_ctx cc = f80_ctx_make(0x037F);
+          f80 gg = f80_2xm1(a, cc); (void)gg;
+          setcw(0x037F); clex();
+          __asm__ volatile("f2xm1\n\tfnstsw %1" : "=t"(xr5), "=a"(hs) : "0"(av));
+          setcw(0x037F); (void)xr5;
+          n++; if (((cc.flags >> 4) & 1) != ((hs >> 4) & 1)) bad++;
+
+          f80 gs; cc = f80_ctx_make(0x037F);
+          if (f80_sin(a, &gs, cc)) {
+            setcw(0x037F); clex();
+            __asm__ volatile("fsin\n\tfnstsw %1" : "=t"(xr5), "=a"(hs) : "0"(av));
+            setcw(0x037F);
+            n++; if (((cc.flags >> 4) & 1) != ((hs >> 4) & 1)) bad++;
+          }
+        }
+      }
+      std::snprintf(msg, sizeof msg,
+                    "the transcendentals report #U at the bottom of the exponent "
+                    "range (%d rows)", n);
+      check(bad == 0, msg);
+    }
+
+    // T4.  FPTAN never reported #P where its divide happens to be exact, which
+    // is everything with |x| <= 2^-63: the sine IS x and the cosine IS 1, so
+    // the divide is exact and FPTAN was the one entry point with no forced #P.
+    // Its #U could not be earned without this, because the #U rule is guarded
+    // on #P.
+    {
+      int bad = 0, n = 0;
+      for (int e = 0; e < 3; e++) {
+        f80 a; a.sig = 0x8000000000000000ULL; a.se = (uint16_t)(0x3FC0 - e);
+        f80 gt; f80_ctx cc = f80_ctx_make(0x037F);
+        if (f80_ptan(a, &gt, cc)) { n++; if ((cc.flags & 0x20) == 0) bad++; }
+      }
+      std::snprintf(msg, sizeof msg,
+                    "FPTAN reports #P even where its divide is exact (%d cases)", n);
+      check(bad == 0, msg);
+    }
+
+    // T5.  PASSES EITHER WAY, and is kept for that reason: it is the guard on
+    // the trap the previous transcendental commit recorded, where merging
+    // intermediate flags made F2XM1 of the smallest NORMAL report #D for an
+    // operand that was not denormal.  It proves nothing about the #U fix and
+    // is not counted among the checks that do.
+    {
+      f80 sn; sn.sig = 0x8000000000000000ULL; sn.se = 0x0001;
+      f80_ctx cc = f80_ctx_make(0x037F);
+      f80 gg = f80_2xm1(sn, cc); (void)gg;
+      check((cc.flags & 0x02) == 0,
+            "[passes either way] F2XM1 of the smallest NORMAL reports no #D");
+    }
   }
 
   // 5. The logarithm edge cases, where the shortcut returns get the answer

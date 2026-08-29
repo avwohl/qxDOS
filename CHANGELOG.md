@@ -302,6 +302,90 @@ and not for what comes after it.
 
 ### Fixed
 
+- **The two open transcendental counts, and a claim that was keeping one of
+  them open.** THE CORE MOVED and **VALUES MOVED WITH IT**: this changes
+  `emu88/emu88_f80.h`, which dosiz compiles, and it is not a flags-only change
+  — `FYL2X`, `FYL2XP1` and `FPATAN` return different bits for a large fraction
+  of their domain. Better bits, measured below, but different: a dosiz
+  developer's local build moves the moment the file is saved, and there is no
+  version, checksum or build stamp between the two products.
+
+  **Count 1, `#U` from an intermediate — fixed, and it was seven forms wide,
+  not one.** `todo.txt` and the previous entry scoped this to a single `F2XM1`
+  input. An enumerated sweep of the bottom of the exponent range found the same
+  miss in `F2XM1`, `FSIN`, `FPTAN`, `FSINCOS` (both outputs), `FYL2X`,
+  `FYL2XP1` and `FPATAN`. `FCOS` is clean only because the host raises no `#U`
+  for it.
+
+  **The mechanism recorded for it was also wrong, and the fix it implied would
+  not have worked.** The entry said the underflow "happens in an intermediate
+  multiply that has already been denormalised in a throwaway context", implying
+  the remedy was to forward that context's flags. Replayed: `f80_mul2(2^-16382,
+  F80_LN2_HI)` raises **nothing at all** — `F80_LN2_HI` ends in two zero bits,
+  so the single shift onto the denormal grid is exact. There was no flag to
+  forward. Tininess had been spent by the throwaway and the inexactness lived
+  in a flushed tail, so the condition had to be *reconstructed* rather than
+  propagated: `f80_flag_tiny` asks the delivered result instead, ORing `#U` when
+  the entry point has already recorded `#P` and the result has biased exponent
+  zero. It ORs `#U` and nothing else — adding `#D` is the trap the previous
+  entry recorded — and it is guarded on `#U` being masked, because with `#U`
+  unmasked `f80_round_pack` already owns the response and has biased the
+  exponent by +24576.
+
+  Two things fell out of it. `FPTAN` never reported `#P` at all where its
+  divide is exact — everything with |x| ≤ 2^-63, where the sine *is* x and the
+  cosine *is* 1 — which had to be fixed first, because the `#U` rule is guarded
+  on `#P`. And the committed claim that **`FYL2X` of a power of two raises
+  nothing is false**: the host raises `#P` for every power of two except
+  `x == 1.0`, and `x == 1.0` was the only input the check named after that claim
+  tested. The check is renamed to say what it tests.
+
+  **Count 2, `C1` — the recorded claim is false, and that was the finding.**
+  The previous entry said "`C1` ... its agreement with hardware is unchanged at
+  about chance". Re-measured against the host x87, that is wrong, and the
+  probable cause of the error is reproducible: **`FSTPT` clears `C1`**, so a
+  probe that reads `FNSTSW` after storing the result reports `C1 = 0` for
+  everything — including for `FSQRT`, which is specified to set it. Such a probe
+  yields 47.5–57.4% "agreement" for every function, which is "about chance"
+  exactly. A live `FSQRT`/`FRNDINT` control catches it, and the checks added
+  here carry one.
+
+  A second reading error compounds it: `C1` means "the result grew in
+  **magnitude**", not "moved toward +∞". Read the wrong way, every
+  signed-result function scores exactly 50% and `C1` looks underivable in
+  principle. `FRNDINT` over negative operands settles it — the host's `C1`
+  matches |result| > |operand| 100% of the time and result > operand 0%.
+
+  Measured properly, `C1` is derivable, and what decides it is whether the head
+  of the last operation is exact or a 64-bit-rounded irrational. `FCOS` adds its
+  correction to exactly 1.0 and was already at its ceiling. `FPATAN` added its
+  to a rounded π/2 whose own half-ulp error swamps the rounding direction — and
+  the tail constant it needed, `F80_PIO2_LO`, was already in the file, used only
+  by the argument reduction. Carrying the logarithm and arctangent endings in
+  double length fixes the value and the flag together (4,000 random inputs per
+  function, against the host x87 instruction, before → after):
+
+  | | value bit-identical | `C1` agrees |
+  |---|---|---|
+  | `FPATAN` | 80.3% → **94.1%** | 52.9% → **85.2%** |
+  | `FYL2X` | 73.0% → **93.0%** | 51.7% → **86.8%** |
+  | `FYL2XP1` | 66.3% → **78.0%** | 51.6% → **66.0%** |
+  | `F2XM1` | 89.3% (unchanged) | 78.7% (unchanged) |
+  | `FSIN` | 80.0% (unchanged) | 63.8% (unchanged) |
+  | `FCOS` | 95.8% (unchanged) | 93.7% (unchanged) |
+
+  `FPATAN`'s worst observed ulp drops from 2.0 to 1.0; no other recorded figure
+  moves. **`C1` is not closed** — a ceiling of 88–97% is set by how often the
+  host's own `C1` is architecturally correct, and `FSIN`/`FCOS`/`FPTAN` are
+  untouched by this change — but "about chance" was never true of it and is the
+  kind of claim that stops anyone looking.
+
+  `f80_unit` 60 checks to 66. Four of the six new ones fail against the previous
+  core; of the other two, one is the `FSQRT` probe control and one is the
+  labelled guard on the `#D` trap — neither is evidence and both say so.
+  `SingleStepTests` 1,758,402 and `test386` exact; `tests/check_dosiz.sh` 37/37
+  with no warnings.
+
 - **The machine stops denying it has a coprocessor.** THE CORE MOVED, but only
   just: `emu88/emu88.cc` (one CPUID feature bit) is the shared half; the rest is
   `emu88/dos_machine.cc` and `emu88/dos_dpmi.cc`, which dosiz does not compile.
@@ -1047,6 +1131,16 @@ and not for what comes after it.
   but its agreement with hardware is unchanged at about chance - it depends on
   which way *our* approximation rounds, and ours is a couple of ulp from the
   host's. Neither is claimed as fixed.
+
+  *(**Both sentences above are wrong** and are left standing rather than edited,
+  because the way they were wrong is the useful part. The `#U` mechanism is not
+  the intermediate multiply — that multiply raises nothing, so forwarding its
+  flags would have changed nothing — and the miss covers seven forms, not one.
+  And `C1` was never "about chance": that number came from a probe reading
+  `FNSTSW` after an `FSTPT`, which clears `C1`, so it reported `C1 = 0` for
+  everything including the `FSQRT` control. Both are corrected in the
+  2026-08-29 transcendental entry above. A wrong measurement that says a defect
+  is unfixable costs more than no measurement.)*
 
   Two things went wrong inside this change and are worth recording because both
   looked like progress. Moving the final rounding into the caller's context made

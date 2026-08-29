@@ -32,7 +32,9 @@ was fixed in a second, separate pass on the owner's instruction.  #MF delivery
 was the half neither pass covered, and it closed on 2026-08-28 in a third; the
 coprocessor-presence contradiction that pass uncovered closed on 2026-08-29 in
 a fourth.  Both entries are in CHANGELOG.md.  What is left of the x87 here is
-one item: the two transcendental counts.
+one item, and it is narrower than the two counts that closed on 2026-08-29:
+C1 for the three trig forms, which needs the argument reduction carried in
+double length.
 
 Eleven items, then.  The first is the live one - a submodule bump that is
 statically clean and has never been compiled - and it is first because it is the
@@ -42,8 +44,8 @@ here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
 need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
 a decision that is the owner's, which is the release tagging scheme.  Two are
-real work nobody has started: the two transcendental counts, and the half of
-the dosiz dependency that lives on their side.  The
+real work nobody has started: C1 for the trig forms, and the half of the dosiz
+dependency that lives on their side.  The
 last two were found on 2026-08-27 while measuring the rest and are left open for
 the same kind of reason: closing either is a decision about what the product
 does, not a cleanup.
@@ -194,17 +196,46 @@ INT 15h rather than the AT's INT 75h.  it is unreachable only because the sole
 producer is the Sound Blaster with a default irq of 5 and nothing validates a
 configured sb_irq; an sb_irq of 8 would set the video mode from the audio
 thread.  the coprocessor latch deliberately does not use that loop.
-  the transcendentals are the other half of the same entry, and it grew on
-2026-08-28.  they are accurate to a worst observed 4 ulp of a 64-bit
-significand (tests/f80_unit.cc prints a worst case per function and holds the
-set to a bound of 6; FSINCOS is not listed separately because it is the same
-code path as FSIN and FCOS), which
-is about what an 80387 delivers and some 500x better than the host-double
-implementation they replaced, but they
-are not correctly rounded and neither suite pretends they are.  a spot check
-against an exact reference showed part of the remaining difference is glibc's
-rather than ours, so the number is an upper bound on our error, not a
-measurement of it.
+  the transcendentals were the other half of the same entry and closed on
+2026-08-29, the owner having asked for it.  what closed and what did not is in
+CHANGELOG.md; what belongs here is the shape of the mistake, because both
+counts were recorded WRONG and one of the records was keeping the work shut.
+  the #U count was written as one F2XM1 input with a stated cause - an
+intermediate multiply that had already denormalised - and both halves were
+wrong.  it is seven forms, and that multiply raises nothing at all, so the fix
+the sentence implied would have changed nothing.  the condition had to be
+reconstructed from the delivered result rather than forwarded.
+  the C1 count said its agreement with hardware was "about chance".  it was
+not, and the number that said so is reproducible from a broken probe: FSTPT
+CLEARS C1, so reading FNSTSW after storing the result reports C1=0 for
+everything - including for FSQRT, which is specified to set it.  a probe with
+that bug scores 47.5-57.4% on every function, which is "about chance" exactly.
+anything measuring C1 needs a live FSQRT or FRNDINT control, and needs to read
+C1 as "grew in MAGNITUDE" rather than "moved toward +infinity" - under the
+wrong reading every signed-result function scores 50% and C1 looks underivable
+in principle.
+  WHAT IS STILL OPEN, and is the one x87 item left: C1 is much better than it
+was for FYL2X, FYL2XP1 and FPATAN and is untouched for FSIN, FCOS and FPTAN,
+which sit at 63.8%, 93.7% and lower against a ceiling of 88-97% set by how
+often the host's OWN C1 is architecturally correct.  closing that needs the
+same double-length treatment the logarithms just got, applied to the trig
+argument reduction, and it is a bigger job than the one done here because the
+reduction is where the accuracy goes.  one #U input also remains - FPATAN of a
+value that rounds UP onto the smallest normal, where hardware calls it tiny on
+the unbounded exponent range and this does not - and closing it needs the
+unrounded value to reach the final rounding in all eight, which is a rewrite
+rather than a flag change.
+  the accuracy figures themselves are NOT stable measurements and should not
+be quoted as if they were: they move with the harness scale, and three of the
+eight are dominated by the ORACLE's error rather than ours, because
+oracle_transcendental grades against glibc's long-double libm and not against
+the host x87 instruction.  tests/README.md section 4b now says which oracle is
+which; before 2026-08-29 it did not.  tests/README.md's own opening still
+described the whole harness as testing "against the host's own x87", which is
+true of its arithmetic and its flags and not of its transcendentals, and is
+qualified there now.  (CLAUDE.md does NOT make that claim - it says only that
+f80_unit grades the FPU's arithmetic - and an earlier draft of this entry said
+it did, which would have sent the next reader to fix a file that was right.)
 
 - the seventeen x87 defects a differential hunt found on 2026-08-28 are all
 fixed, and this entry is what is left of that list: nothing.  It is kept, empty,
@@ -224,10 +255,12 @@ from re-verification with the REPORT corrected rather than merely confirmed: the
 two unmasked-exception entries were one change and not two, the fix originally
 proposed for them was wrong as stated, and the FPREM entry had defined its own
 case backwards (it described an unnormal, which emu88 already handled).
-  What is NOT closed, and is above this entry rather than here: the two
-transcendental counts that need more than a final-rounding change.  #MF
-delivery was on this list and closed on 2026-08-28; the equipment-word
-contradiction was on it too and closed on 2026-08-29.
+  What is NOT closed, and is above this entry rather than here: C1 for the
+three trig forms.  Three things were on this list and are off it - #MF delivery
+on 2026-08-28, the equipment-word contradiction and both transcendental counts
+on 2026-08-29 - and the last of those closed only after the record of it was
+found to be wrong in both halves, which is the same lesson this entry is kept
+for.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808

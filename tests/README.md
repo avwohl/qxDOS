@@ -9,7 +9,9 @@ One of those is different in kind from the rest and worth knowing about before
 you read further. `f80_unit` does not test emu88 against a table of expected
 values; it tests emu88's floating point against **the host's own x87**, because
 on x86-64 `long double` is the same 80-bit format with the same control word.
-See section 4b.
+See section 4b — including which parts of it use that oracle and which use
+glibc's libm instead, which is not the same thing and was not distinguished
+here until 2026-08-29.
 
 ## Setup
 
@@ -270,6 +272,19 @@ regression shows up as a number changing rather than as a check still passing.
 difficulty — sits at 2. A spot check against an exact reference found some of
 that remaining difference is glibc's rather than this file's, so the figure is
 an upper bound on our error and not a measurement of it.
+
+**Which oracle, and it is not the same one throughout.** This section opens by
+saying the host x87 is driven as an oracle, and for the arithmetic and the flag
+checks that is exactly what happens. `oracle_transcendental` is the exception:
+it grades the eight against **glibc's long-double libm**, not against the host's
+`F2XM1`/`FSIN`/`FPATAN` instructions. The distinction is not pedantic. glibc's
+`atan2l` *is* the `FPATAN` instruction, so for that one the two oracles are the
+same thing; its `expm1l` wraps `F2XM1` in further long-double arithmetic and is
+measurably worse than the raw instruction, so part of the recorded `F2XM1`
+figure is the oracle's error and not this file's. Above |x| ≈ 8 the two oracles
+do not merely differ in tightness for `FSIN`/`FCOS`/`FPTAN` — they disagree
+about which answer is correct. Any figure quoted from this harness has to say
+which oracle it means, and any trig figure has to carry its argument range.
 
 **What the oracle found**, none of which is in the manual in these words and
 every one of which was a real defect when it was found:
