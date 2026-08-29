@@ -189,6 +189,28 @@ public:
   void fpu_power_on();
   void execute_fpu(emu88_uint8 opcode);
 
+  // ---- x87 exception DELIVERY -------------------------------------------
+  // An unmasked x87 exception is not reported by the instruction that raises
+  // it.  It is latched in the status word and reported by the NEXT waiting
+  // x87 instruction, or by WAIT.  SW.ES is that pending condition - it is not
+  // a separate flag but the OR of the currently-unmasked exception bits,
+  // recomputed at the end of every x87 instruction (see the commit tail of
+  // execute_fpu), so whatever clears or masks the flags also clears this.
+  bool fpu_error_pending() const { return (fpu.sw & 0x0080) != 0; }  // SW.ES
+
+  // The 387's ERROR# pin, which is the 486's FERR#.  Called by a waiting x87
+  // instruction and by WAIT when fpu_error_pending() is true, BEFORE the
+  // instruction does anything of its own.  Return true if the instruction was
+  // aborted - i.e. an exception or an interrupt was dispatched and the caller
+  // must not execute.  Return false to let it run, which is what a machine
+  // with nothing attached to ERROR# does.
+  //
+  // This is virtual because the answer is a property of the BOARD, not of the
+  // CPU: an AT routes ERROR# to a latch on IRQ13 and never lets the CPU see
+  // exception 16, precisely because vector 16 is INT 10h in real mode and
+  // that is the video BIOS.  dos_machine overrides this to model that.
+  virtual bool fpu_signal_error();
+
   // FPU memory access helpers
   // quiet_snan is false when the value is an arithmetic OPERAND rather than a
   // plain load - see f80_from_ieee in emu88_f80.h for why the order matters.
@@ -215,7 +237,11 @@ public:
   // Interrupt support
   virtual void do_interrupt(emu88_uint8 vector);
   void request_int(emu88_uint8 vector);
-  bool check_interrupts(void);
+  // Virtual because dos_machine services the coprocessor-error line here.
+  // It has to be here rather than in a run loop: dos_dpmi's two nested
+  // real-mode execute loops call check_interrupts() and never run run_batch,
+  // so a delivery arranged only there would never happen for them.
+  virtual bool check_interrupts(void);
   virtual void halt_cpu(void);
   virtual void unimplemented_opcode(emu88_uint8 opcode);
 

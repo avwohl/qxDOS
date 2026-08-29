@@ -75,9 +75,14 @@
 // other: this one owns the decode, the stack and the status word, that one
 // owns the numbers.
 //
-// Also still absent, and deliberately: unmasked exceptions.  There is no #MF
-// delivery and no FERR path in emu88 at all, so an unmasked exception latches
-// ES and B and is visible to a program that polls FNSTSW, and to nothing else.
+// Unmasked exceptions used to be absent from this file, because they were
+// absent from emu88.  They are here now: section 17b covers ES and B as a
+// RECOMPUTED function of the status and control words rather than a latch, and
+// section 19b covers #MF delivery - the deferral to the next waiting
+// instruction, the ten no-wait encodings, and the priority against an operand
+// fault.  What this file still cannot reach is the AT's IRQ13 route, because
+// that lives in dos_machine and this harness builds a bare emu88;
+// tests/bios_test.cc drives that end to end.
 //
 // Exit code is non-zero if any check()/diverge() fails, or if the number of
 // known bugs still present is not exactly KNOWN_BUGS_EXPECTED.
@@ -2082,6 +2087,65 @@ int main() {
   }
 
   //=========================================================================
+  // 17b. ES and B are a FUNCTION of the other two words, not a latch
+  //=========================================================================
+  // ES is the OR of the exception flags that are currently unmasked, and B
+  // follows it on a 387.  So an instruction that raises nothing at all can
+  // still change ES, in either direction, purely by moving SW or CW - and
+  // three of them do: FLDCW, FLDENV and FRSTOR load one or both words, and
+  // FNSTENV masks all six after storing.
+  //
+  // Every expected value below was measured on the host x87 before it was
+  // written here, and the whole block was run against the unfixed core first:
+  // it failed five of these nine, which is the only reason they are worth
+  // having.  The four that passed unfixed are kept deliberately - the old
+  // code could set ES and never clear it, so the SETTING direction was
+  // already right and a test set that only covered it would have proved
+  // nothing.
+  {
+    const uint16_t ENVB = 0x0500, CWSLOT = 0x0110;
+
+    // Setting direction: a masked #Z leaves ES clear, and an FLDCW that
+    // unmasks ZM makes ES appear with no arithmetic in between.
+    FNINIT();
+    wr16(CWSLOT, 0x037F); opm(0xD9, 5, CWSLOT);      // all masked
+    push(1.0); push(0.0); opr(0xDE, 0xF9);           // FLD1; FLDZ; FDIVP -> #Z
+    check(sw() == 0x3804, "a MASKED #Z leaves SW=3804 - ZE set, ES clear");
+    wr16(CWSLOT, 0x037B); opm(0xD9, 5, CWSLOT);      // unmask ZM only
+    check(sw() == 0xB884, "FLDCW unmasking ZM raises ES and B out of nothing");
+
+    // Clearing direction.  FNSTENV stores the environment and THEN masks all
+    // six, so the live word must come back with ES clear while ZE stays set -
+    // and the image it wrote keeps the pre-mask ES.
+    opm(0xD9, 6, ENVB);
+    check(sw() == 0x3804, "FNSTENV masks all six, so live ES clears; ZE stays");
+    check(rd16(ENVB + 2) == 0xB884, "...while the STORED image keeps ES set");
+
+    // FLDENV: the ES arriving in the image is discarded and recomputed from
+    // the loaded flags against the loaded mask.  The first four cases are the
+    // ones the unfixed core got wrong - it stored the loaded word verbatim.
+    struct EnvCase { uint16_t sw_in, cw_in, sw_out; const char *what; };
+    static const EnvCase envc[] = {
+      { 0xB880, 0x037F, 0x3800, "ES set in the image but no flag set: cleared" },
+      { 0xB884, 0x037F, 0x3804, "ES set, ZE set, ZM masked: cleared" },
+      { 0x3884, 0x037F, 0x3804, "ES clear, ZE set, ZM masked: stays clear" },
+      { 0xB800, 0x037F, 0x3800, "ES set alone with everything masked: cleared" },
+      { 0x3804, 0x037B, 0xB884, "ES clear in the image but ZM unmasked: SET" },
+    };
+    for (const EnvCase &e : envc) {
+      FNINIT();
+      for (int i = 0; i < 14; i++) wr8((uint16_t)(ENVB + i), 0);
+      wr16(ENVB + 0, e.cw_in); wr16(ENVB + 2, e.sw_in); wr16(ENVB + 4, 0xFFFF);
+      opm(0xD9, 4, ENVB);                             // FLDENV
+      char msg[96];
+      std::snprintf(msg, sizeof msg, "FLDENV sw=%04X cw=%04X -> %04X: %s",
+                    e.sw_in, e.cw_in, e.sw_out, e.what);
+      check(sw() == e.sw_out, msg);
+    }
+    FNINIT();
+  }
+
+  //=========================================================================
   // 18. FBLD / FBSTP (packed BCD)
   //=========================================================================
   {
@@ -2127,6 +2191,153 @@ int main() {
     run({0xD9, 0xE8});
     check(!cpu->exception_pending && st(0) == 1.0,
           "with CR0.EM and CR0.TS clear the same FLD1 executes");
+  }
+
+  //=========================================================================
+  // 19b. #MF: an unmasked exception is DELIVERED, and not by the instruction
+  //      that raised it
+  //=========================================================================
+  // Everything asserted here was measured on the host x87 first (deferred
+  // delivery, the ten no-wait encodings, #MF beating an operand fault, FIP
+  // pointing at the raising instruction).
+  //
+  // Run against the core BEFORE delivery existed, this block failed 6 of its
+  // 23 checks, and the other 17 passed VACUOUSLY - they assert that some
+  // encoding does NOT report, which is trivially true of a core that never
+  // reports anything.  That is worth writing down rather than quoting "23
+  // checks" and moving on: a no-wait assertion here is evidence only in a
+  // build where the waiting assertions next to it fail without the fix.  The
+  // six that discriminate are the two reporting points (a waiting escape and
+  // FWAIT), the two encodings the naive no-wait table gets wrong (D9 F8 and
+  // FNOP), the operand-fault priority, and the fault's no-side-effects rule.
+  //
+  // The vector is checked rather than assumed: real-mode do_interrupt loads
+  // CS:IP from the IVT, so a distinctive IVT entry per vector says which one
+  // was taken.  That matters more here than anywhere else in this file,
+  // because #MF is vector 16 == INT 10h and the wrong answer is a plausible
+  // one.
+  {
+    const uint16_t CWSLOT = 0x0120;
+    const uint16_t MF_SEG = 0x7A00, MF_OFF = 0x00F0;   // IVT[16]
+    const uint16_t GP_SEG = 0x7B00, GP_OFF = 0x00E0;   // IVT[13]
+    auto set_ivt = [&](uint8_t vec, uint16_t seg, uint16_t off) {
+      mem->store_mem16(vec * 4 + 0, off);
+      mem->store_mem16(vec * 4 + 2, seg);
+    };
+    auto took = [&](uint16_t seg, uint16_t off) {
+      return cpu->sregs[emu88::seg_CS] == seg && cpu->ip == off;
+    };
+    // Raise an unmasked #Z.  1.0/0.0 with ZM clear.
+    auto arm = [&]() {
+      setup(); FNINIT();
+      set_ivt(16, MF_SEG, MF_OFF);
+      set_ivt(13, GP_SEG, GP_OFF);
+      cpu->cr0 |= emu88::CR0_NE;
+      wr16(CWSLOT, 0x037B); opm(0xD9, 5, CWSLOT);      // unmask ZM only
+      push(1.0); push(0.0); opr(0xDE, 0xF9);           // FDIVP -> #Z
+    };
+
+    arm();
+    check(!cpu->exception_pending,
+          "#MF: the instruction that RAISES an unmasked exception does not trap");
+    check((sw() & 0x0080) != 0, "...it latches ES instead");
+    uint32_t raiser_fip = cpu->fpu.fip;
+    int top_before = ftop();
+
+    // The next waiting instruction reports it.
+    run({0xD9, 0xE8});                                 // FLD1
+    check(cpu->exception_pending && took(MF_SEG, MF_OFF),
+          "#MF: the NEXT waiting instruction takes vector 16");
+    check(cpu->fpu.fip == raiser_fip,
+          "#MF: FIP still points at the instruction that raised, not the reporter");
+    // #MF is a FAULT: the reporting instruction has not run, so the stack it
+    // would have pushed onto is untouched and IRET re-executes it.
+    check(ftop() == top_before && cpu->fpu.tags[(top_before + 7) & 7] == TAG_EMPTY,
+          "#MF: the reporting FLD1 pushed nothing");
+
+    // WAIT is the other reporting point, and the one that makes every 9B-
+    // prefixed control instruction (FSTSW, FCLEX, FSTENV...) behave.
+    arm();
+    run({0x9B});
+    check(cpu->exception_pending && took(MF_SEG, MF_OFF),
+          "#MF: FWAIT (9B) reports a pending exception");
+
+    // The ten no-wait encodings must NOT report.  This is the exemption that
+    // lets a handler look at the FPU without re-entering itself.
+    struct NW { uint8_t esc, modrm; const char *name; };
+    static const NW nowait[] = {
+      { 0xDF, 0xE0, "FNSTSW AX  DF E0" }, { 0xDB, 0xE0, "FNENI      DB E0" },
+      { 0xDB, 0xE1, "FNDISI     DB E1" }, { 0xDB, 0xE2, "FNCLEX     DB E2" },
+      { 0xDB, 0xE3, "FNINIT     DB E3" }, { 0xDB, 0xE4, "FNSETPM    DB E4" },
+    };
+    for (const NW &n : nowait) {
+      arm();
+      opr(n.esc, n.modrm);
+      char msg[96];
+      std::snprintf(msg, sizeof msg, "#MF: %s is no-wait and does not report", n.name);
+      check(!cpu->exception_pending, msg);
+    }
+    // The four memory-form no-wait encodings, D9 /6 /7 and DD /6 /7.
+    static const NW nowaitm[] = {
+      { 0xD9, 6, "FNSTENV  D9 /6" }, { 0xD9, 7, "FNSTCW   D9 /7" },
+      { 0xDD, 6, "FNSAVE   DD /6" }, { 0xDD, 7, "FNSTSW m DD /7" },
+    };
+    for (const NW &n : nowaitm) {
+      arm();
+      opm(n.esc, n.modrm, 0x0600);
+      char msg[96];
+      std::snprintf(msg, sizeof msg, "#MF: %s is no-wait and does not report", n.name);
+      check(!cpu->exception_pending, msg);
+    }
+
+    // ...and the mod==3 forms that SHARE those reg fields are arithmetic, so
+    // they do report.  This is the pair the naive table gets wrong.
+    arm();
+    opr(0xD9, 0xF8);                                   // FPREM, i.e. D9 /7 mod==3
+    check(cpu->exception_pending && took(MF_SEG, MF_OFF),
+          "#MF: D9 F8 (FPREM) shares /7 with FNSTCW but is WAITING");
+    arm();
+    opr(0xD9, 0xD0);                                   // FNOP
+    check(cpu->exception_pending && took(MF_SEG, MF_OFF),
+          "#MF: FNOP is WAITING despite the mnemonic");
+
+    // Clearing the condition stops the reporting, by either documented route.
+    arm();
+    opr(0xDB, 0xE2);                                   // FNCLEX
+    run({0xD9, 0xE8});                                 // FLD1
+    check(!cpu->exception_pending && st(0) == 1.0,
+          "#MF: FNCLEX clears ES, so the next waiting instruction runs");
+    arm();
+    opm(0xD9, 6, 0x0600);                              // FNSTENV masks all six
+    run({0xD9, 0xE8});
+    check(!cpu->exception_pending && st(0) == 1.0,
+          "#MF: FNSTENV masks all six, so the next waiting instruction runs");
+
+    // Priority: a pending exception outranks this instruction's own operand
+    // fault.  FADD m32 at 0xFFFE crosses the real-mode segment limit, which
+    // on its own is a #GP - with #Z pending it must report 16, not 13.
+    arm();
+    opm(0xD8, 0, 0xFFFE);
+    check(cpu->exception_pending && took(MF_SEG, MF_OFF),
+          "#MF: a pending exception outranks the reporting instruction's operand fault");
+    setup(); FNINIT();
+    set_ivt(13, GP_SEG, GP_OFF);
+    opm(0xD8, 0, 0xFFFE);
+    check(cpu->exception_pending && took(GP_SEG, GP_OFF),
+          "...and with nothing pending the same operand fault is taken");
+
+    // With CR0.NE clear there is nothing attached to ERROR# on a bare core,
+    // so the instruction runs.  This is what dosiz and any non-PC embedder
+    // see, and it is why dos_machine overrides fpu_signal_error.
+    setup(); FNINIT();
+    set_ivt(16, MF_SEG, MF_OFF);
+    cpu->cr0 &= ~(uint32_t)emu88::CR0_NE;
+    wr16(CWSLOT, 0x037B); opm(0xD9, 5, CWSLOT);
+    push(1.0); push(0.0); opr(0xDE, 0xF9);
+    run({0xD9, 0xE8});
+    check(!cpu->exception_pending,
+          "#MF: with CR0.NE clear the bare core reports nowhere and runs on");
+    setup();
   }
 
   //=========================================================================

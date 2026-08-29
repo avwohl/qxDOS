@@ -476,8 +476,22 @@ bool dos_machine::intercept_pm_int(emu88_uint8 vector, bool is_software_int,
     return true;
   }
 
-  // No exception handler installed — terminate for CPU faults, reflect for others
-  dpmi_reflect_to_rm(vector);
+  // No exception handler installed.  The comment here used to say "terminate
+  // for CPU faults, reflect for others" and then reflect unconditionally.
+  // DPMI 0.9 4.5 splits them: exceptions 0-5 and 7 are reflected as real-mode
+  // interrupts, and the default for 6 and 8-1Fh is to TERMINATE the client.
+  //
+  // Reflecting the rest is not a harmless approximation, because the real-mode
+  // vector a reserved exception number reflects to is not a handler for it.
+  // #MF is the sharpest case: vector 16 reflected to real mode is INT 10h, so
+  // a numeric exception in a DPMI client with no handler installed would call
+  // the VIDEO BIOS with whatever happened to be in AH.  Measured on this
+  // machine: it changes the display mode.
+  if (vector <= 5 || vector == 7) {
+    dpmi_reflect_to_rm(vector);
+  } else {
+    dpmi_terminate(0xFF);
+  }
   return true;
 }
 

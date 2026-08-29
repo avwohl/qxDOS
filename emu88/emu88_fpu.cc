@@ -105,6 +105,52 @@ void emu88::fpu_power_on() {
 }
 
 //=============================================================================
+// x87 exception delivery
+//=============================================================================
+
+// The ten no-wait encodings.  A waiting x87 instruction reports a pending
+// unmasked exception BEFORE executing; these ten do not, and that exemption is
+// the only reason an exception handler can read the status word, save the
+// environment and clear the error without re-entering itself.
+//
+// The mod!=3 qualifier on D9 and DD is load-bearing and is the classic way to
+// get this table wrong: D9 /6 and D9 /7 with mod==3 are D9 F0-FF (F2XM1,
+// FYL2X, FPTAN, FPATAN, FXTRACT, FPREM1, FDECSTP, FINCSTP, FPREM, FYL2XP1,
+// FSQRT, FSINCOS, FRNDINT, FSCALE, FSIN, FCOS) and DD with mod==3 is
+// FFREE/FST/FSTP ST(i) - every one of them WAITING.
+//
+// FNOP (D9 D0) is the other trap in this table: despite the mnemonic it is a
+// waiting instruction.  Verified on the host x87 with a pending unmasked #Z -
+// FNOP, FXCH, FFREE, FDECSTP and FLDCW all trapped, and all ten encodings
+// below did not.
+static inline bool fpu_is_nowait(uint8_t opcode, uint8_t modrm) {
+  bool is_mem = (modrm & 0xC0) != 0xC0;
+  uint8_t reg = (uint8_t)((modrm >> 3) & 7);
+  switch (opcode) {
+    case 0xD9: return is_mem && reg >= 6;               // FNSTENV, FNSTCW
+    case 0xDD: return is_mem && reg >= 6;               // FNSAVE, FNSTSW m16
+    case 0xDB: return modrm >= 0xE0 && modrm <= 0xE4;   // FNENI/FNDISI/FNCLEX/
+                                                        // FNINIT/FNSETPM
+    case 0xDF: return modrm == 0xE0;                    // FNSTSW AX
+    default:   return false;
+  }
+}
+
+// The default board: ERROR# goes to the CPU, which is what a bare 386+387
+// does and what the 486 does with CR0.NE set.  A PC does NOT wire it this way
+// - see dos_machine's override - because vector 16 is INT 10h in real mode.
+//
+// With NE clear and nothing attached to the pin there is nowhere to report,
+// so the instruction is allowed to run.  Real hardware in that state stops
+// executing and waits for an interrupt that never arrives; hanging the
+// emulator instead of running the instruction would be a faithful model of a
+// machine nobody built, so this deliberately diverges and keeps going.
+bool emu88::fpu_signal_error() {
+  if (cr0 & CR0_NE) { raise_exception_no_error(16); return true; }
+  return false;
+}
+
+//=============================================================================
 // Register access, with the stack faults hardware raises
 //=============================================================================
 
@@ -431,6 +477,31 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
   if (fault_abort()) return;              // the modrm byte's own fetch faulted
   modrm_result mr = decode_modrm(modrm_byte);
   if (fault_abort()) return;              // the address computation faulted
+
+  // An exception a PREVIOUS x87 instruction raised is reported HERE, before
+  // this one does anything.  The order matters in both directions and both
+  // were measured on the host:
+  //
+  //   - it is AFTER the modrm and displacement have been fetched, so a code
+  //     fault on the instruction's own bytes still wins, and after the #NM
+  //     test the escape dispatch already did;
+  //   - it is BEFORE any operand memory is touched.  With an unmasked #Z
+  //     pending, FADD [unmapped page] reports the pending exception, not the
+  //     page fault - so this cannot move below the switch.
+  //
+  // The check cannot live in the escape dispatch in emu88.cc either: the ten
+  // no-wait encodings are identified by opcode AND modrm, and modrm has not
+  // been fetched there.  Moved there, with this gate otherwise unchanged, it
+  // fails 12 of fpu_test's 659 checks - every no-wait encoding in section 19b
+  // reports, starting with FNSTSW AX - because the dispatch site cannot tell
+  // them apart.
+  //
+  // FIP/FCS/FOP/FDP are written in the commit tail, so returning from here
+  // leaves them pointing at the instruction that actually raised - which is
+  // the only place a handler can learn where the error came from.
+  if (fpu_error_pending() && !fpu_is_nowait(opcode, modrm_byte)) {
+    if (fpu_signal_error()) return;
+  }
 
   uint8_t esc = opcode - 0xD8;  // 0-7
   uint8_t reg = (modrm_byte >> 3) & 7;
@@ -1065,11 +1136,28 @@ void emu88::execute_fpu(emu88_uint8 opcode) {
     fpu.sw |= f;
   }
 
-  // ES latches when a raised exception is NOT masked, and B follows ES on a
-  // 387.  Neither was ever set before.  Note what this still does not do:
-  // there is no #MF delivery and no FERR pin here, so an unmasked exception
-  // is visible to a program that polls FNSTSW and to nothing else.
+  // ES is NOT a latch.  It is a function of the other two words - the OR of
+  // the exception flags that are currently unmasked - and B follows it on a
+  // 387.  This line used to only ever SET them, which is wrong in both
+  // directions and was wrong for instructions that raise nothing at all:
+  //
+  //   - FLDCW that MASKS a flag that is already set must clear ES.  The old
+  //     code left it standing, so a guest polling FNSTSW saw an exception
+  //     pending that the control word said was masked.
+  //   - FLDENV and FRSTOR load a status word from memory.  ES arrives in that
+  //     image and is NOT honoured: the 387 discards the loaded bit and
+  //     recomputes.  fpu_load_env stores it verbatim, so without this the
+  //     emulator believed whatever the image said.
+  //   - FNSTENV masks all six AFTER storing, so the stored image keeps ES=1
+  //     while the live word must come back with ES=0 and the exception flag
+  //     itself still set.
+  //
+  // Measured on the host, which is the only reason the direction is known:
+  // a MASKED #Z leaves SW=0x3804 (ES=0), and an FLDCW that unmasks ZM with no
+  // arithmetic in between makes the very next FNSTSW read 0xB884 - ES and B
+  // both set, out of nothing but the control word changing.
   if ((fpu.sw & SW_EXC) & (uint16_t)~(fpu.cw & 0x003F)) fpu.sw |= SW_ES | SW_B;
+  else fpu.sw &= (uint16_t)~(SW_ES | SW_B);
 
   #undef RD
   #undef WR

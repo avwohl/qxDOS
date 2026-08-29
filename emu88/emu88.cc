@@ -3053,7 +3053,15 @@ void emu88::execute(void) {
       raise_exception_no_error(7);
       break;
     }
-    break;  // no FPU, just continue
+    // WAIT's entire remaining job is to report an exception a PREVIOUS x87
+    // instruction raised.  This used to be `break; // no FPU, just continue`,
+    // which is why an unmasked exception was visible to FNSTSW and to nothing
+    // else.  9B is a whole instruction rather than a prefix, so every waiting
+    // form of a control instruction - FSTSW, FCLEX, FINIT, FSTENV, FSAVE,
+    // FSTCW - is 9B followed by the no-wait encoding, and all of them are
+    // reported here rather than by the escape that follows.
+    if (fpu_error_pending()) fpu_signal_error();
+    break;
 
   //--- PUSHF / PUSHFD ---
   case 0x9C:
@@ -4679,8 +4687,14 @@ void emu88::execute(void) {
       case 6: // LMSW: load CR0 low 16 bits (PE bit can be set but not cleared)
         {
           emu88_uint16 val = mr.is_register ? regs[mr.rm_field] : get_rm16(mr);
-          // PE bit can be set but not cleared via LMSW
-          emu88_uint32 new_cr0 = (cr0 & 0xFFFF0000) | val;
+          // LMSW writes only PE, MP, EM and TS.  This used to write all
+          // sixteen low bits, which was invisible while CR0 bits 4 and 5 were
+          // declared and never read: it could set ET, and it could set NE and
+          // thereby flip the x87 from the AT's IRQ13 route to native #MF - a
+          // machine-wide behaviour change out of an instruction that on real
+          // hardware cannot reach that bit at all.
+          emu88_uint32 keep = cr0 & ~(emu88_uint32)(CR0_PE | CR0_MP | CR0_EM | CR0_TS);
+          emu88_uint32 new_cr0 = keep | (val & (CR0_PE | CR0_MP | CR0_EM | CR0_TS));
           if (cr0 & CR0_PE) new_cr0 |= CR0_PE;  // can't clear PE via LMSW
           cr0 = new_cr0;
         }

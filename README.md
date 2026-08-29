@@ -57,15 +57,16 @@ counts, or a 486/Pentium CPU. It is no longer the default.
 
 Named here rather than left to be discovered.
 
-- **The x87 does not deliver unmasked exceptions.** The register file is
-  80-bit extended now (`f80 regs[8]`, a soft float in `emu88/emu88_f80.h`), and
+- **The x87's transcendentals are not correctly rounded.** The register file is
+  80-bit extended (`f80 regs[8]`, a soft float in `emu88/emu88_f80.h`), and
   `tests/f80_unit.cc` grades its arithmetic against the host's own x87 bit for
-  bit, flags included. What is still missing is delivery: there is no `#MF`
-  and no FERR path anywhere in emu88, so an exception that a program *unmasks*
-  latches ES and B in the status word and is visible to `FNSTSW` polling, and
-  to nothing else. The eight transcendentals are also not correctly rounded —
-  no 387 rounds them either — and `tests/f80_unit.cc` holds them to a measured
-  ulp bound instead.
+  bit, flags included. The eight transcendentals are the exception: no 387
+  rounds them correctly either, and `tests/f80_unit.cc` holds them to a
+  measured ulp bound instead. *(Delivery of unmasked exceptions was listed here
+  as missing until 2026-08-28 and is not any more — see the `#MF` entry in
+  [`CHANGELOG.md`](CHANGELOG.md). What is still true is narrower and is in
+  `todo.txt`: the BIOS equipment word tells guests there is no coprocessor at
+  all, so the software most likely to unmask an exception never looks.)*
 - **Defects are recorded before they are fixed, and held at a baseline rather
   than hidden.** A harness that finds one asserts the architecturally correct
   answer and fails on purpose until somebody fixes it; fixing it then fails the

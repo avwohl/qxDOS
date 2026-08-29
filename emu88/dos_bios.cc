@@ -628,6 +628,35 @@ void dos_machine::bios_int12h() {
 }
 
 //=============================================================================
+// INT 75h - IRQ13, coprocessor error
+//=============================================================================
+
+// Not a BIOS service but the AT's coprocessor-error latch, run when the
+// interrupt is TAKEN rather than from the interrupt's own handler.  IBM's
+// handler is four instructions:
+//
+//   OUT 0F0h, AL     clear the IRQ13 latch, and clock IGNNE# active
+//   OUT 0A0h, 20h    EOI to the slave PIC   -> this machine has no slave
+//   OUT 020h, 20h    EOI to the master      -> this 8259 discards EOI anyway
+//   INT 02h          chain to the NMI vector
+//
+// The last is the whole point - Borland's runtimes, Watcom's and DOS/4GW's all
+// put their floating-point handler on vector 02h, which is why DOS software
+// never hooks 75h - and it is ROM code at INT75_ENTRY_OFF rather than anything
+// here, because a BIOS trap stub cannot chain onward: unimplemented_opcode
+// emulates the stub's IRET unconditionally and would pop the frame straight
+// back off.  What is left for this function is the first line.
+//
+// IGNNE# is why a machine with nothing on INT 02h does not wedge.  The default
+// IVT points vector 2 at an IRET stub that clears nothing, so the reporting
+// instruction would fault, report, return and fault again forever.  Asserting
+// IGNNE# on delivery is what hardware does and makes that case run on.
+void dos_machine::bios_int75h() {
+  ferr_latched = false;
+  ferr_ignore  = true;
+}
+
+//=============================================================================
 // INT 13h - Disk Services
 //=============================================================================
 

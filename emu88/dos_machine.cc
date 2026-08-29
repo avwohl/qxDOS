@@ -302,6 +302,30 @@ void dos_machine::init_ivt() {
     mem->store_mem16(ivt_addr + 2, 0xF000);
   }
 
+  // INT 75h - IRQ13, the coprocessor error - is REAL CODE rather than a BIOS
+  // trap stub, and the difference matters.  A trap stub is `F1 <vec> CF`, and
+  // unimplemented_opcode unconditionally emulates that IRET after running the
+  // handler - so a handler that tried to chain onward with do_interrupt(02h)
+  // would have the frame it just pushed popped straight back off, and the
+  // INT 02h handler would never run.  Under DPMI it is worse: the reflection
+  // path calls dispatch_bios and then restores CS:IP wholesale, discarding
+  // anything the handler set.
+  //
+  // Two plain instructions avoid all of it, because they go through the
+  // ordinary interrupt machinery the way the real BIOS's own code does:
+  //   CD 02   INT 02h   - the NMI vector, where DOS floating-point handlers
+  //                       live (Borland, Watcom, DOS/4GW all hook 02h)
+  //   CF      IRET      - back to the instruction that reported the error
+  // The OUT 0F0h that would precede them is folded into do_interrupt.
+  {
+    uint32_t a = BIOS_ROM_BASE + INT75_ENTRY_OFF;
+    mem->store_mem(a + 0, 0xCD);
+    mem->store_mem(a + 1, 0x02);
+    mem->store_mem(a + 2, 0xCF);
+    mem->store_mem16(0x75 * 4,     INT75_ENTRY_OFF);
+    mem->store_mem16(0x75 * 4 + 2, 0xF000);
+  }
+
   // PM default INT handler stubs at F000:ED00 + vec*4
   // Each stub: F1 (BIOS trap), vector_byte, CB (RETF)
   // Used as "previous handler" when DPMI clients chain interrupts.
@@ -641,6 +665,59 @@ bool dos_machine::run_batch(int count) {
 // Interrupt dispatch - BIOS trapping
 //=============================================================================
 
+// The PC's answer to an unmasked x87 exception, which is NOT the CPU's.
+//
+// A 386+387 would signal exception 16 here.  No AT-compatible machine lets it:
+// ERROR# is routed to a latch on IRQ13 (slave 8259 input 5, vector 75h) and
+// the CPU's own pin is left inactive, because vector 16 is INT 10h in real
+// mode and INT 10h is the video BIOS.  That is not a theoretical objection -
+// raising vector 16 on this machine with AX=0013h was measured to reprogram
+// the display to mode 13h.  So real mode never takes the CPU path here.
+//
+// CR0.NE=1 is the 486's native mode, where the guest has explicitly asked to
+// handle the error itself and IGNNE#/IRQ13 are bypassed; that is forwarded to
+// the base class, which raises #MF.  Nothing in DOS sets NE, so in practice
+// this always takes the IRQ13 route.
+bool dos_machine::fpu_signal_error() {
+  if (cr0 & CR0_NE) return emu88::fpu_signal_error();
+
+  // IGNNE# asserted: the error has already been reported once and nothing has
+  // retired it.  Hardware lets the instruction run rather than reporting the
+  // same error again, and so does this - without it, a handler that returns
+  // without clearing the status word parks the machine on one instruction.
+  if (ferr_ignore) return false;
+
+  // With interrupts disabled the interrupt can never arrive.  Real hardware
+  // STOPS here and waits for it, which on a machine with IF clear is a hang;
+  // an emulator that reproduced that faithfully would look like a lockup with
+  // no way to tell it from a bug.  This deliberately diverges and lets the
+  // instruction run, which is what asserting IGNNE# does.
+  if (!get_flag(FLAG_IF)) return false;
+
+  ferr_latched = true;   // level-held; check_interrupts re-offers it
+  ip = insn_ip;          // a fault: the reporting instruction has not run
+  return true;
+}
+
+// FERR# is a level signal and IGNNE#'s clear input is tied to its inverse, so
+// both are sampled here, on the path every execution loop takes.
+bool dos_machine::check_interrupts(void) {
+  // FERR# deasserted - the guest cleared or masked the exception - releases
+  // IGNNE#, so the next error reports normally.
+  if (!fpu_error_pending()) ferr_ignore = false;
+
+  // Offer the latched coprocessor error, but never on top of an interrupt
+  // already queued: request_int holds ONE vector, so writing over a timer or
+  // keyboard request would destroy it.  The signal is level-held, so it is
+  // simply re-offered on the first step where the slot is free - which is what
+  // a level input on a real PIC does.  The vector is the AT's fixed 75h, NOT
+  // pic_vector_base + 13: this machine has no slave 8259, and the master's
+  // base would put it at INT 15h.
+  if (ferr_latched && get_flag(FLAG_IF) && !int_pending) request_int(0x75);
+
+  return emu88::check_interrupts();
+}
+
 void dos_machine::dispatch_bios(uint8_t vector) {
   // Reset keyboard poll counter on interrupts that indicate program activity.
   // Exclude timer (08/1C), time (1A), keyboard (16), and video (10).
@@ -672,6 +749,13 @@ void dos_machine::dispatch_bios(uint8_t vector) {
 }
 
 void dos_machine::do_interrupt(emu88_uint8 vector) {
+  // Taking the coprocessor interrupt is what the AT's handler does with its
+  // OUT 0F0h: drop the latch and clock IGNNE# active.  It is done here rather
+  // than in the ROM stub because the stub is plain code (INT 02h / IRET) with
+  // no room for the OUT, and because a guest that hooks 75h itself must get
+  // the same latch behaviour.
+  if (vector == 0x75) bios_int75h();
+
   // DPMI detection — intercept INT 2Fh AX=1687h before any chain
   if (vector == 0x2F && !protected_mode() && regs[reg_AX] == 0x1687) {
     bios_int2fh();
@@ -909,6 +993,22 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
       } else {
         pic_imr = value;     // OCW1
       }
+      break;
+
+    // --- 80x87 coprocessor interface (ports 0F0h-0FFh on the AT) ---
+    // Writing 0F0h clears the IRQ13 latch.  On a 486 the same write also
+    // clocks IGNNE# active, which is what lets the handler run FNSTSW and
+    // FNCLEX without re-triggering the error it has not cleared yet; here the
+    // no-wait exemption already gives it that, so only the latch is modelled.
+    case 0xF0:
+      ferr_latched = false;
+      ferr_ignore  = true;   // the same write clocks IGNNE# active
+      break;
+    // 0F1h resets the coprocessor.  A guest that does this expects a
+    // powered-up x87, which is FNINIT plus zeroed data registers.
+    case 0xF1:
+      ferr_latched = false;
+      fpu_power_on();
       break;
 
     // --- PIT (8253) ---

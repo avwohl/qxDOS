@@ -28,8 +28,12 @@ with the arithmetic in emu88/emu88_f80.h and a new harness, tests/f80_unit.cc,
 grading it against the host's own x87.  That entry is in CHANGELOG.md, and so
 is the fault-atomicity defect found while doing it - execute_fpu committing its
 register and status-word changes even when a memory operand had faulted - which
-was fixed in a second, separate pass on the owner's instruction.  What is left
-of the x87 entry here is the half neither pass covered: #MF delivery.
+was fixed in a second, separate pass on the owner's instruction.  #MF delivery
+was the half neither pass covered, and it closed on 2026-08-28 in a third; that
+entry is in CHANGELOG.md.  What is left of the x87 here is smaller and is
+listed below: two transcendental counts, and one thing the delivery work
+uncovered rather than caused - the BIOS tells every guest there is no
+coprocessor.
 
 Eleven items, then.  The first is the live one - a submodule bump that is
 statically clean and has never been compiled - and it is first because it is the
@@ -39,8 +43,9 @@ here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
 need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
 a decision that is the owner's, which is the release tagging scheme.  Two are
-real work nobody has started: x87 exception delivery, and the half of the dosiz
-dependency that lives on their side.  The
+real work nobody has started: the equipment-word contradiction the x87
+delivery pass turned up, and the half of the dosiz dependency that lives on
+their side.  The
 last two were found on 2026-08-27 while measuring the rest and are left open for
 the same kind of reason: closing either is a decision about what the product
 does, not a cleanup.
@@ -142,16 +147,44 @@ forbidden to fix it.  Not attempted.  Also not in CI, deliberately: the ASAN=1
 build, because the sanitized SingleStepTests run costs minutes rather than
 seconds.
 
-- the x87 raises exceptions and does not DELIVER them.  the 80-bit register
-file landed on 2026-08-28 and is in CHANGELOG.md; what it did not bring is
-#MF.  emu88_fpu.cc now latches ES and B in the status word when a raised
-exception is not masked, so a program that polls FNSTSW sees it, but there is
-no vector 16 dispatch, no FERR pin, and CR0.NE is declared in emu88.h:70 and
-read nowhere.  a guest that UNMASKS an exception and waits for a trap waits
-forever.  in practice DOS software masks - DJGPP's startup does - which is why
-this has never been the thing that broke, and it is recorded rather than fixed
-because delivery needs an IRQ13 path and a decision about CR0.NE that nothing
-currently forces.
+- the x87 DELIVERS its exceptions as of 2026-08-28, and this entry is what is
+left of that one: the transcendentals below, plus a correction and one new
+thing the work uncovered.  the delivery itself is in CHANGELOG.md.
+  THE CLAIM THIS ENTRY USED TO MAKE WAS WRONG and is worth leaving visible:
+it said "in practice DOS software masks - DJGPP's startup does - which is why
+this has never been the thing that broke".  DJGPP 2.02+ does mask, and so does
+Watcom, but BORLAND DOES NOT - its DOS runtimes leave invalid-operation,
+divide-by-zero and overflow unmasked by default, which is what Turbo Pascal's
+runtime errors 205, 206 and 207 are built on.  that is a large population of
+real-mode software, and the reason the IRQ13 path was worth building rather
+than stopping at CR0.NE.
+  what the delivery work did NOT close, and is now the live x87 item: THE BIOS
+TELLS EVERY GUEST THERE IS NO COPROCESSOR.  the BDA equipment word at 40:10 is
+built in dos_machine.cc without bit 1 (measured 0x0025), while CMOS register
+0x14 says the opposite (0x2F, bit 1 set) - the machine contradicts itself, and
+INT 11h returns the BDA word verbatim.  a guest that probes for an x87 the
+documented way is told there is none, so a Borland program uses its software
+emulator and never unmasks anything, and the delivery path above stays dormant
+for exactly the software that most needs it.  this was deliberately NOT fixed
+in the same pass: setting the bit makes guests start using an FPU they were
+avoiding, which is a behaviour change far wider than exception delivery and is
+the owner's call rather than a drive-by.  six committed assertions in
+tests/bios_test.cc pin a literal equipment word and would all have to move with
+it - 0x0025 at :555 and :558, 0x0035 at :2101 (MDA) and :2111 (Hercules),
+0x0005 at :2120 (EGA) and :2135 (VGA) - and a seventh at :557 compares INT 11h's
+AX to the BDA word rather than a literal, so it would survive unchanged.
+  the matching pieces, if it is done: DPMI INT 31h
+AX=0E00h/0E01h are unimplemented here and dosiz already answers them with 0x31,
+and nothing ever sets CR0.MP or CR0.ET, so WAIT's #NM check can never fire
+where a real BIOS POST would have armed it.
+  one latent bug is recorded rather than fixed, because nothing reaches it
+today: dos_machine.cc's hardware-IRQ loop runs irq 0..15 against a uint8_t
+pic_imr, so `pic_imr & (1 << irq)` is always 0 for irq >= 8 - those can never
+be masked - and it dispatches `pic_vector_base + irq`, which for irq 13 is
+INT 15h rather than the AT's INT 75h.  it is unreachable only because the sole
+producer is the Sound Blaster with a default irq of 5 and nothing validates a
+configured sb_irq; an sb_irq of 8 would set the video mode from the audio
+thread.  the coprocessor latch deliberately does not use that loop.
   the transcendentals are the other half of the same entry, and it grew on
 2026-08-28.  they are accurate to a worst observed 4 ulp of a 64-bit
 significand (tests/f80_unit.cc prints a worst case per function and holds the
@@ -182,9 +215,10 @@ from re-verification with the REPORT corrected rather than merely confirmed: the
 two unmasked-exception entries were one change and not two, the fix originally
 proposed for them was wrong as stated, and the FPREM entry had defined its own
 case backwards (it described an unnormal, which emu88 already handled).
-  What is NOT closed, and is above and below this entry rather than here: #MF
-delivery, and the two transcendental counts that need more than a final-rounding
-change.
+  What is NOT closed, and is above and below this entry rather than here: the
+two transcendental counts that need more than a final-rounding change, and the
+equipment-word contradiction.  #MF delivery was on this list and closed on
+2026-08-28.
 
 - the app has not been built here and cannot be: no Xcode on this machine, and
 `git submodule status` reports `-019bbfd5a750a84f222d93304f1cecec8b4ec808

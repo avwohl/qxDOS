@@ -302,6 +302,149 @@ and not for what comes after it.
 
 ### Fixed
 
+- **The x87 delivers its unmasked exceptions.** THE CORE MOVED: this changes
+  `emu88/emu88.cc`, `emu88/emu88.h` and `emu88/emu88_fpu.cc`, which dosiz
+  compiles, plus `emu88/dos_machine.cc`, `emu88/dos_machine.h`,
+  `emu88/dos_bios.cc` and `emu88/dos_dpmi.cc`, which it does not.
+
+  Before this, `emu88_fpu.cc` latched `ES` and `B` when a raised exception was
+  unmasked and stopped there: no vector-16 dispatch, no `FERR#`, and `CR0_NE`
+  declared in `emu88.h` and read nowhere. A guest that unmasked an exception
+  and waited for a trap waited forever. `todo.txt` recorded it as needing "an
+  IRQ13 path and a decision about `CR0.NE`", and both are here.
+
+  Every behaviour below was reproduced on the host x87 before anything was
+  changed, which is the only reason the directions are known:
+
+  - **Delivery is deferred, and it is a fault.** An unmasked exception is
+    reported not by the instruction that raises it but by the next *waiting*
+    x87 instruction or by `WAIT`, with `CS:EIP` pointing at that reporting
+    instruction so `IRET` re-executes it. Measured: an `FDIV` at `0x4018eb`
+    raised nothing visible, and the `FLD1` 85 bytes later trapped with
+    `RIP` exactly equal to its own first byte. `FIP`/`FCS` still name the
+    instruction that raised, which is the only way a handler can find it.
+  - **The check goes inside `execute_fpu`, after the modrm is decoded.** It
+    cannot go in the escape dispatch in `emu88.cc`: the ten no-wait encodings
+    are identified by opcode *and* modrm, and moved there it fails 12 of
+    `fpu_test`'s 659 checks — every no-wait encoding reports, starting with
+    `FNSTSW AX`. It also cannot go below
+    the operand access - measured on the host, a pending exception outranks the
+    reporting instruction's own page fault.
+  - **The no-wait set is exactly ten encodings**: `D9 /6`, `D9 /7`, `DB E0`
+    through `DB E4`, `DD /6`, `DD /7`, `DF E0`. The `mod!=3` qualifier is
+    load-bearing, and `FNOP` is *waiting* despite the mnemonic - both verified
+    against the host, where `FNOP`, `FXCH`, `FFREE`, `FDECSTP` and `FLDCW` all
+    trapped and all ten above did not.
+  - **`WAIT` was `break; // no FPU, just continue`.** Because `9B` is a whole
+    instruction rather than a prefix, every waiting control form - `FSTSW`,
+    `FCLEX`, `FINIT`, `FSTENV`, `FSAVE`, `FSTCW` - is `9B` followed by its
+    no-wait encoding, so all of them became correct from that one line.
+
+  **The `CR0.NE` decision, and why it is the board's rather than the CPU's.**
+  `#MF` is vector 16 *decimal*, which is `INT 10h`, which in real mode is the
+  video BIOS - and that is not a theoretical objection: raising vector 16 on
+  this machine with `AX=0013h` was measured to reprogram the display to mode
+  13h. No AT-compatible machine lets the CPU see the error. `ERROR#`/`FERR#`
+  goes to a latch on IRQ13, vector `75h`, whose BIOS handler chains to
+  `INT 02h` - which is where Borland's, Watcom's and DOS/4GW's floating-point
+  handlers actually live, and why Turbo Pascal has runtime errors 205/206/207
+  at all. So `fpu_signal_error()` is virtual: the bare core honours `CR0.NE`
+  (raising `#MF` when set, and otherwise running on, because nothing is
+  attached to the pin), and `dos_machine` overrides it with the AT wiring.
+  dosiz, which subclasses `emu88` directly and sets `NE` nowhere, is unchanged
+  by design - measured to matter, because its default IDT gives vector 16 a
+  present null-selector gate that would have turned every `#MF` into `#GP(0)`
+  and terminated the client.
+
+  This also corrects `todo.txt`'s claim that "in practice DOS software masks".
+  DJGPP 2.02+ and Watcom do; **Borland does not** - its DOS runtimes leave
+  invalid-operation, divide-by-zero and overflow unmasked by default, and that
+  is a large population of real-mode software.
+
+  Four defects were found and fixed on the way, each of which had to be right
+  before delivery could be:
+
+  - **`ES` and `B` were treated as latched bits.** They are a *function* of the
+    other two words - the OR of the currently-unmasked exception flags - so
+    `FLDCW`, `FLDENV`, `FRSTOR` and `FNSTENV` all change them without any
+    arithmetic happening. `emu88_fpu.cc` only ever OR-ed them in and never
+    cleared, which was wrong in five measured cases: four `FLDENV` images and
+    the live word after `FNSTENV`. Measured on the host, `FLDCW` unmasking an
+    already-set flag takes `SW` from `0x3804` to `0xB884` out of nothing.
+  - **`LMSW` wrote all sixteen low bits of `CR0`**, including `ET` and `NE`.
+    Harmless while neither was read; now that `NE` selects between two delivery
+    routes it means an `LMSW` could silently rewire the machine's x87. It is
+    restricted to `PE`, `MP`, `EM` and `TS`, as on hardware.
+  - **DPMI reflected every unhandled exception to real mode.** The comment said
+    "terminate for CPU faults, reflect for others" and the code reflected
+    unconditionally, so a `#MF` in a client with no handler installed would
+    have reflected to real-mode `INT 10h` and called the video BIOS. DPMI 0.9
+    4.5 reflects only exceptions 0-5 and 7 and terminates for the rest. This is
+    deliberately wider than `#MF`: `#UD` and 8-1Fh now terminate the client too,
+    where before they reflected to a real-mode vector that is not a handler for
+    them - typically the BIOS's own no-op `IRET` stub, which resumed the client
+    at the faulting instruction to fault again. `dpmi_test` is unmoved at 420.
+  - **The report had to be RETIRABLE, or delivery is worse than no delivery.**
+    `#MF` is a fault, so the reporting instruction re-executes after `IRET` -
+    and if nothing clears the status word it reports again, forever. The
+    default machine is exactly that case: `init_ivt` leaves `INT 02h` on an
+    `IRET` stub that clears nothing. The first cut of this change livelocked a
+    virgin machine on any unmasked exception, which is a worse failure than the
+    silence it replaced. Hardware does not, because taking the interrupt clocks
+    `IGNNE#` active and the instruction is let through on the retry; that is
+    modelled now, cleared when `FERR#` deasserts. Four `bios_test` assertions
+    pin it, and all four fail with `IGNNE#` disabled.
+  - **A BIOS trap stub cannot chain to another interrupt.**
+    `unimplemented_opcode` emulates the stub's `IRET` unconditionally after
+    running the handler, so an `INT 75h` handler that called `do_interrupt(2)`
+    had the frame it just pushed popped straight back off and the guest's
+    `INT 02h` handler never ran. Under DPMI it failed differently and worse:
+    the reflection path calls `dispatch_bios` and then restores `CS:IP`
+    wholesale. `INT 75h` is therefore three bytes of real ROM code -
+    `CD 02 / CF` - which goes through the ordinary interrupt machinery the way
+    IBM's own handler does.
+  - **The coprocessor line could not be serviced from `run_batch` alone.**
+    `dos_dpmi`'s two nested real-mode execute loops call `check_interrupts()`
+    and never `run_batch`, so an x87 error raised inside one of them was
+    aborted with delivery arranged nowhere - the same instruction re-decoded
+    until the loops' own 5M/10M safety counters tripped. `check_interrupts` is
+    virtual now and `dos_machine` services the line there, which every
+    execution loop reaches.
+  - **The offer must not overwrite a queued interrupt.** `request_int` holds
+    ONE vector, and the coprocessor offer sat after the timer, NE2000, UART and
+    keyboard offers, destroying whichever was pending. `FERR#` is a level
+    signal, so it now yields when the slot is taken and is re-offered on the
+    first step it is free - which is what a level input on a real PIC does.
+  - **IRQ13 could not have used the existing hardware-IRQ loop.** `pic_imr` is
+    a `uint8_t`, so `pic_imr & (1 << 13)` is always 0 - IRQ 8-15 can never be
+    masked - and `pic_vector_base + 13` is `INT 15h`, not `INT 75h`. The
+    coprocessor latch therefore carries its own held flag and the AT's fixed
+    vector `75h`, rather than joining a loop that would have mis-vectored it.
+    The latent bug in that loop is untouched and is recorded in `todo.txt`.
+
+  `fpu_test` gains 32 checks (627 to 659) and `bios_test` nine (498 to 507),
+  the latter driving the whole path end to end - unmask, divide by zero,
+  `FWAIT`, IRQ13, `INT 75h`, the guest's `INT 02h` handler - and asserting that
+  the video BIOS was *not* entered.
+
+  Both new sections were run against the unfixed core, and the split is worth
+  stating exactly rather than quoting the totals. Of the 32 `fpu_test`
+  additions, 11 fail there; of the 21 that pass, 17 pass **vacuously** - they
+  assert that some encoding does *not* report, which is trivially true of a
+  core that reports nothing - and the other four pass because the *setting*
+  direction of `ES` was already right and only the clearing direction was
+  broken. Of the nine `bios_test` additions, two fail. So the honest count of
+  new assertions that discriminate is 13, not 41.
+
+  Two of them discriminate against something else, and that is the point of
+  keeping them: built deliberately with `#MF` routed to vector 16 the way a
+  bare 386+387 would, `dos_io::video_mode_changed` went from 21 calls to 416.
+  The numeric exception was calling `INT 10h` in a loop.
+
+  `SingleStepTests` stays at 1,758,402 - the corpus contains no `D8`-`DF` file
+  at all, 0 of 941, and its only x87-adjacent opcode is `9B` - and `test386`
+  diffs clean; `tests/check_dosiz.sh` is 37/37 with no warnings.
+
 - **All thirteen defects the new harnesses recorded**, and the harnesses that
   found them are the reason each one is described here rather than guessed at.
   All four harness baselines are `KNOWN_BUGS_EXPECTED = 0` now; every assertion that caught

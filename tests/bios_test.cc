@@ -1856,7 +1856,150 @@ int main() {
   check_eq(BX(), 0x80, "XMS with an unimplemented function: BX=80h");
 
   //==========================================================================
-  // 15. INT 08h timer tick and its INT 1Ch chain
+  // 15. IRQ13 / INT 75h - the coprocessor error
+  //==========================================================================
+  section("IRQ13 / INT 75h - coprocessor error");
+
+  // The end-to-end path an unmasked x87 exception takes on a PC, driven the
+  // way a guest would drive it and observed only through guest-visible state.
+  //
+  // Why this is not INT 10h: #MF is vector 16 == INT 10h, and on this machine
+  // IVT[10h] is the live video BIOS.  A 386+387 would signal exception 16, but
+  // no AT-compatible board lets the CPU see it - ERROR# goes to a latch on
+  // IRQ13 (vector 75h) and the BIOS chains that to INT 02h, which is where
+  // Borland's, Watcom's and DOS/4GW's floating-point handlers actually live.
+  // So the assertion below is that the guest's INT 02h handler ran and the
+  // video mode did NOT change.
+  //
+  // These nine checks discriminate against three different failures, and it is
+  // worth being exact about which, because "9 checks" would overstate it.
+  //
+  //   - against the core BEFORE delivery existed, TWO fail: "reaches the
+  //     guest's INT 02h handler" and the IGNNE# retry count.  The rest assert
+  //     that something does NOT happen, and a core that delivers nothing at
+  //     all passes them.
+  //   - against the plausible WRONG fix - routing #MF to vector 16 the way a
+  //     bare 386+387 would - six of the nine fail, and the video-BIOS one
+  //     fails loudly: built that way deliberately, dos_io::video_mode_changed
+  //     went from 21 calls to 416.  The numeric exception was calling INT 10h
+  //     in a loop.
+  //   - against delivery WITHOUT IGNNE# modelled, the last four fail: the
+  //     report is never retired, so the reporting instruction faults, is
+  //     handled, returns and faults again until the step limit.  That was the
+  //     first cut of this code, and it wedged a virgin machine.
+  //
+  // So the negative assertions are not decoration; they are the only thing
+  // standing between this and a fix that looks green, wedges the machine and
+  // reprograms the display.
+  {
+    // INT 02h handler at 0800:0000:
+    //   mov byte [cs:0030h], 5Ah ; fnclex ; iret
+    const uint8_t h2[] = { 0x2E, 0xC6, 0x06, 0x30, 0x00, 0x5A,
+                           0xDB, 0xE2,          // FNCLEX - clear the error
+                           0xCF };
+    for (size_t i = 0; i < sizeof(h2); i++) wb(RM_HOOK_PHYS + (uint32_t)i, h2[i]);
+    wb(RM_HOOK_PHYS + 0x30, 0x00);
+    ww(0x02 * 4, 0x0000);
+    ww(0x02 * 4 + 2, RM_HOOK_SEG);
+
+    // Guest: unmask #Z, divide by zero, then FWAIT.
+    //   fninit / fldcw [0000] / fld1 / fldz / fdivp / fwait / hlt
+    const uint8_t g[] = { 0xDB, 0xE3,
+                          0xD9, 0x2E, 0x00, 0x00,
+                          0xD9, 0xE8, 0xD9, 0xEE, 0xDE, 0xF9,
+                          0x9B,
+                          0xF4 };
+    for (size_t i = 0; i < sizeof(g); i++) wb(CODE_PHYS + (uint32_t)i, g[i]);
+    ww(DATA_SEG * 16 + 0, 0x037B);          // ZM unmasked, everything else masked
+
+    int modes_before = gio->mode_changes;
+    load_regs(In{});
+    gm->set_flag(E::FLAG_IF);               // IRQ13 cannot be taken with IF clear
+    gm->ip = 0;
+    gm->halted = false;
+    for (int i = 0; i < 400 && !gm->halted; i++) gm->run_batch(1);
+
+    check_eq(rb(RM_HOOK_PHYS + 0x30), 0x5A,
+             "an unmasked x87 exception reaches the guest's INT 02h handler");
+    check_eq(gio->mode_changes, modes_before,
+             "...and NOT the video BIOS, which is what vector 16 would have hit");
+    check(gm->halted,
+          "...and the reporting FWAIT re-executes after IRET and the guest finishes");
+
+    // With IF clear there is no way to deliver, so the instruction runs rather
+    // than stalling the machine forever.  This is a deliberate divergence from
+    // hardware, which stops and waits.
+    wb(RM_HOOK_PHYS + 0x30, 0x00);
+    load_regs(In{});                        // flags = 0x0002, IF clear
+    gm->ip = 0;
+    gm->halted = false;
+    for (int i = 0; i < 400 && !gm->halted; i++) gm->run_batch(1);
+    check_eq(rb(RM_HOOK_PHYS + 0x30), 0x00,
+             "with IF clear no coprocessor interrupt is delivered");
+    check(gm->halted,
+          "...and the guest runs on rather than stalling on the FWAIT forever");
+
+    // ------------------------------------------------------------------
+    // The two ways a report can go UNRETIRED, both of which livelocked the
+    // machine before IGNNE# was modelled.  These are the cases the first cut
+    // of this section missed entirely: it only ever tested a handler that
+    // clears the error, which is the one path that worked.
+    //
+    // #MF-style reporting is a FAULT, so the reporting instruction re-executes
+    // after IRET.  If nothing clears SW.ES, it reports again - forever.  Real
+    // hardware does not do this: taking the interrupt clocks IGNNE# active,
+    // and the instruction is allowed through on the retry.
+    // ------------------------------------------------------------------
+
+    // (a) NOTHING hooked INT 02h.  This is the state init_ivt leaves the
+    //     machine in, so it is what any guest sees by default: vector 2 is a
+    //     ROM stub that clears nothing.
+    ww(0x02 * 4, (uint16_t)(0xE000 + 0x02 * 4));
+    ww(0x02 * 4 + 2, 0xF000);
+    load_regs(In{});
+    gm->set_flag(E::FLAG_IF);
+    gm->ip = 0;
+    gm->halted = false;
+    {
+      int steps = 0;
+      for (; steps < 20000 && !gm->halted; steps++) gm->run_batch(1);
+      check(gm->halted,
+            "with nothing on INT 02h the guest still finishes - the default "
+            "machine does not wedge on an unmasked x87 exception");
+      check(steps < 200,
+            "...and finishes promptly rather than grinding to the step limit");
+    }
+
+    // (b) A handler that runs but does NOT clear the error.  A real one is
+    //     expected to FNCLEX; one that forgets must not park the machine.
+    {
+      const uint8_t h3[] = { 0x2E, 0xFE, 0x06, 0x31, 0x00,   // inc byte [cs:0031]
+                             0xCF };                          // iret, no FNCLEX
+      for (size_t i = 0; i < sizeof(h3); i++) wb(RM_HOOK_PHYS + (uint32_t)i, h3[i]);
+      wb(RM_HOOK_PHYS + 0x31, 0x00);
+      ww(0x02 * 4, 0x0000);
+      ww(0x02 * 4 + 2, RM_HOOK_SEG);
+      load_regs(In{});
+      gm->set_flag(E::FLAG_IF);
+      gm->ip = 0;
+      gm->halted = false;
+      int steps = 0;
+      for (; steps < 20000 && !gm->halted; steps++) gm->run_batch(1);
+      check(gm->halted,
+            "a handler that returns WITHOUT clearing the error does not wedge "
+            "the machine either");
+      check(rb(RM_HOOK_PHYS + 0x31) == 1,
+            "...and it ran exactly once, not once per retry - IGNNE# retires "
+            "the report even though the status word still holds it");
+    }
+
+    // Put the vector back so nothing downstream inherits the hook.
+    ww(0x02 * 4, (uint16_t)(0xE000 + 0x02 * 4));
+    ww(0x02 * 4 + 2, 0xF000);
+  }
+
+  //==========================================================================
+  // 16. INT 08h timer tick and its INT 1Ch chain
   //==========================================================================
   section("INT 08h timer tick");
 
@@ -1897,7 +2040,7 @@ int main() {
           "hooks IRQ0 and chains to the BIOS handler never gets one");
 
   //==========================================================================
-  // 16. INT 19h bootstrap
+  // 17. INT 19h bootstrap
   //==========================================================================
   section("INT 19h bootstrap");
 
@@ -1947,7 +2090,7 @@ int main() {
   }
 
   //==========================================================================
-  // 17. The other display configurations
+  // 18. The other display configurations
   //
   // Config::display steers init_bda's equipment bits, the initial video mode,
   // the CRTC port and INT 10h AH=1Ah's display combination code.  Only

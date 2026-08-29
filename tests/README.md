@@ -657,17 +657,25 @@ for as long as they have both existed.
 - **It also never exercises exception delivery.** The corpus injects a `HALT`
   at the exception ISRs, so a fault is scored by the register and RAM state it
   leaves, not by whether the right vector was dispatched with the right frame.
-- **Neither does anything else, for the FPU.** `emu88_fpu.cc` raises every x87
-  exception and latches `ES`/`B` when one is unmasked, and `f80_unit` grades
-  those flags against real hardware — but there is no `#MF` dispatch and no
-  FERR path anywhere in emu88, so a guest that *unmasks* an exception and waits
-  for a trap waits forever. `todo.txt` carries this as an open item. DOS
-  software masks in practice, which is why it has never been the thing that
-  broke.
+- **The FPU's exception DELIVERY is covered, but not by this corpus.** SST has
+  no `D8`-`DF` file at all — 0 of 941 — and its only x87-adjacent opcode is
+  `9B`. Delivery is graded instead by `fpu_test` section 19b (the deferral to
+  the next waiting instruction, the ten no-wait encodings, `FIP` still naming
+  the raising instruction, and a pending exception outranking an operand fault)
+  and by `bios_test`'s "IRQ13 / INT 75h" section, which drives the whole PC
+  path — unmask, divide by zero, `FWAIT`, IRQ13, `INT 75h`, the guest's
+  `INT 02h` handler — and asserts the video BIOS was not entered.
+  *(This bullet said there was no `#MF` dispatch and that "DOS software masks
+  in practice" until 2026-08-28. Both were wrong: delivery exists now, and
+  Borland's DOS runtimes leave invalid-operation, divide-by-zero and overflow
+  unmasked. It is rewritten rather than deleted because the second half was a
+  confident claim about the world that turned out to be false.)*
 
-Three of the five gaps this section opened with are closed as of 2026-08-27;
-they are kept here, struck, because what they were is the argument for the two
-that remain.
+Three of the five gaps this section opened with were closed on 2026-08-27.  A
+sixth, added that same day and closed on 2026-08-28 - the FPU's exception
+delivery, rewritten above rather than struck because its second sentence was
+wrong as well as stale - makes four closed.  They are kept here because what
+they were is the argument for the two that remain.
 
 - ~~**`build.sh` does not build `test386`.**~~ It does now, alongside the other
   ten harnesses.
@@ -683,9 +691,12 @@ that remain.
 
 What has NOT changed: the two gaps above these. Automating the suites does not
 widen them — CI runs exactly what a person ran by hand, so 32-bit
-protected-mode instruction execution and exception delivery are still covered
-only by test386's full-system pass, which checks the machinery rather than every
-instruction.
+protected-mode instruction execution is still covered only by test386's
+full-system pass, which checks the machinery rather than every instruction.
+*(This sentence also named x87 exception delivery until 2026-08-28. That half
+is now covered — `fpu_test` section 19b and `bios_test` section 15 — and the
+protected-mode half is not, so the count of two is unchanged but its second
+member is different: see the DPMI note in section 3.)*
 
 Sections 4 to 7 close four gaps this list never named, because until 2026-08-27
 none of the x87 FPU, the DPMI host, the NE2000 or the PC BIOS had any coverage

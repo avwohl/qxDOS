@@ -22,6 +22,13 @@ static constexpr uint16_t BDA_SEG        = 0x0040;
 // BIOS trap opcode (0xF1 is undefined on all x86, falls to unimplemented_opcode)
 static constexpr uint8_t BIOS_TRAP_OPCODE = 0xF1;
 
+// ROM offset of the INT 75h (IRQ13, coprocessor error) handler.  It sits
+// outside the F000:E000 trap-stub table because it is real code, and those
+// slots are four bytes each with the fourth unused - `CD 02 CF` fits, but only
+// by borrowing the next vector's slot.  E400 is the first free offset above
+// the 256-entry table, which ends at E3FF.
+static constexpr uint16_t INT75_ENTRY_OFF = 0xE400;
+
 // BIOS Data Area offsets (from 0040:0000)
 namespace bda {
   constexpr int EQUIPMENT     = 0x10;
@@ -132,6 +139,15 @@ public:
   void port_out16(emu88_uint16 port, emu88_uint16 value) override;
   emu88_uint16 port_in16(emu88_uint16 port) override;
   void unimplemented_opcode(emu88_uint8 opcode) override;
+
+  // The 387's ERROR# pin as an AT wires it: to a latch on IRQ13, never to the
+  // CPU's exception 16.  See the definition for why a PC cannot use vector 16.
+  bool fpu_signal_error() override;
+
+  // Services the coprocessor-error line.  Overridden rather than done in
+  // run_batch because dos_dpmi's nested real-mode loops call this and not
+  // that, and an x87 error raised inside one of them must still be delivered.
+  bool check_interrupts(void) override;
 
   // Keyboard input from host
   void queue_key(uint8_t ascii, uint8_t scancode);
@@ -290,6 +306,22 @@ private:
   void svga_composite();              // composite the current SVGA framebuffer
   void herc_composite();              // composite the Hercules 720x348 mono page
   void mouse_screen_dims(int &w, int &h) const;  // pixel size of the displayed frame
+
+  // The coprocessor error latch.  FERR#/ERROR# is a LEVEL signal on real
+  // hardware, and the AT latches it into IRQ13; it stays asserted until the
+  // handler writes port 0F0h.  It cannot be modelled by a single
+  // request_int() because that is a one-slot latch the next timer tick would
+  // overwrite - so this is held here and re-offered every step until taken.
+  bool ferr_latched = false;
+
+  // IGNNE#, which on a 486 is clocked active by the same OUT to port 0F0h
+  // that clears the latch, and whose CLEAR input is tied to inverted FERR#.
+  // Without it a handler that does not clear the status word re-reports the
+  // same instruction forever - and the DEFAULT machine is exactly that case,
+  // because init_ivt leaves INT 02h on an IRET stub that clears nothing.
+  // Modelling it turns an emulator livelock into what hardware does: the
+  // error is ignored and the instruction proceeds.
+  bool ferr_ignore = false;
 
   // PIC state
   uint8_t pic_imr;
@@ -484,6 +516,7 @@ private:
   void bios_int1ah();   // Time/date
   void bios_int2fh();   // Multiplex (XMS)
   void bios_int33h();   // Mouse driver
+  void bios_int75h();   // IRQ13: coprocessor error
   void bios_int_e0h();  // Host file services
 
   // XMS dispatch (called via FAR CALL to ROM entry point)
