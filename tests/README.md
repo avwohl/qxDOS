@@ -181,7 +181,7 @@ bash tests/build.sh          # builds tests/build/fpu_test
 tests/build/fpu_test
 ```
 
-**Result: PASS** — 577 assertions over ~76 mnemonics: stack discipline and
+**Result: PASS** — 659 assertions over ~76 mnemonics: stack discipline and
 `TOP` wraparound, stack overflow and underflow with the `IE`/`SF`/`C1` a 387
 reports, the tag word, all three memory real formats, the seven `FLD`
 constants as exact 80-bit bit patterns, every arithmetic form with the
@@ -193,6 +193,15 @@ out-of-range report, all four rounding modes, all three precision-control
 settings, `FCMOVcc`, `FCOMI`, `FFREEP`, `CR0.EM`/`CR0.TS` gating,
 `FNSTENV`/`FLDENV` with all seven environment fields, and `FNSAVE`/`FRSTOR` in
 both the 94-byte and 108-byte forms.
+
+Since 2026-08-28 it also covers **unmasked exceptions**, which it deliberately
+did not before: section 17b that `ES` and `B` are a recomputed function of the
+status and control words rather than a latch, and section 19b that an unmasked
+exception is *delivered* — deferred to the next waiting instruction or `FWAIT`,
+reported as a restartable fault, skipped by exactly ten no-wait encodings, and
+outranking the reporting instruction's own operand fault. What this harness
+cannot reach is the AT's IRQ13 route, because that lives in `dos_machine` and
+this one builds a bare `emu88`; `bios_test` drives it end to end.
 
 **Two kinds of assertion now, not three.** Until the register file was
 rewritten, `emu88.h` declared `double regs[8]` — 53 mantissa bits, not 80-bit
@@ -420,7 +429,7 @@ hand-assembled 8086 `INT 21h` handler installed in the IVT before the switch,
 with swappable bodies that edit the pushed `FLAGS` image so `CF` propagates back
 into protected mode the way a real DOS returns it.
 
-**Result: PASS** — 420 assertions, 0 known bugs held at baseline. Covered: the
+**Result: PASS** — 429 assertions, 0 known bugs held at baseline. Covered: the
 mode switch itself (`CR0.PE`, A20 forced on, the 256-vector snapshot, the client
 PSP, and all 8 raw bytes of GDT entries 0–6, the TSS and two IDT gates); LDT
 allocation, freeing and exhaustion; every descriptor service asserted as the
@@ -429,8 +438,10 @@ blocks against the real `INT 21h` reflection; real-mode and protected-mode
 vector installation; `0400h`; the `0500h` 48-byte block dword by dword;
 `0501h`–`0503h` including page alignment, non-overlap and a growing realloc that
 relocates and copies; the `0900h`–`0902h` trio each asserting the *previous*
-state; real-mode callbacks; and `INT 21h AH=4Ch` tearing the session down and
-restoring the IVT.
+state; `0E00h`/`0E01h` coprocessor status, including that presence is `MPr`
+(bit 2) rather than `MPv` (bit 0) and that a client-emulation request is
+refused rather than silently accepted; real-mode callbacks; and
+`INT 21h AH=4Ch` tearing the session down and restoring the IVT.
 
 Error paths are asserted as hard as the happy paths — `CF` set *and* the
 documented `AX` error code — because a harness that only walks the success path
@@ -591,7 +602,7 @@ bash tests/build.sh          # builds tests/build/bios_test
 tests/build/bios_test
 ```
 
-**Result: PASS** - 498 assertions, 0 known bugs held at baseline. Covered: INT
+**Result: PASS** - 512 assertions, 0 known bugs held at baseline. Covered: INT
 10h text services (`00` mode set and the seven BDA fields it writes, `01`/`02`/
 `03` cursor, `05` page, `06`/`07` scroll with all four window edges asserted,
 `08` read-back, `09`/`0A` write with and without an attribute and with a repeat
@@ -605,6 +616,15 @@ INT 14h; INT 15h `24`/`41`/`4F`/`86`/`87`/`88`/`91`/`C0`; INT 16h
 that must not consume, and the blocking read's `IP` rewind; INT 17h; INT 19h
 bootstrap from both drives and the no-bootable-medium path; INT 1Ah `00`-`05`;
 INT 2Fh `1680`/`4300`/`4310`; and the XMS driver behind `4310`.
+
+Since 2026-08-29 it also owns the two coprocessor paths, because both need a
+whole machine rather than a bare core: **IRQ13 / INT 75h**, driven end to end -
+unmask, divide by zero, `FWAIT`, the latch, the BIOS handler, the guest's
+`INT 02h` handler - and asserting both that the video BIOS was *not* entered
+(vector 16 is `INT 10h`) and that the machine does not wedge when nothing
+retires the error; and **coprocessor presence**, that the BDA equipment word,
+CMOS `0x14` and CPUID leaf 1 agree there is an x87, which they did not until
+that date.
 
 Deliberately not reached, with the reason in each case: the VESA `4Fxx` services
 and INT 33h mouse, which section 3 already owns end to end; INT E0h host file
