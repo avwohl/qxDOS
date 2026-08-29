@@ -4852,8 +4852,16 @@ void emu88::execute(void) {
         set_reg32(reg_AX, 0x00000300);
         set_reg32(reg_BX, 0);
         set_reg32(reg_CX, 0);
-        // Feature flags: bit 4 = PSE (page size extensions)
-        set_reg32(reg_DX, 0x00000010);
+        // Feature flags: bit 0 = FPU on chip, bit 4 = TSC (RDTSC, implemented
+        // at 0F 31).  Bit 0 was clear until 2026-08-29 while emu88 has always
+        // had a complete x87, so CPUID was the second place this core denied
+        // having a coprocessor - the BDA equipment word was the first.
+        //
+        // Bit 4 was described here as PSE until the same date, which was wrong
+        // twice over: PSE is bit 3 and is NOT advertised, though 4 MB pages
+        // are implemented (emu88_pmode.cc honours CR4.PSE).  Advertising it
+        // would be truthful and is a separate decision.
+        set_reg32(reg_DX, 0x00000011);
         break;
       default:
         set_reg32(reg_AX, 0);

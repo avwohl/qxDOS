@@ -302,6 +302,79 @@ and not for what comes after it.
 
 ### Fixed
 
+- **The machine stops denying it has a coprocessor.** THE CORE MOVED, but only
+  just: `emu88/emu88.cc` (one CPUID feature bit) is the shared half; the rest is
+  `emu88/dos_machine.cc` and `emu88/dos_dpmi.cc`, which dosiz does not compile.
+
+  Three sources answered "is there an x87", and they did not agree. CMOS
+  register `0x14` said yes (`0x2F`, bit 1) and has since it was written. The BDA
+  equipment word at `40:10` said **no** — bit 1 was never set, so `INT 11h`,
+  which returns that word verbatim, told every guest there was no coprocessor.
+  CPUID leaf 1 said no as well (`EDX = 0x10`, bit 0 clear). DPMI `INT 31h`
+  `AX=0E00h` said the question was unsupported (`AX=8001h`).
+
+  emu88 has always emulated a complete 80-bit x87 whatever `config.cpu` says —
+  there is no build without one — so "absent" was the lie, and an expensive
+  one. Software that probes the documented way takes the answer seriously: a
+  Borland-compiled program told there is no 387 uses its software emulator and
+  never executes an x87 instruction, which means the `#MF` delivery path added
+  the day before was dormant for exactly the software that motivated it. All
+  four now say present: equipment word bit 1 (the default reads `0x0027`),
+  CPUID `EDX` bit 0, and `0E00h` answering `0x35`.
+
+  `0x35` rather than `0x31`, and the difference is the same bug in miniature.
+  In `0E00h`'s reply, presence is bit 2 (`MPr`); bit 0 is `MPv`, "enabled for
+  this client". `0x31` sets `MPv` and the type with `MPr` clear — a coprocessor
+  that is enabled and absent — so the first cut of this change reproduced, in a
+  third place, the contradiction it exists to remove. `0x35` is
+  `MPv | MPr | type 3`. (dosiz's own host answers `0x31` here; its
+  `DPMI_V10.COM` fixture asserts bit 0, which `0x35` also sets, so nothing
+  downstream breaks — but the two hosts now disagree about `MPr`, and that is
+  dosiz's call to make.)
+
+  `0E01h` Set Coprocessor Emulation now succeeds for requests this host can
+  meet and **refuses** the one it cannot. `EMv` asks the host to set `CR0.EM`
+  while the client runs and reflect the resulting `#NM` to a client-supplied
+  emulator; nothing here does that, so returning success would be the same
+  species of lie as the equipment word — a client told "yes" waits forever for
+  faults that never arrive. It returns `8021h` instead.
+
+  `CR0.ET` and `CR0.MP` are set at POST in the same pass, as a real POST does
+  on finding a coprocessor. Neither was ever *set* before — which is not the
+  same as unread, since `emu88.cc`'s `WAIT` reads `MP` and a guest could always
+  arm it itself with `MOV CR0` or `LMSW`, as a lazy-FPU-switching DOS extender
+  does. What changed is that the machine arms it.
+  They are set by the machine rather than by `emu88::reset()`, so a bare core —
+  and therefore dosiz, `SingleStepTests` and `test386`, none of which construct
+  a `dos_machine` — still comes up with `CR0 == 0`.
+
+  **One consequence, stated because it is a real behaviour change and not a
+  defect.** `CR0.MP` is what makes `WAIT` honour `CR0.TS`, so `WAIT` can now
+  raise `#NM` where it never could. Nothing in this machine reaches it: `TS` is
+  set in exactly one place, `emu88_pmode.cc`'s task switch, and neither the
+  BIOS nor the DPMI host performs one — and the same `#NM` has always been
+  raised by any ESC instruction with `TS` set, so this is a new trigger rather
+  than a new failure class. Measured with `TS` forced and vector 7 left on an
+  `IRET` stub that clears nothing: 999 dispatches, then `raise_exception`'s loop
+  detector halts the CPU rather than hanging.
+
+  `bios_test` 507 to 512 and `dpmi_test` 420 to 429. The `bios_test` accounting,
+  since the obvious summary of it is wrong: the pass *adds* five assertions and
+  *changes* six existing literals, eleven in all, of which ten fail against the
+  previous core. The eleventh is the CMOS check, which passes before and after
+  — it pins the half of the contradiction that was already right, which is what
+  gives the "they agree" assertion something to agree with.
+
+  Six of the nine `dpmi_test` additions fail against the previous core. One
+  trap among them is worth naming because it nearly cost a real defect:
+  the unsupported-function reply is `8001h`, and `8001h` happens to have bit 0
+  set — so "is bit 0 set" passes against a host that has just said the question
+  is unsupported. Combined with `MPv`/`MPr` being easy to transpose, an
+  assertion on bit 0 alone would have passed both the old host and the wrong
+  new value. `CF` is checked first and `AX` pinned exactly. `SingleStepTests` stays at 1,758,402 — CPUID is not in the
+  corpus at all, which is why, rather than by luck — `test386` diffs clean, and
+  `tests/check_dosiz.sh` is 37/37 with no warnings.
+
 - **The x87 delivers its unmasked exceptions.** THE CORE MOVED: this changes
   `emu88/emu88.cc`, `emu88/emu88.h` and `emu88/emu88_fpu.cc`, which dosiz
   compiles, plus `emu88/dos_machine.cc`, `emu88/dos_machine.h`,

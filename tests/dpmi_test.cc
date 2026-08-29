@@ -497,6 +497,41 @@ int main() {
   check(!CF(), "0003h: CF clear");
   check_eq(AX(), 8, "0003h: selector increment is 8");
 
+  // 0E00h/0E01h Get and Set Coprocessor Status.  Both fell through to the
+  // unsupported-function default until 2026-08-29, so a DPMI 1.0 client asking
+  // this host whether there was an x87 was told the question was unsupported -
+  // while the BDA equipment word said no and CMOS said yes.
+  //
+  // The bit the client actually reads for PRESENCE is bit 2 (MPr), not bit 0
+  // (MPv, "enabled for this client").  Getting that backwards is easy and was
+  // got backwards here first: 0x31 sets MPv and the type but leaves MPr clear,
+  // which describes a coprocessor that is enabled and absent.  Every
+  // assertion below therefore names the bit it means.
+  //
+  // Note what does NOT discriminate: the unsupported-function reply is
+  // AX=8001h, and 8001h HAPPENS TO HAVE BIT 0 SET - so an "is bit 0 set" test
+  // passes against a host that has just said the question is unsupported.
+  // That is why CF is checked first and AX pinned exactly.
+  int31(0x0E00);
+  check(!CF(), "0E00h: CF clear - the function is supported");
+  check_eq(AX() & 0x0004, 0x0004, "0E00h: bit 2 (MPr) set - a coprocessor is PRESENT");
+  check_eq(AX() & 0x0001, 0x0001, "0E00h: bit 0 (MPv) set - and enabled for the client");
+  check_eq((AX() >> 4) & 0x000F, 3, "0E00h: coprocessor type 3 (387 or later)");
+  check_eq(AX() & 0x000A, 0, "0E00h: neither EMv nor EMr - nobody is emulating");
+  check_eq(AX(), 0x0035, "0E00h: AX=0035h exactly");
+
+  // A request this host can meet: leave the hardware x87 enabled.
+  int31(0x0E01, 0x0001);
+  check(!CF(), "0E01h: enabling the hardware coprocessor succeeds");
+
+  // One it cannot: EMv asks the host to set CR0.EM and reflect #NM to a
+  // client-supplied emulator.  Nothing here does that, so it is refused
+  // rather than silently accepted - a client told "yes" would wait forever
+  // for faults that never arrive.
+  int31(0x0E01, 0x0002);
+  check(CF(), "0E01h: a client-emulation request is REFUSED, not silently accepted");
+  check_eq(AX(), 0x8021, "0E01h: refused with 8021h (invalid value)");
+
   //==========================================================================
   // 4. 0000h Allocate / 0001h Free LDT descriptors
   //==========================================================================

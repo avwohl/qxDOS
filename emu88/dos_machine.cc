@@ -201,6 +201,20 @@ void dos_machine::init_machine() {
   init_bda();
   install_bios_stubs();
 
+  // CR0.ET and CR0.MP, which a real POST sets when it finds a coprocessor.
+  // Neither was ever SET here before - which is not the same as unread: MP is
+  // read by emu88.cc's WAIT #NM test, and a guest could always arm it itself
+  // with MOV CR0 or LMSW, which is exactly what a lazy-FPU-switching DOS
+  // extender does.  What changes is that the machine now arms it, so a guest
+  // that sets CR0.TS gets the WAIT fault whether or not it set MP.  ET is a
+  // 386 hardware bit meaning "387, not 287" and is observable only through
+  // SMSW and MOV-from-CR0.
+  //
+  // Set here rather than in emu88::reset() so the bare core - and therefore
+  // dosiz, SingleStepTests and test386, none of which construct a dos_machine
+  // - keeps CR0 == 0 at reset exactly as before.
+  cr0 |= CR0_ET | CR0_MP;
+
   // Initialize PIC (8259A) - normally done by BIOS POST
   // ICW1→ICW2→ICW3→ICW4, then set IMR
   pic_vector_base = 0x08;  // IRQ 0-7 → INT 08h-0Fh
@@ -347,9 +361,21 @@ void dos_machine::init_bda() {
   for (int i = 0; i < 256; i++)
     mem->store_mem(0x400 + i, 0);
 
-  // Equipment word: bit0=floppy present, bits4-5=initial video mode
+  // Equipment word: bit0=floppy present, bit1=math coprocessor,
+  // bits4-5=initial video mode
   // 00=EGA/VGA, 01=40x25 CGA, 10=80x25 CGA, 11=MDA/Hercules
-  uint16_t equip = 0x0001;  // floppy present
+  //
+  // Bit 1 was clear here until 2026-08-29, which made this machine contradict
+  // itself: CMOS register 0x14 has said FPU-present since it was written
+  // (0x2F, bit 1 set), and emu88 has always emulated a full x87 whatever
+  // config.cpu says - there is no build without one.  INT 11h returns this
+  // word verbatim, so every guest that probed for a coprocessor the documented
+  // way was told there was none, chose its software emulator, and never
+  // executed an x87 instruction at all.  It is set unconditionally rather than
+  // keyed to config.cpu because an 8088 with an 8087 is a machine that
+  // existed, and because the alternative is claiming the absence of hardware
+  // that is demonstrably there.
+  uint16_t equip = 0x0003;  // floppy present, math coprocessor installed
   bool use_mda = (config.display == DISPLAY_MDA || config.display == DISPLAY_HERCULES);
   bool use_ega_vga = (config.display == DISPLAY_EGA || config.display == DISPLAY_VGA);
   if (use_mda) {

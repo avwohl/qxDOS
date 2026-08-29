@@ -29,11 +29,10 @@ grading it against the host's own x87.  That entry is in CHANGELOG.md, and so
 is the fault-atomicity defect found while doing it - execute_fpu committing its
 register and status-word changes even when a memory operand had faulted - which
 was fixed in a second, separate pass on the owner's instruction.  #MF delivery
-was the half neither pass covered, and it closed on 2026-08-28 in a third; that
-entry is in CHANGELOG.md.  What is left of the x87 here is smaller and is
-listed below: two transcendental counts, and one thing the delivery work
-uncovered rather than caused - the BIOS tells every guest there is no
-coprocessor.
+was the half neither pass covered, and it closed on 2026-08-28 in a third; the
+coprocessor-presence contradiction that pass uncovered closed on 2026-08-29 in
+a fourth.  Both entries are in CHANGELOG.md.  What is left of the x87 here is
+one item: the two transcendental counts.
 
 Eleven items, then.  The first is the live one - a submodule bump that is
 statically clean and has never been compiled - and it is first because it is the
@@ -43,9 +42,8 @@ here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
 need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
 a decision that is the owner's, which is the release tagging scheme.  Two are
-real work nobody has started: the equipment-word contradiction the x87
-delivery pass turned up, and the half of the dosiz dependency that lives on
-their side.  The
+real work nobody has started: the two transcendental counts, and the half of
+the dosiz dependency that lives on their side.  The
 last two were found on 2026-08-27 while measuring the rest and are left open for
 the same kind of reason: closing either is a decision about what the product
 does, not a cleanup.
@@ -158,25 +156,29 @@ divide-by-zero and overflow unmasked by default, which is what Turbo Pascal's
 runtime errors 205, 206 and 207 are built on.  that is a large population of
 real-mode software, and the reason the IRQ13 path was worth building rather
 than stopping at CR0.NE.
-  what the delivery work did NOT close, and is now the live x87 item: THE BIOS
-TELLS EVERY GUEST THERE IS NO COPROCESSOR.  the BDA equipment word at 40:10 is
-built in dos_machine.cc without bit 1 (measured 0x0025), while CMOS register
-0x14 says the opposite (0x2F, bit 1 set) - the machine contradicts itself, and
-INT 11h returns the BDA word verbatim.  a guest that probes for an x87 the
-documented way is told there is none, so a Borland program uses its software
-emulator and never unmasks anything, and the delivery path above stays dormant
-for exactly the software that most needs it.  this was deliberately NOT fixed
-in the same pass: setting the bit makes guests start using an FPU they were
-avoiding, which is a behaviour change far wider than exception delivery and is
-the owner's call rather than a drive-by.  six committed assertions in
-tests/bios_test.cc pin a literal equipment word and would all have to move with
-it - 0x0025 at :555 and :558, 0x0035 at :2101 (MDA) and :2111 (Hercules),
-0x0005 at :2120 (EGA) and :2135 (VGA) - and a seventh at :557 compares INT 11h's
-AX to the BDA word rather than a literal, so it would survive unchanged.
-  the matching pieces, if it is done: DPMI INT 31h
-AX=0E00h/0E01h are unimplemented here and dosiz already answers them with 0x31,
-and nothing ever sets CR0.MP or CR0.ET, so WAIT's #NM check can never fire
-where a real BIOS POST would have armed it.
+  the machine used to contradict itself about whether it HAD a coprocessor,
+and that closed on 2026-08-29, the owner having asked for it.  the BDA
+equipment word at 40:10 was built without bit 1 (0x0025) while CMOS 0x14 said
+the opposite (0x2F, bit 1 set), and INT 11h returns the BDA word verbatim - so
+a guest probing the documented way was told there was no x87, chose its
+software emulator, and never executed an x87 instruction at all.  emu88 has
+always emulated a complete 80-bit x87 whatever config.cpu says, so "absent" was
+the lie.  three sources agree now: the equipment word (bit 1 set, default reads
+0x0027), CPUID leaf 1 EDX bit 0, and DPMI INT 31h AX=0E00h, which used to
+report 8001h "unsupported function" and now answers 0x31 - present, no
+emulation, type 3 - which is the value dosiz has always given.  CR0.ET and
+CR0.MP are set at POST in the same pass, as a real POST does on finding a
+coprocessor.
+  ONE CONSEQUENCE IS WORTH KNOWING and is not a defect: CR0.MP is what makes
+WAIT honour CR0.TS, so WAIT can now raise #NM where it never could before.
+Nothing in this machine reaches it - CR0.TS is set in exactly one place,
+emu88_pmode.cc's task switch, and neither the BIOS nor the DPMI host performs
+one - and the same #NM has always been raised by any ESC instruction with TS
+set, so this is a new trigger rather than a new failure class.  Measured, with
+TS forced and vector 7 left on an IRET stub that clears nothing: 999 dispatches
+and then raise_exception's loop detector halts the CPU, rather than hanging.  A
+guest doing lazy FPU switching would have a #NM handler and would clear TS with
+CLTS, which is the case the bit exists for.
   one latent bug is recorded rather than fixed, because nothing reaches it
 today: dos_machine.cc's hardware-IRQ loop runs irq 0..15 against a uint8_t
 pic_imr, so `pic_imr & (1 << irq)` is always 0 for irq >= 8 - those can never

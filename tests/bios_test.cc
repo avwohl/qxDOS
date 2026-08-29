@@ -551,11 +551,34 @@ int main() {
            "setup: the ROM stub carries its own vector number");
 
   // Default Config::display is DISPLAY_CGA, mouse_enabled is true:
-  //   bit 0 floppy present, bits 4-5 = 10 (80x25 colour), bit 2 PS/2 mouse.
-  check_eq(bda_w(bda::EQUIPMENT), 0x0025, "BDA 40:10 equipment word = 0025h");
+  //   bit 0 floppy present, bit 1 math coprocessor, bits 4-5 = 10 (80x25
+  //   colour), bit 2 PS/2 mouse.
+  check_eq(bda_w(bda::EQUIPMENT), 0x0027, "BDA 40:10 equipment word = 0027h");
   intN(0x11);
   check_eq(AX(), bda_w(bda::EQUIPMENT), "INT 11h returns the BDA equipment word");
-  check_eq(AX(), 0x0025, "INT 11h AX=0025h (floppy + 80x25 colour + mouse)");
+  check_eq(AX(), 0x0027,
+           "INT 11h AX=0027h (floppy + coprocessor + 80x25 colour + mouse)");
+
+  // The machine must not contradict itself about the coprocessor, which is
+  // what it did until 2026-08-29: CMOS 0x14 bit 1 said one was installed and
+  // the equipment word said it was not.
+  //
+  // The accounting, because the obvious summary of it is wrong: this pass adds
+  // FIVE assertions to this file and changes SIX existing literals, eleven in
+  // all.  Ten of the eleven fail against the core before it.  The eleventh is
+  // the CMOS check just below, which passes before and after - CMOS 0x14 has
+  // carried bit 1 since it was written, and that is the whole point of pairing
+  // the two: it pins the half that was already right, so the assertion that
+  // they AGREE has something to agree with.  A guest reads whichever it prefers -
+  // INT 11h is the documented one - so the two have to agree, and emu88 always
+  // has an x87 whatever config.cpu says.  Three sources, one answer.
+  {
+    gm->port_out(0x70, 0x14);
+    uint8_t cmos14 = gm->port_in(0x71);
+    check((cmos14 & 0x02) != 0, "CMOS 14h bit 1 says a coprocessor is installed");
+    check((bda_w(bda::EQUIPMENT) & 0x02) != 0,
+          "...and so does the equipment word - the two no longer disagree");
+  }
 
   // Real BIOS POST derives bit 0 and bits 6-7 (number of floppies minus one)
   // from what it finds.  init_bda hard-codes bit 0 and never writes bits 6-7,
@@ -563,6 +586,31 @@ int main() {
   diverge_eq(AX() & 0x00C1, 0x0001,
              "divergence: equipment bits 6-7 (floppy count) are always 0 "
              "even with drives 00h and 01h attached");
+
+  // CPUID leaf 1 EDX bit 0 is the third source, and it lives in the CPU rather
+  // than the BIOS, so a protected-mode client sees it without touching the
+  // BDA.  Driven as real opcode bytes: 66 B8 01000000 (mov eax,1), 0F A2
+  // (cpuid), F4 (hlt).  It goes here rather than beside the other two because
+  // it runs guest code and so clobbers the AX that INT 11h left behind.
+  {
+    const uint8_t g[] = { 0x66, 0xB8, 0x01, 0x00, 0x00, 0x00,
+                          0x0F, 0xA2,
+                          0xF4 };
+    for (size_t i = 0; i < sizeof(g); i++) wb(CODE_PHYS + (uint32_t)i, g[i]);
+    load_regs(In{});
+    run_from(0, 200, true);
+    check((gm->get_reg32(E::reg_DX) & 0x01) != 0,
+          "CPUID leaf 1 reports an on-chip FPU (EDX bit 0)");
+  }
+
+  // CR0.ET and CR0.MP, which a real POST sets when it finds a coprocessor.
+  // Neither was ever SET before 2026-08-29 - not the same as unread, since
+  // emu88's WAIT reads MP and a guest could always arm it itself with MOV CR0
+  // or LMSW.  What changed is that the machine arms it.  They are set by the
+  // machine, not by emu88::reset(), so a bare core still comes up with
+  // CR0 == 0.
+  check((gm->cr0 & E::CR0_ET) != 0, "POST sets CR0.ET - a 387, not a 287");
+  check((gm->cr0 & E::CR0_MP) != 0, "POST sets CR0.MP, so WAIT honours CR0.TS");
 
   check_eq(bda_w(bda::MEM_SIZE_KB), 640, "BDA 40:13 conventional memory = 640 KB");
   intN(0x12);
@@ -2103,7 +2151,7 @@ int main() {
     m.set_display(dos_machine::DISPLAY_MDA);
     m.init_machine();
     mem.set_a20(true);
-    check_eq(bda_w(bda::EQUIPMENT), 0x0035,
+    check_eq(bda_w(bda::EQUIPMENT), 0x0037,
              "DISPLAY_MDA: equipment bits 4-5 = 11 (monochrome)");
     check_eq(bda_b(bda::VIDEO_MODE), 7, "DISPLAY_MDA: the initial mode is 7");
     check_eq(bda_w(bda::CRTC_BASE), 0x3B4, "DISPLAY_MDA: 40:63 = 3B4h");
@@ -2113,7 +2161,7 @@ int main() {
 
     m.set_display(dos_machine::DISPLAY_HERCULES);
     m.init_machine();
-    check_eq(bda_w(bda::EQUIPMENT), 0x0035,
+    check_eq(bda_w(bda::EQUIPMENT), 0x0037,
              "DISPLAY_HERCULES: the same monochrome equipment bits");
     int10(0x1A00);
     diverge_eq(BL(), 0x01,
@@ -2122,7 +2170,7 @@ int main() {
 
     m.set_display(dos_machine::DISPLAY_EGA);
     m.init_machine();
-    check_eq(bda_w(bda::EQUIPMENT), 0x0005,
+    check_eq(bda_w(bda::EQUIPMENT), 0x0007,
              "DISPLAY_EGA: equipment bits 4-5 = 00 (EGA/VGA)");
     check_eq(bda_b(bda::VIDEO_MODE), 3, "DISPLAY_EGA: the initial mode is 3");
     int10(0x1A00);
@@ -2137,7 +2185,7 @@ int main() {
     m.set_display(dos_machine::DISPLAY_VGA);
     m.init_machine();
     mem.set_a20(true);
-    check_eq(bda_w(bda::EQUIPMENT), 0x0005,
+    check_eq(bda_w(bda::EQUIPMENT), 0x0007,
              "DISPLAY_VGA: equipment bits 4-5 = 00");
     int10(0x1A00);
     check_eq(BL(), 0x08, "DISPLAY_VGA: AH=1Ah reports DCC 08h (VGA colour)");

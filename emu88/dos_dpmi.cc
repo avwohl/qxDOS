@@ -1498,6 +1498,55 @@ void dos_machine::dpmi_int31h() {
       break;
     }
 
+    //=== Coprocessor (DPMI 1.0) ===
+
+    // The third and last place this host answers "is there an x87".  It used
+    // to fall to the default below and report 8001h, unsupported function,
+    // while the BDA equipment word said no and CMOS said yes.
+    case 0x0E00: {  // Get Coprocessor Status
+      // AX bits, in the spec's order - and the order is the trap here:
+      //   0     MPv  coprocessor ENABLED for this client
+      //   1     EMv  the CLIENT is emulating
+      //   2     MPr  a coprocessor is PRESENT
+      //   3     EMr  the HOST is emulating
+      //   4-7   type (0 none, 2 = 287, 3 = 387 or later, 4 = 486DX)
+      //
+      // Presence is bit 2, NOT bit 0.  This first returned 0x31 - MPv plus
+      // type 3, with MPr clear - which is a client-enabled coprocessor that is
+      // not there, and reproduces in a third place the very contradiction this
+      // pass exists to remove.  0x35 is MPv | MPr | type 3: present, enabled,
+      // and neither side emulating, because emu88's x87 is presented to the
+      // client as hardware.
+      //
+      // Note for anyone comparing: dosiz's own DPMI host answers 0x31 here
+      // (bridge.cc).  Its DPMI_V10.COM fixture asserts bit 0, which 0x35 also
+      // sets, so nothing downstream breaks - but the two hosts now disagree
+      // about MPr, and dosiz owns that call.
+      regs[reg_AX] = 0x0035;
+      clear_flag(FLAG_CF);
+      break;
+    }
+
+    case 0x0E01: {  // Set Coprocessor Emulation
+      // BX bit 0 = MPv (client wants the coprocessor enabled), bit 1 = EMv
+      // (the client will supply the emulation itself).
+      //
+      // EMv is a request this host cannot honour: the spec requires it to set
+      // CR0.EM while the client runs and reflect the resulting #NM to the
+      // client, and nothing here does that.  Returning success would be the
+      // same kind of lie the rest of this pass removes - a client that
+      // installed its own emulator would then wait for faults that never
+      // arrive.  So it is refused, and every request this host CAN meet
+      // (leave the hardware x87 enabled) succeeds.
+      if (regs[reg_BX] & 0x0002) {
+        set_flag(FLAG_CF);
+        regs[reg_AX] = 0x8021;  // invalid value
+        break;
+      }
+      clear_flag(FLAG_CF);
+      break;
+    }
+
     //=== Debug Registers ===
 
     case 0x0B00:  // Set Debug Watchpoint

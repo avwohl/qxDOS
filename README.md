@@ -62,11 +62,10 @@ Named here rather than left to be discovered.
   `tests/f80_unit.cc` grades its arithmetic against the host's own x87 bit for
   bit, flags included. The eight transcendentals are the exception: no 387
   rounds them correctly either, and `tests/f80_unit.cc` holds them to a
-  measured ulp bound instead. *(Delivery of unmasked exceptions was listed here
-  as missing until 2026-08-28 and is not any more — see the `#MF` entry in
-  [`CHANGELOG.md`](CHANGELOG.md). What is still true is narrower and is in
-  `todo.txt`: the BIOS equipment word tells guests there is no coprocessor at
-  all, so the software most likely to unmask an exception never looks.)*
+  measured ulp bound instead. *(Two things were listed here as missing and are not
+  any more: delivery of unmasked exceptions, closed 2026-08-28, and the BIOS
+  telling guests there was no coprocessor at all, closed 2026-08-29. Both are
+  in [`CHANGELOG.md`](CHANGELOG.md).)*
 - **Defects are recorded before they are fixed, and held at a baseline rather
   than hidden.** A harness that finds one asserts the architecturally correct
   answer and fails on purpose until somebody fixes it; fixing it then fails the
