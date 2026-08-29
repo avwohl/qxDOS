@@ -27,6 +27,20 @@ bad()  { printf '   FAIL %s\n' "$1"; fail=$((fail + 1)); }
 # is "no worse than", not "zero failures" - and a BETTER score fails too, loudly,
 # because it means this number is stale and should be raised.
 SST_BASELINE=1758402
+# ...and the size of the corpus that number was measured against.  This exists
+# because the corpus is NOT pinned: tests/fetch_tests.sh does a --depth 1 clone
+# of upstream and drops the history, so what gets graded is whatever
+# SingleStepTests ships today.  A pinned pass count over a floating input is a
+# false-regression generator - upstream adds or revokes a case and this script
+# blames emu88 for it.  Recording the denominator lets the two be told apart,
+# which is the same distinction check_dosiz.sh draws with its exit 2: "the
+# question changed" is not "the answer got worse".
+#
+# Deliberately NOT solved by pinning the corpus.  A pinned corpus stops
+# receiving upstream's new cases, which is the entire value of using it, and
+# 579 MB of it would have to live somewhere.  Detecting the change is cheaper
+# than preventing it.
+SST_CASES=1758699
 
 [ -x "$BUILD/sst386" ] || { echo "no $BUILD/sst386 - run tests/build.sh first"; exit 2; }
 [ -d "$DATA/80386" ]   || { echo "no $DATA/80386 - run tests/fetch_tests.sh first"; exit 2; }
@@ -62,8 +76,17 @@ sst_out=$("$BUILD/sst386" --summary --revoke "$DATA/80386/revocation_list.txt" \
                           "$DATA/80386/v1_ex_real_mode" 2>&1 | tail -1)
 echo "   $sst_out"
 passed=$(printf '%s' "$sst_out" | sed -n 's/.*TOTAL \([0-9]*\)\/.*/\1/p')
-if [ -z "$passed" ]; then
+cases=$(printf '%s' "$sst_out" | sed -n 's/.*TOTAL [0-9]*\/\([0-9]*\) .*/\1/p')
+if [ -z "$passed" ] || [ -z "$cases" ]; then
   bad "could not parse a total out of: $sst_out"
+elif [ "$cases" -ne "$SST_CASES" ]; then
+  # The corpus moved under us.  Say so instead of reporting a regression that
+  # is not ours: neither number means anything until a person looks.
+  bad "the CORPUS changed: $cases cases, not the $SST_CASES this baseline was
+       measured against.  $passed passed.  Upstream SingleStepTests is fetched
+       unpinned, so this is expected to happen; re-measure and update
+       SST_BASELINE and SST_CASES together, and do not read $passed as a
+       regression until you have."
 elif [ "$passed" -lt "$SST_BASELINE" ]; then
   bad "$passed passed, below the $SST_BASELINE baseline - a real regression"
 elif [ "$passed" -gt "$SST_BASELINE" ]; then

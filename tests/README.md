@@ -29,6 +29,16 @@ histories now, which is what CI had been doing by hand, so a local checkout and
 a CI run hold the same bytes. Nothing the suites read was removed - they read
 files and never git.
 
+**Neither corpus is pinned**, and that is deliberate. `fetch_tests.sh` does a
+`--depth 1` clone of each upstream and drops the history, so what gets graded is
+whatever they ship today - which is the point of using them, since a pinned
+corpus stops receiving new cases. The cost is that a pinned pass count over a
+floating input cannot tell "upstream changed the question" from "we got the
+answer wrong", and until 2026-08-29 it reported the first as the second.
+`run_suites.sh` records `SST_CASES` alongside `SST_BASELINE` now and says which
+happened. test386 needs no equivalent: its reference output is fetched from the
+same clone as the ROM, so the two move together.
+
 `run_suites.sh` is what `.github/workflows/tests.yml` runs, so a green tick and
 a clean local run mean the same thing. `build.sh` uses `clang++` when it is
 present and `g++` otherwise — **which matters, and was invisible here until

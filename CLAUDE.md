@@ -124,16 +124,26 @@ that can be exercised on a Linux machine.
 
 ### The app - requires a Mac
 
-> **Step 2 is broken and has been since ebc7465 (2026-03-23).** The
-> `dosbox-staging` submodule is pinned at `019bbfd5`, which does **not exist**
-> in the upstream repository - `git fetch` of it returns
-> `upload-pack: not our ref`. Worse, it does not fail cleanly: the clone of
-> upstream succeeds and only the checkout of the pin fails, leaving you on
-> upstream's default branch tip (~4276 commits past `v0.82.0-alpha`) with
-> `git submodule status` showing a leading `+`. Read the error, or you will
-> build a DOSBox you did not choose. Measured 2026-08-27; the evidence and the
-> three ways out are the first entry in [`todo.txt`](todo.txt). Nothing below
-> this line has been run on this machine either - see the note under Build.
+> **This block said "step 2 is broken" until 2026-08-29, and it was stale.**
+> It described a pin of `019bbfd5` that did not exist upstream. That was fixed
+> in `e4ade9d` (2026-08-27): the gitlink is `7b40053b` now,
+> `git submodule status` shows it clean with no leading `+`, and the directory
+> populates. The old text is summarised rather than kept because, unlike the
+> wrong claims left standing elsewhere in this repository, nothing can be
+> learned from it twice - it was simply out of date, and it was warning people
+> away from a step that works. What IS still true is the last sentence: nothing
+> below this line has been run on this machine - see the note under Build - and
+> `todo.txt`'s first entry records that the v0.83.0 bump is statically clean and
+> has never been compiled.
+
+**Why the submodule is pinned at all**, since the rest of this repository pins
+almost nothing: DOSBox Staging is a third-party upstream moving thousands of
+commits a year, with no gate in either direction. Nothing here tests it -
+there is no Mac on the machine that maintains this file, so an unpinned
+submodule would drift untested and silently. That is the opposite of the
+`emu88`/dosiz relationship, where the upstream *does* gate on the downstream
+(`tests/check_dosiz.sh`) and a pin therefore buys much less than it costs. Pin
+what you cannot test; float what something already checks.
 
 1. Prerequisites: Xcode 15+, CMake, XcodeGen
 2. `git submodule update --init` to fetch dosbox-staging. Still required even
