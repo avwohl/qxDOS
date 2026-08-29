@@ -31,10 +31,16 @@ register and status-word changes even when a memory operand had faulted - which
 was fixed in a second, separate pass on the owner's instruction.  #MF delivery
 was the half neither pass covered, and it closed on 2026-08-28 in a third; the
 coprocessor-presence contradiction that pass uncovered closed on 2026-08-29 in
-a fourth.  Both entries are in CHANGELOG.md.  What is left of the x87 here is
-one item, and it is narrower than the two counts that closed on 2026-08-29:
-C1 for the three trig forms, which needs the argument reduction carried in
-double length.
+a fourth.  Both entries are in CHANGELOG.md.  The last x87 item - C1 for the three trig
+forms - closed on 2026-08-29 as well, and is in CHANGELOG.md rather than here.
+It did NOT need what this entry said it needed.  The argument reduction was
+already carried in double length; f80_sin_red threw the tail away on its first
+line and then rounded sin(r)/r, which is 1 plus something eighty bits smaller,
+before multiplying by r.  Keeping the leading term exact was the whole fix, and
+it is the same pattern f80_2xm1 and f80_log2_atanh2 already carried comments
+about.  What is left of the x87 is two narrow things, both below: the single
+#U input the transcendentals still miss, and one C1 band that went BACKWARDS
+in the same commit that fixed the rest.
 
 Eleven items, then.  The first is the live one - a submodule bump that is
 statically clean and has never been compiled - and it is first because it is the
@@ -44,8 +50,9 @@ here, per this file's own rule.  Two are standing statements of scope rather
 than work; they are here so that a pass rate is never quoted without them.  Four
 need a machine this one is not - a Mac, a real device, the DOSBox submodule - or
 a decision that is the owner's, which is the release tagging scheme.  Two are
-real work nobody has started: C1 for the trig forms, and the half of the dosiz
-dependency that lives on their side.  The
+real work nobody has started: the two narrow x87 remainders - one #U input and
+one C1 band - and the half of the dosiz dependency that lives on their side.
+The
 last two were found on 2026-08-27 while measuring the rest and are left open for
 the same kind of reason: closing either is a decision about what the product
 does, not a cleanup.
@@ -214,17 +221,33 @@ anything measuring C1 needs a live FSQRT or FRNDINT control, and needs to read
 C1 as "grew in MAGNITUDE" rather than "moved toward +infinity" - under the
 wrong reading every signed-result function scores 50% and C1 looks underivable
 in principle.
-  WHAT IS STILL OPEN, and is the one x87 item left: C1 is much better than it
-was for FYL2X, FYL2XP1 and FPATAN and is untouched for FSIN, FCOS and FPTAN,
-which sit at 63.8%, 93.7% and lower against a ceiling of 88-97% set by how
-often the host's OWN C1 is architecturally correct.  closing that needs the
-same double-length treatment the logarithms just got, applied to the trig
-argument reduction, and it is a bigger job than the one done here because the
-reduction is where the accuracy goes.  one #U input also remains - FPATAN of a
+  C1 for FSIN, FCOS and FPTAN was still open when the above was written and
+closed later the same day; it is in CHANGELOG.md.  the sentence this replaces
+predicted the wrong fix, and the prediction is worth keeping in view: it said
+the reduction was "where the accuracy goes" and that carrying it in double
+length was the job.  the reduction ALREADY carried a head and a tail.  what
+threw the accuracy away was the first line of the consumer, which added them
+back together, and then a second rounding of sin(r)/r on top of it.  the fix
+was to keep the leading term exact, which is smaller than the job predicted and
+in a different file position than the one named.  a ceiling is real here and is
+now measured rather than estimated: over [1,8) the HOST is correctly rounded
+85.9% of the time for FSIN and emu88 is 98.9%, so agreement is capped near 86%
+and reaching it is not the same as being right.  one #U input also remains - FPATAN of a
 value that rounds UP onto the smallest normal, where hardware calls it tiny on
 the unbounded exponent range and this does not - and closing it needs the
 unrounded value to reach the final rounding in all eight, which is a rewrite
 rather than a flag change.
+  ONE C1 BAND REGRESSED on 2026-08-29 and is open: FSIN's C1 for arguments
+between roughly 2^-8000 and 2^-100 went from agreeing with the host 100% of
+the time to 0%, while the VALUE stayed correct throughout.  Carrying the
+correction unrounded means the final add now knows sin(x) < x and reports
+"rounded up in magnitude"; the host reports 0 there.  Ours is arguably the
+architecturally defensible answer and the band is narrow, and the same change
+took 2^-34..2^-64 from 0% to 100%, so the net is strongly positive - but it is
+a real disagreement with hardware that nobody chose, and none of the three
+implementations of that change noticed it.  It was found by scanning C1
+agreement PER EXPONENT rather than over a range, which is the technique worth
+keeping: a range average hides a band that is uniformly wrong inside it.
   the accuracy figures themselves are NOT stable measurements and should not
 be quoted as if they were: they move with the harness scale, and three of the
 eight are dominated by the ORACLE's error rather than ours, because

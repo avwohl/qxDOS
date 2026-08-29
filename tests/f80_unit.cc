@@ -876,6 +876,46 @@ static void oracle_boundaries() {
       check(bad == 0, msg);
     }
 
+    // T7.  THE RANGE GUARD'S FIRING PROFILE, which nothing else here can see.
+    //
+    // f80_ptan's two-word ending is guarded, because f80_mul2 cannot pack an
+    // out-of-range head.  A guard is a special kind of hazard: one that fires
+    // too OFTEN returns correct-but-less-accurate answers and passes every
+    // correctness check in this file silently.  That has happened in this
+    // repository before - a threshold that mixed biased and unbiased exponents
+    // fired on almost every input, reverted the whole accuracy gain, and left
+    // every suite green.
+    //
+    // The guard is not directly observable, but its effect is, so the RATE is
+    // the assertion.  Verified by deliberately forcing the guard to fire on
+    // every input: this check drops to 461/600 = 76.8% and FAILS - while the
+    // ulp line oracle_transcendental prints stays at FPTAN=2.0, unchanged.
+    // That is the point.  The accuracy budget does NOT catch this; only the
+    // rate does.  The bound is deliberately slack - it is a tripwire for a
+    // structural regression, not an accuracy budget.
+    {
+      int n = 0, same = 0;
+      for (int i = 0; i < 600; i++) {
+        f80 x; x.sig = 0x8000000000000000ULL | ((uint64_t)(i * 2654435761u) << 20);
+        x.se = (uint16_t)(16383 - 1 - (i % 12));          // |x| in [2^-13, 2^-1)
+        f80 g; f80_ctx cc = f80_ctx_make(0x037F);
+        if (!f80_ptan(x, &g, cc)) continue;
+        long double xv = ld_of(x), rv, dummy;
+        setcw(0x037F); clex();
+        __asm__ volatile("fldt %2\n\tfptan\n\tfstpt %1\n\tfstpt %0"
+                         : "=m"(rv), "=m"(dummy) : "m"(xv) : "st");
+        setcw(0x037F);
+        n++;
+        f80 h = f80_of(rv);
+        if (h.sig == g.sig && h.se == g.se) same++;
+      }
+      std::snprintf(msg, sizeof msg,
+                    "FPTAN's range guard stays out of the way on ordinary "
+                    "arguments (%d/%d match the host; all-fire gives ~2/3)",
+                    same, n);
+      check(n > 0 && same * 100 >= n * 85, msg);
+    }
+
     // T5.  PASSES EITHER WAY, and is kept for that reason: it is the guard on
     // the trap the previous transcendental commit recorded, where merging
     // intermediate flags made F2XM1 of the smallest NORMAL report #D for an

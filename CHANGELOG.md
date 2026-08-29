@@ -302,6 +302,141 @@ and not for what comes after it.
 
 ### Fixed
 
+- **`FSIN`, `FCOS` and `FPTAN` keep their leading term exact, which closes the
+  last x87 item.** THE CORE MOVED and **VALUES MOVED WITH IT**: this changes
+  `emu88/emu88_f80.h`, which dosiz compiles, and it is not a flags-only change
+  — all three return different bits over most of their domain. Better bits,
+  measured below, but different, and a dosiz developer's local build moves the
+  moment the file is saved.
+
+  The entry below carried the logarithms and the arctangent in double length
+  and said `FSIN`/`FCOS`/`FPTAN` were untouched. They were, and the reason they
+  were is one line. `f80_trig_reduce` goes to 256-bit trouble to deliver the
+  reduced argument as a HEAD and a TAIL, and `f80_sin_red` opened with
+  `r = f80x_add(rh, rl)` — collapsing it back to 64 bits before anything used
+  it. Since sin(r) ≈ r, an error in r lands on the answer one for one. The
+  result was then formed as `r * (sin(r)/r)`, and that quotient is 1 plus
+  something eighty bits smaller, so rounding it to 64 bits perturbs the
+  **leading** term a second time.
+
+  `f80_cos_red` collapsed the argument too and mostly got away with it, because
+  cos's leading term is exactly `F80_COS_C[0]` = 1 and an error in r reaches
+  the answer only through r². That asymmetry is the whole finding: it is why
+  `FCOS` was the best of the eight and `FSIN`, on the same reduction and a
+  table of the same quality, was among the worst. `FPTAN` divides one by the
+  other and inherited both.
+
+  Written as `r + r*(sin(r)/r - 1)` instead, the leading r keeps every bit the
+  reduction gave it. This is the pattern `f80_2xm1` and `f80_log2_atanh2`
+  already used and said so in their comments. The two series now come from one
+  `f80_sincos_red2` that shares an r² carried as a pair — the cross term
+  2·rh·rl it used to drop is worth about half a ulp of cos near r = π/4 — and
+  each delivers a head/tail pair the caller rounds exactly once. `FPTAN`
+  divides the two **pairs**, with a corrected quotient, instead of dividing two
+  values that had each already been rounded to 64 bits; it no longer routes
+  through `f80_sincos` in a throwaway context, and the operand decisions the
+  three share are factored into `f80_trig_prologue`.
+
+  Against the host x87 instruction, 20,000 random inputs per cell, cw = 0x037F,
+  before → after:
+
+        FSIN     |x| < 1     value  80.2 -> 99.4      C1  61.7 -> 98.9
+                 [1, 8)      value  80.5 -> 86.2      C1  74.5 -> 80.2
+        FCOS     |x| < 1     value  98.6 -> 99.5      C1  97.5 -> 99.2
+                 [1, 8)      value  74.2 -> 82.3      C1  67.9 -> 76.4
+        FPTAN    |x| < 1     value  65.6 -> 95.3      C1  50.1 -> 90.4
+                 [1, 8)      value  50.3 -> 69.8      C1  50.8 -> 60.2
+
+  **Above |x| ≈ 8, agreement with the host stops being a measure of anything**,
+  and the two remaining ranges are reported separately for that reason: over
+  [8, 2^20) the figures move 10.3 → 10.4, 10.0 → 10.3 and 2.7 → 2.5, and over
+  2^30..2^62 all three are 0.0% before and after. The host reduces with 66 bits
+  of π. Graded against `sinl`, its own mean error over [8, 2^20) is 1.1e4 ulps
+  and over 2^30..2^62 is 1.5e16; emu88's is 0.18 before and 0.04 after.
+  Matching it there would mean becoming wrong on purpose.
+
+  So the honest grade is against an exact reference — 90-digit `Decimal`,
+  3,000 inputs per range — asking how often each is the correctly-rounded
+  80-bit result. This is also what caps the [1, 8) row above:
+
+        |x| < 1      sin   host 99.6    emu88 81.2 -> 99.9
+                     cos   host 99.6    emu88 97.9 -> 99.8
+                     tan   host 95.8    emu88 65.9 -> 99.6
+        [1, 8)       sin   host 85.9    emu88 85.4 -> 98.9
+                     cos   host 82.5    emu88 80.4 -> 98.7
+                     tan   host 70.9    emu88 56.6 -> 97.9
+        [8, 2^20)    sin   host 10.3    emu88 80.1 -> 98.1
+                     cos   host  9.6    emu88 80.2 -> 98.3
+                     tan   host  2.7    emu88 56.2 -> 96.9
+
+  `FSIN` in [1, 8) agrees with the host 86.2% of the time against a ceiling of
+  85.9% — the two disagree almost exactly where the host is wrong. The gap that
+  is left in that row is the host's, not this file's.
+
+  **The directed-rounding modes move most, and for a second reason the diff
+  does not announce: the quadrant sign used to be applied AFTER the final
+  rounding.** `f80_sincos` rounded the magnitude and then negated it with
+  `f80_chs`, so under RC = down or RC = up a negative result had been rounded
+  the wrong way — toward the wrong infinity — for every argument in an odd
+  quadrant or with a negative operand. Nothing here graded the directed modes,
+  so it had never shown up. Rounding once from a head/tail pair forces the
+  issue, because you cannot round a pair correctly without knowing its sign
+  first; the sign is applied to both halves before the rounding now. That is
+  the single largest behaviour change in this commit and it is why
+  `FSIN` over |x| < 1 goes 45.0% → 99.4% (value) and 50.1% → 99.7% (`C1`) under
+  RC = down, and `FCOS` over [1, 8) goes 24.8% → 81.9%. Two other candidate
+  implementations that fixed the accuracy but kept the negate-after-round left
+  those cells *worse* than before, because an accurate pre-rounding value loses
+  the accidental hits the old one got. `FSINCOS` is graded too and moves with them; its `C1` is left
+  behind by whichever rounding runs last, so the two are still rounded in
+  **series** order rather than output order, which in odd quadrants is not the
+  same thing.
+
+  The two-word ending in `FPTAN` needs a range guard, because `f80_mul2` packs
+  its head with `f80_from_sig` and cannot represent an overflowed or denormal
+  one. A previous attempt's guard mixed biased and unbiased exponents, fired on
+  nearly every input, silently reverted the improvement it was protecting, and
+  still passed every suite — so this one was **counted**, not assumed: 0
+  fallbacks in 100,000 arguments spread over 2^-20 to 2^62, 14 in 20,000 around
+  2^-16000, and 20,000 of 20,000 on denormal arguments, which is the case it
+  exists for.
+
+  Worst observed ulp: `FSIN` 2.0 → **1.0**, `FCOS` 2.0 → **1.0**, `FPTAN`
+  3.0 → **2.0**, `FSIN` over arguments up to 2^62 2.0 → **1.0**. `F2XM1` 3.0,
+  `FYL2X` 2.0, `FYL2XP1` 3.0 and `FPATAN` 1.0 do not move, and neither does
+  anything else about them: 2,400,000 results across all twelve `RC`/`PC`
+  control-word settings are bit-identical between the old core and this one,
+  values, `C1` and flags, for `F2XM1`, `FYL2X`, `FYL2XP1`, `FPATAN` and
+  `FSQRT`. `f80_poly_even_f` and the two `*_red` helpers it served are gone;
+  `f80_poly_even_from` replaces them and keeps the first k terms out of the
+  recurrence so the caller can keep them exact.
+
+  **One thing goes backwards and is not hidden.** `FSIN`'s `C1` for arguments
+  between roughly 2^-8000 and 2^-100 flips from agreeing with the host to
+  disagreeing with it — 100% to 0% — while the value stays correct throughout.
+  The correction r·(sin(r)/r − 1) is carried unrounded now, so the final add
+  knows sin(x) < x and reports "rounded up in magnitude"; the host reports 0
+  there. emu88's answer is arguably the architecturally defensible one, but the
+  metric on record is host agreement and against that metric this band
+  regresses. It is narrow, `FCOS` already behaved this way over the same band
+  before and after, and the same change fixes `C1` over 2^-34..2^-64 from 0% to
+  100%. Net it fixes far more than it breaks — but none of the three
+  implementations noticed it, and it took a reviewer scanning per-exponent to
+  find, which is the argument for scanning per-exponent.
+
+  `f80_unit` 66 checks to **67**. The new one is a tripwire on the range
+  guard's *firing profile* rather than its correctness, because the failure it
+  guards against is silent: forced to fire on every input, the guard drops
+  `FPTAN`'s host agreement to 461/600 and this check fails, while the ulp line
+  — the accuracy budget — stays at `FPTAN` 2.0 and notices nothing. A review
+  also proposed carrying (−1/6) − `F80_SIN_C[1]` as an extra constant; it was
+  tried here, measured to change nothing in this shape, and removed, with the
+  measurement written where the constant would have gone.
+
+  `fpu_test` 659, `dpmi_test` 429, `ne2000_test` 220, `bios_test` 512,
+  `f80_unit` 67, `SingleStepTests` 1,758,402, `test386` exact;
+  `tests/check_dosiz.sh` 37/37 with no warnings out of `emu88/`.
+
 - **The two open transcendental counts, and a claim that was keeping one of
   them open.** THE CORE MOVED and **VALUES MOVED WITH IT**: this changes
   `emu88/emu88_f80.h`, which dosiz compiles, and it is not a flags-only change

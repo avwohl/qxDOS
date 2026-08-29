@@ -1542,14 +1542,16 @@ static inline f80 f80_poly_even(const f80 *c, int n, f80 x2) {
   for (int i = n - 2; i >= 1; i--) r = f80x_add(f80x_mul(r, x2), c[i]);
   return f80x_add(c[0], f80x_mul(r, x2));
 }
-// The same Horner evaluation with its LAST add rounded under `fin' when one is
-// supplied.  Only the final step takes it; every step before stays nearest-even
-// at 64 bits, which is what keeps the intermediates from rounding twice.
-static inline f80 f80_poly_even_f(const f80 *c, int n, f80 x2, f80_ctx *fin) {
+// The same table with its first `k` terms LEFT OUT: sum over i >= k of
+// c[i]*x2^i.  The caller adds those terms back itself, which is the whole
+// point - c[0] is +-1 and c[1] is a power of two in every table here, so a
+// caller that keeps them out of the rounding keeps them EXACT.  That is worth
+// about a ulp, and f80_2xm1 and f80_log2_atanh2 already do it by hand.
+static inline f80 f80_poly_even_from(const f80 *c, int n, int k, f80 x2) {
   f80 r = c[n - 1];
-  for (int i = n - 2; i >= 1; i--) r = f80x_add(f80x_mul(r, x2), c[i]);
-  f80 last = f80x_mul(r, x2);
-  return fin ? f80_addsub_p(c[0], last, false, *fin, 64) : f80x_add(c[0], last);
+  for (int i = n - 2; i >= k; i--) r = f80x_add(f80x_mul(r, x2), c[i]);
+  for (int i = 0; i < k; i++) r = f80x_mul(r, x2);
+  return r;
 }
 // The same shape in x rather than x^2.
 static inline f80 f80_poly_odd(const f80 *c, int n, f80 x) {
@@ -2114,16 +2116,63 @@ static inline void f80_trig_reduce(f80 x, f80_trig_r *out) {
   out->lo = corr;
 }
 
-static inline f80 f80_sin_red(f80 rh, f80 rl, f80_ctx *fin) {
-  f80 r  = f80x_add(rh, rl);
-  f80 r2 = f80x_mul(r, r);
-  f80 s  = f80_poly_even(F80_SIN_C, 11, r2);      // sin(r)/r
-  return fin ? f80_mul_p(r, s, *fin, 64) : f80x_mul(r, s);
-}
-static inline f80 f80_cos_red(f80 rh, f80 rl, f80_ctx *fin) {
-  f80 r  = f80x_add(rh, rl);
-  f80 r2 = f80x_mul(r, r);
-  return f80_poly_even_f(F80_COS_C, 12, r2, fin);
+// Both series at once, from the DOUBLE-LENGTH reduced argument, each delivered
+// as a head/tail pair for the caller to round exactly once.
+//
+// This used to be two functions whose first line was `r = f80x_add(rh, rl)',
+// and that line cost the sine about a fifth of a ulp on average.  It threw
+// away the tail f80_trig_reduce goes to 256-bit trouble to produce; and since
+// sin(r) ~ r, an error in r lands on the answer one for one.  Forming the
+// result as r*(sin(r)/r) did the same damage a second time: that quotient is
+// 1 plus something eighty bits smaller, so rounding it to 64 bits perturbs the
+// LEADING term.
+//
+// Written as r + r*(sin(r)/r - 1) instead, the leading r keeps every bit the
+// reduction gave it, tail included, and the series error is scaled by r^2.
+// That is the pattern f80_2xm1 and f80_log2_atanh2 already use, and it is why
+// FCOS - whose leading term is EXACTLY F80_COS_C[0] = 1 - was the best of the
+// eight while FSIN, on the same reduction and a table of the same quality, was
+// among the worst.  Measured against the host over |x| < 1/2, where NEITHER
+// side reduces at all: mean error 0.187 ulp before and 0.001 after, against
+// the host's own 0.003.
+//
+// The cosine gets the other half of the same treatment.  Its leading term was
+// already exact, but r^2 was formed from the collapsed r, and the cross term
+// 2*rh*rl that drops is worth about half a ulp of cos near r = pi/4.  Here r^2
+// is carried as a pair and BOTH exact leading coefficients are kept out of the
+// rounding - c[0] = 1, and c[1] = -1/2, a power of two, so multiplying by it
+// is exact.  Those two values are load-bearing: a table whose first two
+// coefficients were not exactly representable would need this written
+// differently.
+static inline void f80_sincos_red2(f80 rh, f80 rl,
+                                   f80 *sh, f80 *sl, f80 *ch, f80 *cl) {
+  // r^2 as a head and a tail.  |r| <= 1 here, so nothing can overflow and
+  // f80_mul2's inability to pack an out-of-range head is out of reach; the one
+  // case it declines is a DENORMAL rh, where it falls back to the single
+  // rounded product and the tail it gives up is below 2^-16440 anyway.
+  f80 ah, al;
+  f80_mul2(rh, rh, &ah, &al);
+  f80 r2l = f80x_add(al, f80x_mul(f80x_add(rh, rh), rl));
+  f80 r2  = f80x_add(ah, r2l);
+
+  // sin(r) = r + r*(sin(r)/r - 1), with r = rh + rl kept whole.
+  //
+  // A review of this change proposed also carrying (-1/6) - F80_SIN_C[1], the
+  // quarter-ulp the second coefficient is off by, as an extra constant.  It was
+  // tried and MEASURED HERE AND REMOVED: in this shape it moves nothing - every
+  // range identical to 0.1 points, and f80_unit's FPTAN line stays at 2.0.  The
+  // gain it showed elsewhere came from carrying the whole polynomial as a pair,
+  // not from the constant, and a constant plus a multiply that change no output
+  // read as deliberate to the next reader.
+  f80 u = f80_poly_even_from(F80_SIN_C, 11, 1, r2);       // sin(r)/r - 1
+  f80 r = f80x_add(rh, rl);
+  f80_add2(rh, f80x_add(rl, f80x_mul(r, u)), sh, sl);
+
+  // cos(r) = 1 - r^2/2 + (the rest), the first two terms exact.
+  f80 v = f80_poly_even_from(F80_COS_C, 12, 2, r2);
+  f80 h0, l0;
+  f80_add2(F80_COS_C[0], f80x_mul(ah, F80_COS_C[1]), &h0, &l0);
+  f80_add2(h0, f80x_add(f80x_add(v, f80x_mul(r2l, F80_COS_C[1])), l0), ch, cl);
 }
 
 // True when the argument is out of range and the instruction must report C2
@@ -2137,53 +2186,81 @@ static inline bool f80_trig_out_of_range(f80 x) {
 
 // Each returns false when the argument was out of range, in which case the
 // caller sets C2 and leaves the stack alone.
-static inline bool f80_sincos(f80 x, f80 *sin_out, f80 *cos_out, f80_ctx &c) {
+
+// What FSIN, FCOS and FPTAN all decide about the OPERAND before any series
+// runs.  It is factored out because FPTAN needs exactly these answers and used
+// to get them by calling f80_sincos in a throwaway context - which also forced
+// its sine and its cosine to be rounded to 64 bits before the divide ever saw
+// them.  The order of the tests is the order a 387 applies them and is not
+// arbitrary: #IA on an infinity outranks the range check, and the range check
+// outranks #D.
+enum f80_trig_pre { F80_TRIG_GO, F80_TRIG_DONE, F80_TRIG_OOR };
+
+static inline f80_trig_pre f80_trig_prologue(f80 x, f80 *sv, f80 *cv,
+                                             f80_ctx &c) {
   f80 r;
-  if (f80_prop_nan1(x, c, &r)) { if (sin_out) *sin_out = r; if (cos_out) *cos_out = r; return true; }
+  if (f80_prop_nan1(x, c, &r)) { *sv = r; *cv = r; return F80_TRIG_DONE; }
   f80_class k = f80_classify(x);
   if (k == F80_CLASS_INF) {
     c.flags |= F80_IE;
     r = f80_indefinite();
-    if (sin_out) *sin_out = r;
-    if (cos_out) *cos_out = r;
-    return true;
+    *sv = r;
+    *cv = r;
+    return F80_TRIG_DONE;
   }
-  if (f80_trig_out_of_range(x)) return false;
+  if (f80_trig_out_of_range(x)) return F80_TRIG_OOR;
   if (k == F80_CLASS_ZERO) {
-    if (sin_out) *sin_out = x;                     // sin(-0) = -0, exact
-    if (cos_out) *cos_out = F80_ONE;
+    *sv = x;                                       // sin(-0) = -0, exact
+    *cv = F80_ONE;
     c.c1 = false;
-    return true;
+    return F80_TRIG_DONE;
   }
   if (k == F80_CLASS_DENORMAL) c.flags |= F80_DE;
+  return F80_TRIG_GO;
+}
+
+static inline bool f80_sincos(f80 x, f80 *sin_out, f80 *cos_out, f80_ctx &c) {
+  f80 sv, cv;
+  f80_trig_pre pre = f80_trig_prologue(x, &sv, &cv, c);
+  if (pre == F80_TRIG_OOR) return false;
+  if (pre == F80_TRIG_DONE) {
+    if (sin_out) *sin_out = sv;
+    if (cos_out) *cos_out = cv;
+    return true;
+  }
 
   f80_trig_r t;
   f80_trig_reduce(x, &t);
+  f80 sh, sl, ch, cl;
+  f80_sincos_red2(t.hi, t.lo, &sh, &sl, &ch, &cl);
+
   // WHICH evaluator feeds which output depends on the quadrant - in quadrants
   // 1 and 3 the sine comes out of the COSINE series and vice versa - so the
-  // final-rounding context has to follow the value rather than the routine.
-  // Getting this backwards would rounds the wrong one under the caller's RC
-  // and leave the delivered result rounded to nearest regardless.
-  bool sin_from_sr = (t.quadrant == 0 || t.quadrant == 2);
+  // final rounding has to follow the value rather than the routine, and so
+  // does the sign.  Getting this backwards would round the wrong one under the
+  // caller's RC and leave the delivered result rounded to nearest regardless.
+  bool sr_is_sin = (t.quadrant == 0 || t.quadrant == 2);
+  bool sr_neg    = (t.quadrant == 1 || t.quadrant == 2);
+  bool cr_neg    = (t.quadrant == 2 || t.quadrant == 3);
+  if (f80_neg(x)) {                                // sin is odd, cos is even
+    if (sr_is_sin) sr_neg = !sr_neg; else cr_neg = !cr_neg;
+  }
+  f80 *sr_out = sr_is_sin ? sin_out : cos_out;
+  f80 *cr_out = sr_is_sin ? cos_out : sin_out;
+
+  // Each output is rounded ONCE, out of its head/tail pair, under the caller's
+  // control word.  The two are done in SERIES order rather than in output
+  // order because C1 is left behind by whichever rounding ran last, and that
+  // is the order FSINCOS's C1 was graded in.
   f80_ctx fc = f80_ctx_make(c.cw);
-  f80_ctx *fin_sr = 0, *fin_cr = 0;
-  if (sin_out) { if (sin_from_sr) fin_sr = &fc; else fin_cr = &fc; }
-  if (cos_out) { if (sin_from_sr) fin_cr = &fc; else fin_sr = &fc; }
-  f80 sr = f80_sin_red(t.hi, t.lo, fin_sr);
-  f80 cr = f80_cos_red(t.hi, t.lo, fin_cr);
+  if (sr_out) *sr_out = f80_addsub_p(sr_neg ? f80_chs(sh) : sh,
+                                     sr_neg ? f80_chs(sl) : sl, false, fc, 64);
+  if (cr_out) *cr_out = f80_addsub_p(cr_neg ? f80_chs(ch) : ch,
+                                     cr_neg ? f80_chs(cl) : cl, false, fc, 64);
   f80_merge_final(c, fc);
   c.flags |= F80_PE;
-  bool neg = f80_neg(x);
-  f80 sv, cv;
-  switch (t.quadrant) {
-    case 0:  sv = sr;            cv = cr;            break;
-    case 1:  sv = cr;            cv = f80_chs(sr);   break;
-    case 2:  sv = f80_chs(sr);   cv = f80_chs(cr);   break;
-    default: sv = f80_chs(cr);   cv = sr;            break;
-  }
-  if (neg) sv = f80_chs(sv);                       // sin is odd, cos is even
-  if (sin_out) { *sin_out = sv; f80_flag_tiny(c, sv); }
-  if (cos_out) { *cos_out = cv; f80_flag_tiny(c, cv); }
+  if (sin_out) f80_flag_tiny(c, *sin_out);
+  if (cos_out) f80_flag_tiny(c, *cos_out);
   return true;
 }
 
@@ -2191,28 +2268,73 @@ static inline bool f80_sin(f80 x, f80 *out, f80_ctx &c)  { return f80_sincos(x, 
 static inline bool f80_cos(f80 x, f80 *out, f80_ctx &c)  { return f80_sincos(x, 0, out, c); }
 
 static inline bool f80_ptan(f80 x, f80 *out, f80_ctx &c) {
-  // The sine and the cosine are INTERMEDIATES here, so they are computed in
-  // their own context and only the divide rounds under the caller's - one
-  // rounding, not three.  DE and IE still have to come out of the inner
-  // context, because they are properties of the OPERAND rather than of the
-  // rounding.
-  f80 s, co;
-  f80_ctx inner = f80_ctx_make(0x037F);
-  if (!f80_sincos(x, &s, &co, inner)) {
-    c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE));
-    return false;
-  }
-  // #P comes out of the inner context too.  The tangent is irrational for
-  // every argument this reaches, but the DIVIDE is exact whenever |x| is small
-  // enough that the sine IS x and the cosine IS 1 - every argument below
-  // 2^-63 - so deriving #P from the final rounding loses it there.  Measured:
-  // the host reports #P for FPTAN(2^-63) and emu88 reported nothing, on all
-  // 336 bottom-of-range cases probed.  f80_sincos sets F80_PE exactly for a
-  // NORMAL or DENORMAL argument, which is the condition wanted; a NaN or an
-  // infinity has already returned by here with its own flags.
-  c.flags |= (uint16_t)(inner.flags & (F80_DE | F80_IE | F80_PE));
+  // The sine and the cosine are INTERMEDIATES here, so only the divide rounds
+  // under the caller's context - one rounding, not three.  They also arrive as
+  // head/tail PAIRS: rounding each to 64 bits first, which is what calling
+  // f80_sincos in a throwaway context did, put half a ulp into the numerator
+  // and half into the denominator before the divide had started, and the
+  // quotient inherited both.
+  f80 sv, cv;
+  f80_trig_pre pre = f80_trig_prologue(x, &sv, &cv, c);
+  if (pre == F80_TRIG_OOR) return false;
   f80_ctx fc = f80_ctx_make(c.cw);
-  *out = f80_div_p(s, co, fc, 64);
+  if (pre == F80_TRIG_DONE) {
+    // A NaN, an infinity or a zero: the quotient of the two exact answers IS
+    // the answer, signs and flags included.  tan(-0) is -0 and comes out of
+    // the divide rather than out of a special case written here twice.
+    *out = f80_div_p(sv, cv, fc, 64);
+    f80_merge_final(c, fc);
+    f80_flag_tiny(c, *out);
+    return true;
+  }
+  // #P is a property of the OPERAND here, not of the last rounding.  The
+  // tangent is irrational for every argument that reaches this line, but the
+  // DIVIDE is exact whenever |x| is small enough that the sine IS x and the
+  // cosine IS 1 - every argument below 2^-63 - so deriving #P from the final
+  // rounding loses it there.  Measured: the host reports #P for FPTAN(2^-63)
+  // and emu88 reported nothing, on all 336 bottom-of-range cases probed.
+  c.flags |= F80_PE;
+
+  f80_trig_r t;
+  f80_trig_reduce(x, &t);
+  f80 sh, sl, ch, cl;
+  f80_sincos_red2(t.hi, t.lo, &sh, &sl, &ch, &cl);
+  // The tangent has period pi, so quadrants 0 and 2 both give sr/cr and
+  // quadrants 1 and 3 both give -cr/sr - two cases where sine and cosine had
+  // four.  The tangent is odd, so x's sign flips the quotient.
+  bool odd = (t.quadrant & 1) != 0;
+  f80 nh = odd ? f80_chs(ch) : sh, nl = odd ? f80_chs(cl) : sl;
+  f80 dh = odd ? sh : ch,          dl = odd ? sl : cl;
+  if (f80_neg(x)) { nh = f80_chs(nh); nl = f80_chs(nl); }
+
+  f80 q = f80x_div(nh, dh);
+  // The corrected quotient wants f80_mul2, which packs its head with
+  // f80_from_sig and so cannot represent an overflowed or denormal one; and it
+  // wants the final add not to round a second time on top of q's own.  Both
+  // are only in question at the very bottom of the range, where x is denormal
+  // and the tangent is x, and at an exact multiple of pi/2, where the divisor
+  // is zero and #Z is the answer.  UNBIASED exponents here: a guard that mixed
+  // biased and unbiased fired on nearly every input, silently reverted the
+  // improvement it was protecting, and still passed every suite.  So this one
+  // was counted rather than assumed: 0 fallbacks in 100000 arguments spread
+  // over 2^-20 to 2^62, 14 in 20000 around 2^-16000, and 20000 of 20000 on
+  // denormal arguments, which is the case it exists for.
+  int32_t qe = (int32_t)(q.se & 0x7FFF) - 16383;
+  if (f80_classify(q)  == F80_CLASS_NORMAL &&
+      f80_classify(nh) == F80_CLASS_NORMAL &&
+      f80_classify(dh) == F80_CLASS_NORMAL &&
+      qe > -16000 && qe < 16000) {
+    // tan - q = (n - q*d)/d, with the residual formed exactly: q*dh through
+    // f80_mul2, and nh minus that by Sterbenz, since q*dh is within a factor
+    // of two of nh by construction.
+    f80 ph, pl;
+    f80_mul2(q, dh, &ph, &pl);
+    f80 res = f80x_add(f80x_sub(f80x_sub(f80x_sub(nh, ph), pl),
+                                f80x_mul(q, dl)), nl);
+    *out = f80_addsub_p(q, f80x_div(res, dh), false, fc, 64);
+  } else {
+    *out = f80_div_p(f80x_add(nh, nl), f80x_add(dh, dl), fc, 64);
+  }
   f80_merge_final(c, fc);
   f80_flag_tiny(c, *out);
   return true;
